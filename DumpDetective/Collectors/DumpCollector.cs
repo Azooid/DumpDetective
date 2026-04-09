@@ -257,7 +257,7 @@ public static class DumpCollector
         foreach (var obj in heap.EnumerateObjects())
         {
             processedCount++;
-            if(watch is not null && watch.Elapsed.TotalSeconds >= 1)
+            if(watch is not null && progress is not null && watch.Elapsed.TotalSeconds >= 1)
             {
                 progress!($"Walking heap objects — {processedCount:N0} processed");
                 watch.Restart();

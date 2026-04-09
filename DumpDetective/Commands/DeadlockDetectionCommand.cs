@@ -13,6 +13,11 @@ internal static class DeadlockDetectionCommand
         Options:
           -o, --output <file>  Write report to file (.md / .html / .txt)
           -h, --help           Show this help
+
+        Note:
+          ClrMD 3.x does not expose lock ownership, so wait-chain cycle detection
+          is performed heuristically via stack-frame analysis. Use WinDbg !dlk for
+          guaranteed Monitor-level deadlock detection on live data.
         """;
 
     public static int Run(string[] args)
@@ -25,21 +30,31 @@ internal static class DeadlockDetectionCommand
     internal static void Render(DumpContext ctx, IRenderSink sink)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
+
+        sink.Header(
+            "Dump Detective — Deadlock Detection",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
+
         var threads = ctx.Runtime.Threads.ToList();
 
-        var blocked = threads
-            .Select(t => {
-                var frames = t.EnumerateStackTrace().Take(10).ToList();
-                var bf = frames.FirstOrDefault(IsBlockingFrame);
-                return (Thread: t, BlockFrame: bf, Frames: frames);
-            })
-            .Where(x => x.BlockFrame is not null)
-            .ToList();
+        // ── Per-thread: collect top blocking frame and its type key ──────────
+        var blocked = new List<(ClrThread Thread, string BlockType, string BlockFrame, List<ClrStackFrame> Frames)>();
 
-        sink.Section("Deadlock / Contention Detection");
+        foreach (var t in threads)
+        {
+            var frames = t.EnumerateStackTrace().Take(10).ToList();
+            var bf = frames.FirstOrDefault(f => IsBlockingFrame(f.Method?.Name ?? string.Empty));
+            if (bf is null) continue;
+            string blockType  = ExtractTypeName(bf.FrameName ?? bf.Method?.Signature ?? "");
+            string blockFrame = bf.FrameName ?? bf.Method?.Signature ?? "<unknown>";
+            blocked.Add((t, blockType, blockFrame, frames));
+        }
+
+        sink.Section("Analysis Summary");
         sink.KeyValues([
-            ("Threads analyzed", threads.Count.ToString("N0")),
-            ("Blocked threads",  blocked.Count.ToString("N0")),
+            ("Threads total",           threads.Count.ToString("N0")),
+            ("Blocked threads",         blocked.Count.ToString("N0")),
+            ("Unique blocking types",   blocked.Select(b => b.BlockType).Distinct().Count().ToString("N0")),
         ]);
 
         if (blocked.Count == 0)
@@ -48,46 +63,82 @@ internal static class DeadlockDetectionCommand
             return;
         }
 
-        var rows = blocked.Select((x, i) => new[]
-        {
-            (i + 1).ToString(),
-            x.Thread.ManagedThreadId.ToString(),
-            x.Thread.OSThreadId.ToString(),
-            x.Thread.State.ToString(),
-            x.BlockFrame!.FrameName ?? x.BlockFrame.Method?.Signature ?? "<unknown>",
-        }).ToList();
-        sink.Table(["#", "Mgd ID", "OS ID", "State", "Blocked At"], rows, "Blocked threads");
-
-        // Contention groups
+        // ── Contention groups — threads waiting on the same type ─────────────
         var groups = blocked
-            .GroupBy(x => ExtractTypeName(x.BlockFrame!.FrameName ?? ""))
+            .GroupBy(b => b.BlockType)
             .Where(g => g.Count() > 1)
-            .Select(g => new[] { g.Key, g.Count().ToString(), string.Join(", ", g.Select(x => x.Thread.ManagedThreadId)) })
+            .OrderByDescending(g => g.Count())
             .ToList();
+
         if (groups.Count > 0)
         {
-            sink.Section("Potential Contention Groups");
-            sink.Table(["Type", "Thread Count", "Managed IDs"], groups);
+            // Threads blocked on the SAME type is the classic deadlock fingerprint
+            sink.Alert(AlertLevel.Critical,
+                $"{groups.Count} contention group(s) — multiple threads blocked on the same type.",
+                advice: "Use lock ordering, SemaphoreSlim with CancellationToken timeouts, or async/await.");
+
+            sink.Section("Contention Groups");
+            var groupRows = groups.Select(g => new[]
+            {
+                g.Key,
+                g.Count().ToString("N0"),
+                string.Join(", ", g.Select(b => $"T{b.Thread.ManagedThreadId}")),
+                g.First().BlockFrame,
+            }).ToList();
+            sink.Table(["Block Type", "Thread Count", "Thread IDs", "Block Frame"], groupRows,
+                "Groups of 2+ threads blocked on the same primitive — potential deadlock");
+        }
+        else
+        {
+            sink.Alert(AlertLevel.Warning,
+                $"{blocked.Count} blocked thread(s) — no shared contention type (single-thread contention or I/O wait).");
         }
 
-        int lockObjs = ctx.Heap.CanWalkHeap
-            ? ctx.Heap.EnumerateObjects().Count(o => o.IsValid && o.Type?.Name is
-                "System.Threading.Monitor" or "System.Threading.Mutex" or
-                "System.Threading.SemaphoreSlim" or "System.Threading.ReaderWriterLockSlim")
-            : 0;
-        sink.KeyValues([("Lock objects on heap", lockObjs.ToString("N0"))]);
+        // ── All blocked threads table ─────────────────────────────────────────
+        sink.Section("Blocked Threads");
+        var blockedRows = blocked.Select((b, i) => new[]
+        {
+            (i + 1).ToString(),
+            b.Thread.ManagedThreadId.ToString(),
+            b.Thread.OSThreadId.ToString(),
+            b.Thread.State.ToString(),
+            b.BlockFrame,
+        }).ToList();
+        sink.Table(["#", "Mgd ID", "OS ID", "State", "Block Frame"], blockedRows);
+
+        // ── Per-thread stack details ──────────────────────────────────────────
+        sink.Section("Blocked Thread Stack Details");
+        bool anyInGroup = groups.Count > 0;
+        foreach (var b in blocked)
+        {
+            bool inHotGroup = groups.Any(g => g.Any(x => x.Thread.ManagedThreadId == b.Thread.ManagedThreadId));
+            string title = $"Thread {b.Thread.ManagedThreadId}  OS:{b.Thread.OSThreadId}  {b.Thread.State}" +
+                           (inHotGroup ? "  ⚠ CONTENTION GROUP" : "");
+            sink.BeginDetails(title, open: inHotGroup);
+            var frameRows = b.Frames
+                .Select((f, i) => new[] { i.ToString(), f.FrameName ?? f.Method?.Signature ?? "<unknown>" })
+                .ToList();
+            if (frameRows.Count > 0)
+                sink.Table(["#", "Frame"], frameRows);
+            else
+                sink.Text("  (no managed frames)");
+            sink.EndDetails();
+        }
     }
 
-    static bool IsBlockingFrame(ClrStackFrame f)
-    {
-        var name = f.Method?.Name ?? string.Empty;
-        return name is "WaitOne" or "Wait" or "Enter" or "TryEnter" or "Join" or "Acquire" or "WaitAny" or "WaitAll"
-            || name.Contains("Wait", StringComparison.OrdinalIgnoreCase);
-    }
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    static bool IsBlockingFrame(string name) =>
+        name is "WaitOne" or "Wait" or "Enter" or "TryEnter" or "Join"
+               or "Acquire" or "WaitAsync" or "GetResult" or "WaitAll" or "WaitAny"
+        || name.Contains("Wait",  StringComparison.OrdinalIgnoreCase)
+        || name.Contains("Sleep", StringComparison.OrdinalIgnoreCase);
 
     static string ExtractTypeName(string frame)
     {
-        int dot = frame.LastIndexOf('.', frame.IndexOf('(') < 0 ? frame.Length - 1 : frame.IndexOf('('));
-        return dot > 0 ? frame[..dot] : frame;
+        int paren = frame.IndexOf('(');
+        string sig = paren > 0 ? frame[..paren] : frame;
+        int dot    = sig.LastIndexOf('.');
+        return dot > 0 ? sig[..dot] : sig;
     }
 }

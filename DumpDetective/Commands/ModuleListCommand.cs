@@ -35,30 +35,74 @@ internal static class ModuleListCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, string? filter = null, bool appOnly = false)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
+
+        sink.Header(
+            "Dump Detective — Module List",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
+
         var modules = ctx.Runtime.EnumerateModules().ToList();
 
         var rows = modules
-            .Select(m => (Path: m.Name ?? m.AssemblyName ?? "<unknown>", Size: (long)(m.MetadataAddress > 0 ? m.Size : 0)))
+            .Select(m =>
+            {
+                string path = m.Name ?? m.AssemblyName ?? "<unknown>";
+                string fn   = Path.GetFileName(path);
+                long   size = m.MetadataAddress > 0 ? (long)m.Size : 0;
+                string kind = ModuleKind(path);
+
+                return (Path: path, FileName: fn, Kind: kind, Size: size);
+            })
             .Where(m => filter is null || m.Path.Contains(filter, StringComparison.OrdinalIgnoreCase))
-            .Where(m => !appOnly || !IsSystem(m.Path))
-            .OrderBy(m => m.Path)
-            .Select(m => new[] { Path.GetFileName(m.Path), IsSystem(m.Path) ? "System" : "App", DumpHelpers.FormatSize(m.Size), m.Path })
+            .Where(m => !appOnly || m.Kind == "App")
+            .OrderBy(m => m.Kind == "App" ? 0 : m.Kind == "GAC" ? 1 : 2)
+            .ThenBy(m => m.FileName)
+            .Select(m => new[]
+            {
+                m.FileName,
+                m.Kind,
+                DumpHelpers.FormatSize(m.Size),
+                m.Path,
+            })
             .ToList();
 
-        sink.Section("Module List");
+        sink.Section("Loaded Modules");
         sink.Table(["Assembly", "Kind", "Size", "Path"], rows, $"{rows.Count} module(s)");
+
+        int appCount    = modules.Count(m => ModuleKind(m.Name ?? m.AssemblyName ?? "") == "App");
+        int systemCount = modules.Count(m => ModuleKind(m.Name ?? m.AssemblyName ?? "") == "System");
+        int gacCount    = modules.Count(m => ModuleKind(m.Name ?? m.AssemblyName ?? "") == "GAC");
+
         sink.KeyValues([
-            ("Total modules",  modules.Count.ToString("N0")),
-            ("App modules",    modules.Count(m => !IsSystem(m.Name ?? m.AssemblyName ?? "")).ToString("N0")),
-            ("System modules", modules.Count(m =>  IsSystem(m.Name ?? m.AssemblyName ?? "")).ToString("N0")),
+            ("Total modules",   modules.Count.ToString("N0")),
+            ("App modules",     appCount.ToString("N0")),
+            ("System modules",  systemCount.ToString("N0")),
+            ("GAC modules",     gacCount.ToString("N0")),
         ]);
     }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    static string ModuleKind(string path)
+    {
+        if (IsGac(path))    return "GAC";
+        if (IsSystem(path)) return "System";
+        return "App";
+    }
+
+    static bool IsGac(string path) =>
+        path.Contains("\\GAC_MSIL\\",     StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("\\GAC_32\\",       StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("\\GAC_64\\",       StringComparison.OrdinalIgnoreCase) ||
+        path.Contains("\\assembly\\GAC", StringComparison.OrdinalIgnoreCase);
 
     static bool IsSystem(string path)
     {
         var fn = Path.GetFileName(path);
-        return fn.StartsWith("System.",   StringComparison.OrdinalIgnoreCase) ||
-               fn.StartsWith("Microsoft.", StringComparison.OrdinalIgnoreCase) ||
-               fn.StartsWith("mscorlib",  StringComparison.OrdinalIgnoreCase);
+        return fn.StartsWith("System.",    StringComparison.OrdinalIgnoreCase) ||
+               fn.StartsWith("mscorlib",  StringComparison.OrdinalIgnoreCase) ||
+               fn.StartsWith("netstandard", StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("\\dotnet\\",  StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("Microsoft.NETCore", StringComparison.OrdinalIgnoreCase) ||
+               path.Contains("\\runtime\\", StringComparison.OrdinalIgnoreCase);
     }
 }

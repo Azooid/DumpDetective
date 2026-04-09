@@ -26,12 +26,36 @@ internal static class HeapFragmentationCommand
     internal static void Render(DumpContext ctx, IRenderSink sink)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
+
+        sink.Header(
+            "Dump Detective — Heap Fragmentation",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
+
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        var segData = new Dictionary<ulong, (string Kind, long Live, long Free, long Committed)>();
+        // Build per-segment data keyed by address
+        var segData = new Dictionary<ulong, SegInfo>();
         foreach (var seg in ctx.Heap.Segments)
-            segData[seg.Address] = (DumpHelpers.SegmentKindLabel(ctx.Heap, seg.Address), 0, 0, (long)seg.CommittedMemory.Length);
+        {
+            segData[seg.Address] = new SegInfo(
+                DumpHelpers.SegmentKindLabel(ctx.Heap, seg.Address),
+                seg.Address,
+                (long)seg.CommittedMemory.Length);
+        }
 
+        // Count pinned handles per segment
+        foreach (var h in ctx.Runtime.EnumerateHandles())
+        {
+            if (h.HandleKind != ClrHandleKind.Pinned || h.Object == 0) continue;
+            var seg = ctx.Heap.GetSegmentByAddress(h.Object);
+            if (seg is not null && segData.TryGetValue(seg.Address, out var info))
+            {
+                info.PinnedCount++;
+                segData[seg.Address] = info;
+            }
+        }
+
+        // Walk heap to measure live vs. free bytes per segment
         var freeType = ctx.Heap.FreeType;
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Measuring fragmentation...", _ =>
         {
@@ -40,37 +64,79 @@ internal static class HeapFragmentationCommand
                 if (!obj.IsValid) continue;
                 var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
                 if (seg is null || !segData.ContainsKey(seg.Address)) continue;
-                var (kind, live, free, committed) = segData[seg.Address];
+                var info = segData[seg.Address];
                 long size = (long)obj.Size;
-                if (obj.Type == freeType) segData[seg.Address] = (kind, live, free + size, committed);
-                else                      segData[seg.Address] = (kind, live + size, free, committed);
+                if (obj.Type == freeType) info.FreeBytes  += size;
+                else                      info.LiveBytes  += size;
+                segData[seg.Address] = info;
             }
         });
 
-        var rows = segData.Values
-            .Where(s => s.Committed > 0)
-            .OrderByDescending(s => s.Committed > 0 ? s.Free * 100.0 / s.Committed : 0)
-            .Select(s => {
-                double frag = s.Committed > 0 ? s.Free * 100.0 / s.Committed : 0;
-                return new[] { s.Kind, DumpHelpers.FormatSize(s.Committed), DumpHelpers.FormatSize(s.Live), DumpHelpers.FormatSize(s.Free), $"{frag:F1}%" };
-            }).ToList();
+        var allSegs = segData.Values
+            .Where(s => s.CommittedBytes > 0)
+            .OrderByDescending(s => s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0)
+            .ToList();
 
-        long totalCommitted = segData.Values.Sum(s => s.Committed);
-        long totalFree      = segData.Values.Sum(s => s.Free);
+        long totalCommitted = allSegs.Sum(s => s.CommittedBytes);
+        long totalFree      = allSegs.Sum(s => s.FreeBytes);
         double totalFrag    = totalCommitted > 0 ? totalFree * 100.0 / totalCommitted : 0;
 
-        sink.Section("Heap Fragmentation");
-        sink.Table(["Segment", "Committed", "Live", "Free", "Frag %"], rows);
+        sink.Section("Overall Fragmentation");
         sink.KeyValues([
             ("Total committed",    DumpHelpers.FormatSize(totalCommitted)),
-            ("Total free space",   DumpHelpers.FormatSize(totalFree)),
+            ("Total live",         DumpHelpers.FormatSize(allSegs.Sum(s => s.LiveBytes))),
+            ("Total free",         DumpHelpers.FormatSize(totalFree)),
             ("Overall frag %",     $"{totalFrag:F1}%"),
+            ("Total pinned",       allSegs.Sum(s => s.PinnedCount).ToString("N0")),
         ]);
 
         if (totalFrag >= 40)
-            sink.Alert(AlertLevel.Critical, $"Heap fragmentation is high: {totalFrag:F1}%",
-                advice: "Reduce pinned handles. Use MemoryPool<T> for I/O buffers.");
+            sink.Alert(AlertLevel.Critical, $"Heap fragmentation critical: {totalFrag:F1}%",
+                advice: "Reduce GCHandle.Alloc(Pinned) usage. Use MemoryPool<T> / ArrayPool<T> for I/O buffers. Enable Server GC for large workloads.");
         else if (totalFrag >= 20)
-            sink.Alert(AlertLevel.Warning, $"Heap fragmentation: {totalFrag:F1}%");
+            sink.Alert(AlertLevel.Warning, $"Heap fragmentation elevated: {totalFrag:F1}%");
+
+        // Per-segment table
+        var rows = allSegs.Select(s => {
+            double frag = s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0;
+            return new[]
+            {
+                $"0x{s.Address:X}",
+                s.Kind,
+                DumpHelpers.FormatSize(s.CommittedBytes),
+                DumpHelpers.FormatSize(s.LiveBytes),
+                DumpHelpers.FormatSize(s.FreeBytes),
+                $"{frag:F1}%",
+                s.PinnedCount.ToString("N0"),
+            };
+        }).ToList();
+        sink.Table(
+            ["Segment Addr", "Kind", "Committed", "Live", "Free", "Frag %", "Pinned"],
+            rows, $"{allSegs.Count} segment(s)");
+
+        // Per-segment alerts for hotspot segments
+        foreach (var s in allSegs)
+        {
+            if (s.CommittedBytes <= 0) continue;
+            double frag = s.FreeBytes * 100.0 / s.CommittedBytes;
+            if (frag >= 50)
+                sink.Alert(AlertLevel.Warning,
+                    $"Segment 0x{s.Address:X} ({s.Kind}) is {frag:F0}% fragmented — {s.PinnedCount:N0} pinned object(s)",
+                    advice: s.PinnedCount > 0
+                        ? "Pinned objects prevent compaction. Minimise GCHandle.Alloc(Pinned) lifetime."
+                        : "High free-to-committed ratio. Consider GC.Collect(2, GCCollectionMode.Aggressive) if this is a background issue.");
+        }
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private struct SegInfo(string kind, ulong address, long committed)
+    {
+        public string Kind           = kind;
+        public ulong  Address        = address;
+        public long   CommittedBytes = committed;
+        public long   LiveBytes;
+        public long   FreeBytes;
+        public int    PinnedCount;
     }
 }

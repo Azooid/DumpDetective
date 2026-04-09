@@ -29,29 +29,82 @@ internal static class FinalizerQueueCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, int top = 30)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
+
+        sink.Header(
+            "Dump Detective — Finalizer Queue",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
+
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        // (Count, TotalSize, hasDispose)
+        var stats  = new Dictionary<string, (int Count, long Size, bool HasDispose)>(StringComparer.Ordinal);
+        // Cache IDisposable check per MethodTable
+        var disposeCache = new Dictionary<ulong, bool>();
+
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Reading finalizer queue...", _ =>
         {
             foreach (var obj in ctx.Heap.EnumerateFinalizableObjects())
             {
                 if (!obj.IsValid) continue;
-                var name = obj.Type?.Name ?? "<unknown>";
-                counts.TryGetValue(name, out int c); counts[name] = c + 1;
+                var typeName = obj.Type?.Name ?? "<unknown>";
+                long size    = (long)obj.Size;
+
+                bool hasDispose = false;
+                if (obj.Type is not null)
+                {
+                    if (!disposeCache.TryGetValue(obj.Type.MethodTable, out hasDispose))
+                    {
+                        hasDispose = obj.Type.Methods.Any(m => m.Name == "Dispose");
+                        disposeCache[obj.Type.MethodTable] = hasDispose;
+                    }
+                }
+
+                if (stats.TryGetValue(typeName, out var e))
+                    stats[typeName] = (e.Count + 1, e.Size + size, e.HasDispose || hasDispose);
+                else
+                    stats[typeName] = (1, size, hasDispose);
             }
         });
 
-        int total = counts.Values.Sum();
-        var rows = counts.OrderByDescending(kv => kv.Value).Take(top)
-            .Select(kv => new[] { kv.Key, kv.Value.ToString("N0") }).ToList();
+        int  total     = stats.Values.Sum(v => v.Count);
+        long totalSize = stats.Values.Sum(v => v.Size);
 
-        sink.Section("Finalizer Queue");
-        if (total == 0) { sink.Text("Finalizer queue is empty."); return; }
-        sink.Table(["Type", "Count"], rows, $"Top {rows.Count} types ({total:N0} total)");
+        sink.Section("Finalizer Queue Summary");
+        if (total == 0) { sink.Text("Finalizer queue is empty — no finalizable objects found."); return; }
 
-        if (total > 500) sink.Alert(AlertLevel.Warning, $"{total:N0} objects in finalizer queue.",
-            advice: "Use Dispose() and \"using\" statements to avoid finalizer pressure.");
-        sink.KeyValues([("Total in queue", total.ToString("N0")), ("Distinct types", counts.Count.ToString("N0"))]);
+        sink.KeyValues([
+            ("Total in queue",       total.ToString("N0")),
+            ("Total size estimate",  DumpHelpers.FormatSize(totalSize)),
+            ("Distinct types",       stats.Count.ToString("N0")),
+            ("Types with Dispose()", stats.Count(kv => kv.Value.HasDispose).ToString("N0")),
+        ]);
+
+        // Advisory — always shown, regardless of count
+        sink.Alert(AlertLevel.Info,
+            "All objects in the finalizer queue delay GC collection of their entire retained object graph.",
+            advice: "Call Dispose() / use 'using' statements to avoid finalizer pressure. Finalizers run on a single dedicated thread.");
+
+        if (total >= 500)
+            sink.Alert(AlertLevel.Critical, $"{total:N0} objects pending finalization.",
+                advice: "A large finalizer queue indicates heavy GC pressure. Wrap IDisposable objects in 'using'.");
+        else if (total >= 100)
+            sink.Alert(AlertLevel.Warning, $"{total:N0} objects pending finalization.");
+
+        var rows = stats
+            .OrderByDescending(kv => kv.Value.Size)
+            .Take(top)
+            .Select(kv => new[]
+            {
+                kv.Key,
+                kv.Value.Count.ToString("N0"),
+                DumpHelpers.FormatSize(kv.Value.Size),
+                kv.Value.HasDispose ? "✓" : "—",
+            })
+            .ToList();
+
+        sink.Table(
+            ["Type", "Count", "Total Size", "IDisposable"],
+            rows,
+            $"Top {rows.Count} types by size ({total:N0} total objects)");
     }
 }

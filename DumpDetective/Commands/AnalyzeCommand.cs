@@ -3,7 +3,10 @@ using DumpDetective.Core;
 using DumpDetective.Helpers;
 using DumpDetective.Models;
 using DumpDetective.Output;
+
 using Spectre.Console;
+
+using System.Reflection.Emit;
 
 namespace DumpDetective.Commands;
 
@@ -31,6 +34,7 @@ internal static class AnalyzeCommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         string? dumpPath = null, outputPath = null;
+
         bool full = false;
 
         for (int i = 0; i < args.Length; i++)
@@ -49,8 +53,14 @@ internal static class AnalyzeCommand
         AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .SpinnerStyle(Style.Parse("blue"))
-            .Start($"Running {(full ? "full" : "lightweight")} analysis...", _ =>
-                snap = full ? DumpCollector.CollectFull(dumpPath) : DumpCollector.CollectLightweight(dumpPath));
+            .Start($"Running {(full ? "full" : "lightweight")} analysis on {Markup.Escape(Path.GetFileName(dumpPath))}...", ctx =>
+            {
+                void Upd(string msg) =>
+                    ctx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
+                snap = full
+                    ? DumpCollector.CollectFull(dumpPath, Upd)
+                    : DumpCollector.CollectLightweight(dumpPath, Upd);
+            });
 
         using var sink = IRenderSink.Create(outputPath);
         RenderReport(snap, sink);

@@ -34,54 +34,109 @@ internal static class StaticRefsCommand
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, filter, excludes, showAddr));
     }
 
-    internal static void Render(DumpContext ctx, IRenderSink sink, string? filter = null, HashSet<string>? excludes = null, bool showAddr = false)
+    internal static void Render(DumpContext ctx, IRenderSink sink,
+        string? filter = null, HashSet<string>? excludes = null, bool showAddr = false)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        var appDomain = ctx.Runtime.AppDomains.FirstOrDefault();
-        if (appDomain is null) { sink.Alert(AlertLevel.Warning, "No AppDomain found."); return; }
+        sink.Header(
+            "Dump Detective — Static Reference Fields",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
-        var seen    = new HashSet<ulong>();
-        var results = new List<string[]>();
+        // Enumerate via module type-def map — covers all types, even those with no live instances
+        // (unlike the old heap-object approach which missed never-instantiated static classes).
+        var byDeclType = new Dictionary<string, List<string[]>>(StringComparer.Ordinal);
+        int total = 0;
 
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning static fields...", _ =>
         {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+            foreach (var appDomain in ctx.Runtime.AppDomains)
             {
-                if (!obj.IsValid || obj.Type is null) continue;
-                if (!seen.Add(obj.Type.MethodTable)) continue;
-                var declType = obj.Type.Name ?? "<unknown>";
-                if (DumpHelpers.IsSystemType(declType)) continue;
-                if (excludes?.Any(e => declType.Contains(e, StringComparison.OrdinalIgnoreCase)) == true) continue;
-
-                foreach (var field in obj.Type.StaticFields)
+                foreach (var module in appDomain.Modules)
                 {
-                    if (!field.IsObjectReference) continue;
-                    var fieldName = field.Name ?? "<unknown>";
-                    if (filter != null &&
-                        !declType.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
-                        !fieldName.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
-                    try
+                    foreach (var (mt, _) in module.EnumerateTypeDefToMethodTableMap())
                     {
-                        var value = field.ReadObject(appDomain);
-                        if (value.IsNull || !value.IsValid) continue;
-                        string valType = value.Type?.Name ?? "?";
-                        string addr = showAddr ? $"0x{value.Address:X16}" : "";
-                        results.Add([declType, fieldName, valType, DumpHelpers.FormatSize((long)value.Size), addr]);
+                        if (mt == 0) continue;
+                        var clrType = ctx.Heap.GetTypeByMethodTable(mt);
+                        if (clrType is null) continue;
+
+                        string declType = clrType.Name ?? "<unknown>";
+                        if (DumpHelpers.IsSystemType(declType)) continue;
+                        if (excludes?.Any(e => declType.Contains(e, StringComparison.OrdinalIgnoreCase)) == true) continue;
+
+                        foreach (var field in clrType.StaticFields)
+                        {
+                            if (!field.IsObjectReference) continue;
+                            string fieldName = field.Name ?? "<unknown>";
+
+                            if (filter is not null &&
+                                !declType.Contains(filter, StringComparison.OrdinalIgnoreCase) &&
+                                !fieldName.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
+
+                            try
+                            {
+                                var value = field.ReadObject(appDomain);
+                                if (value.IsNull || !value.IsValid) continue;
+                                string valType  = value.Type?.Name ?? "?";
+                                string sizeStr  = DumpHelpers.FormatSize((long)value.Size);
+                                string isCol    = IsCollection(valType) ? "✓" : "—";
+                                string addrStr  = showAddr ? $"0x{value.Address:X16}" : "";
+
+                                var row = showAddr
+                                    ? new[] { fieldName, valType, sizeStr, isCol, addrStr }
+                                    : new[] { fieldName, valType, sizeStr, isCol };
+
+                                if (!byDeclType.TryGetValue(declType, out var list))
+                                {
+                                    list = [];
+                                    byDeclType[declType] = list;
+                                }
+                                list.Add(row);
+                                total++;
+                            }
+                            catch { }
+                        }
                     }
-                    catch { }
                 }
             }
         });
 
         sink.Section("Non-Null Static Reference Fields");
-        if (results.Count == 0) { sink.Text("No non-null static reference fields found."); return; }
+        if (total == 0) { sink.Text("No non-null static reference fields found."); return; }
+
+        sink.KeyValues([
+            ("Declaring types",  byDeclType.Count.ToString("N0")),
+            ("Static fields",    total.ToString("N0")),
+            ("Collection fields", byDeclType.Values.SelectMany(v => v).Count(r => r[3] == "✓").ToString("N0")),
+        ]);
+
+        sink.Alert(AlertLevel.Info,
+            "Static object references are permanent GC roots — they keep entire object graphs alive for the process lifetime.",
+            advice: "Prefer scoped DI registrations over static state. Use WeakReference<T> for caches.");
 
         string[] headers = showAddr
-            ? ["Declaring Type", "Field", "Value Type", "Size", "Address"]
-            : ["Declaring Type", "Field", "Value Type", "Size"];
-        var rows = results.Select(r => showAddr ? r : r[..4]).ToList();
-        sink.Table(headers, rows, $"{results.Count} static fields");
+            ? ["Field", "Value Type", "Size", "Collection?", "Address"]
+            : ["Field", "Value Type", "Size", "Collection?"];
+
+        foreach (var kvp in byDeclType.OrderByDescending(kv => kv.Value.Count))
+        {
+            bool hasCollection = kvp.Value.Any(r => r[3] == "✓");
+            sink.BeginDetails(
+                $"{kvp.Key}  —  {kvp.Value.Count} field(s)" + (hasCollection ? "  ⚠ has collection" : ""),
+                open: hasCollection || kvp.Value.Count > 5);
+            sink.Table(headers, kvp.Value);
+            sink.EndDetails();
+        }
     }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    static bool IsCollection(string typeName) =>
+        typeName.Contains("List<",       StringComparison.Ordinal) ||
+        typeName.Contains("Dictionary<", StringComparison.Ordinal) ||
+        typeName.Contains("HashSet<",    StringComparison.Ordinal) ||
+        typeName.Contains("Queue<",      StringComparison.Ordinal) ||
+        typeName.Contains("Stack<",      StringComparison.Ordinal) ||
+        typeName.Contains("ConcurrentDictionary<", StringComparison.Ordinal) ||
+        typeName.EndsWith("[]",          StringComparison.Ordinal);
 }
