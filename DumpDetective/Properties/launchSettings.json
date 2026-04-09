@@ -1,0 +1,120 @@
+{
+  "profiles": {
+    "event-analysis": {
+      "commandName": "Project",
+      "commandLineArgs": "event-analysis -e \"SNINativeMethodWrapper\""
+    },
+    "event-analysis (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "event-analysis -e \"SNINativeMethodWrapper\" --addresses"
+    },
+    "heap-stats": {
+      "commandName": "Project",
+      "commandLineArgs": "heap-stats --top 50"
+    },
+    "heap-stats (filter app)": {
+      "commandName": "Project",
+      "commandLineArgs": "heap-stats --top 30 --filter \".\" --min-size 1024"
+    },
+    "large-objects": {
+      "commandName": "Project",
+      "commandLineArgs": "large-objects --top 50"
+    },
+    "large-objects (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "large-objects --top 20 --addresses"
+    },
+    "string-duplicates": {
+      "commandName": "Project",
+      "commandLineArgs": "string-duplicates --top 50"
+    },
+    "string-duplicates (high waste only)": {
+      "commandName": "Project",
+      "commandLineArgs": "string-duplicates --top 20 --min-count 10 --min-waste 10240"
+    },
+    "thread-analysis": {
+      "commandName": "Project",
+      "commandLineArgs": "thread-analysis"
+    },
+    "thread-analysis (with stacks)": {
+      "commandName": "Project",
+      "commandLineArgs": "thread-analysis --stacks"
+    },
+    "thread-analysis (blocked only)": {
+      "commandName": "Project",
+      "commandLineArgs": "thread-analysis --stacks --blocked-only"
+    },
+    "deadlock-detection": {
+      "commandName": "Project",
+      "commandLineArgs": "deadlock-detection"
+    },
+    "exception-analysis": {
+      "commandName": "Project",
+      "commandLineArgs": "exception-analysis"
+    },
+    "exception-analysis (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "exception-analysis --addresses"
+    },
+    "gc-roots (ServiceHost)": {
+      "commandName": "Project",
+      "commandLineArgs": "gc-roots --type ServiceHost --max-results 5"
+    },
+    "gc-roots (ChannelDispatcher)": {
+      "commandName": "Project",
+      "commandLineArgs": "gc-roots --type ChannelDispatcher --max-results 5 --addresses"
+    },
+    "static-refs": {
+      "commandName": "Project",
+      "commandLineArgs": "static-refs"
+    },
+    "static-refs (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "static-refs --addresses"
+    },
+    "http-requests": {
+      "commandName": "Project",
+      "commandLineArgs": "http-requests"
+    },
+    "http-requests (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "http-requests --addresses"
+    },
+    "timer-leaks": {
+      "commandName": "Project",
+      "commandLineArgs": "timer-leaks"
+    },
+    "timer-leaks (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "timer-leaks --addresses"
+    },
+    "analyze": {
+      "commandName": "Project",
+      "commandLineArgs": "analyze"
+    },
+    "analyze (to html)": {
+      "commandName": "Project",
+      "commandLineArgs": "analyze --output report.html"
+    },
+    "analyze (to markdown)": {
+      "commandName": "Project",
+      "commandLineArgs": "analyze --output report.md"
+    },
+    "trend-analysis (2 dumps lightweight)": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_11_44_57AM__871__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_12_58_17PM__219__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\""
+    },
+    "trend-analysis (2 dumps full)": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_11_44_57AM__871__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_12_58_17PM__219__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --full --ignore-event \"SNINativeMethodWrapper\""
+    },
+    "trend-analysis (to html)": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --output trend.html"
+    },
+    "trend-analysis (from list file)": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis --list dumps.txt --output trend.html"
+    }
+  }
+}
