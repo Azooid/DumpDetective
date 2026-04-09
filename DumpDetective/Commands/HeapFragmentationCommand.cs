@@ -126,6 +126,55 @@ internal static class HeapFragmentationCommand
                         ? "Pinned objects prevent compaction. Minimise GCHandle.Alloc(Pinned) lifetime."
                         : "High free-to-committed ratio. Consider GC.Collect(2, GCCollectionMode.Aggressive) if this is a background issue.");
         }
+
+        // Free-object distribution — top types by free-space consumption
+        sink.Section("Free Object (Holes) Distribution");
+        var freeObjStats = new Dictionary<int, (long Count, long Size)>();
+        foreach (var obj in ctx.Heap.EnumerateObjects())
+        {
+            if (!obj.IsValid || obj.Type != freeType) continue;
+            long sz = (long)obj.Size;
+            // Bucket by size order of magnitude
+            int bucket = sz switch
+            {
+                < 128        => 0,
+                < 1024       => 1,
+                < 4096       => 2,
+                < 65536      => 3,
+                < 1048576    => 4,
+                _            => 5,
+            };
+            if (!freeObjStats.TryGetValue(bucket, out var bv)) bv = (0, 0);
+            freeObjStats[bucket] = (bv.Count + 1, bv.Size + sz);
+        }
+        if (freeObjStats.Count > 0)
+        {
+            var freeRows = freeObjStats
+                .OrderBy(kv => kv.Key)
+                .Select(kv =>
+                {
+                    string range = kv.Key switch
+                    {
+                        0 => "< 128 B",
+                        1 => "128 B – 1 KB",
+                        2 => "1 KB – 4 KB",
+                        3 => "4 KB – 64 KB",
+                        4 => "64 KB – 1 MB",
+                        _ => "≥ 1 MB",
+                    };
+                    return new[] { range, kv.Value.Count.ToString("N0"), DumpHelpers.FormatSize(kv.Value.Size) };
+                })
+                .ToList();
+            int largeFreeCount = freeObjStats
+                .Where(kv => kv.Key >= 4)
+                .Sum(kv => (int)kv.Value.Count);
+            sink.Table(["Free Hole Size", "Count", "Total Size"], freeRows,
+                "Smaller/more-numerous holes = harder to compact");
+            if (largeFreeCount > 10)
+                sink.Alert(AlertLevel.Warning,
+                    $"{largeFreeCount} free holes ≥ 64 KB — large gaps can be re-used by LOH allocations.",
+                    "Large free holes often indicate recently freed large arrays or strings.");
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

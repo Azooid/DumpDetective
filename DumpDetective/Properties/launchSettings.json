@@ -2,115 +2,207 @@
   "profiles": {
     "event-analysis": {
       "commandName": "Project",
-      "commandLineArgs": "event-analysis -e \"SNINativeMethodWrapper\""
+      "commandLineArgs": "event-analysis -e \"SNINativeMethodWrapper\" --output event-analysis.html"
     },
     "event-analysis (with addresses)": {
       "commandName": "Project",
-      "commandLineArgs": "event-analysis -e \"SNINativeMethodWrapper\" --addresses"
+      "commandLineArgs": "event-analysis  -e \"SNINativeMethodWrapper\" --addresses --output event-analysis.html"
     },
     "heap-stats": {
       "commandName": "Project",
-      "commandLineArgs": "heap-stats --top 50"
+      "commandLineArgs": "heap-stats --top 50 --output heap-stats.html"
     },
     "heap-stats (filter app)": {
       "commandName": "Project",
-      "commandLineArgs": "heap-stats --top 30 --filter \".\" --min-size 1024"
+      "commandLineArgs": "heap-stats  --top 30 --filter \".\" --min-size 1024 --output heap-stats.html"
     },
     "large-objects": {
       "commandName": "Project",
-      "commandLineArgs": "large-objects --top 50"
+      "commandLineArgs": "large-objects --top 50 --output large-objects.html"
     },
     "large-objects (with addresses)": {
       "commandName": "Project",
-      "commandLineArgs": "large-objects --top 20 --addresses"
+      "commandLineArgs": "large-objects  --top 20 --addresses --output large-objects.html"
     },
     "string-duplicates": {
       "commandName": "Project",
-      "commandLineArgs": "string-duplicates --top 50"
+      "commandLineArgs": "string-duplicates --top 50 --output string-duplicates.html"
     },
     "string-duplicates (high waste only)": {
       "commandName": "Project",
-      "commandLineArgs": "string-duplicates --top 20 --min-count 10 --min-waste 10240"
+      "commandLineArgs": "string-duplicates --top 20 --min-count 10 --min-waste 10240 --output string-duplicates.html"
     },
     "thread-analysis": {
       "commandName": "Project",
-      "commandLineArgs": "thread-analysis"
+      "commandLineArgs": "thread-analysis --output thread-analysis.html"
     },
     "thread-analysis (with stacks)": {
       "commandName": "Project",
-      "commandLineArgs": "thread-analysis --stacks"
+      "commandLineArgs": "thread-analysis --stacks --output thread-analysis.html"
     },
     "thread-analysis (blocked only)": {
       "commandName": "Project",
-      "commandLineArgs": "thread-analysis --stacks --blocked-only"
+      "commandLineArgs": "thread-analysis --stacks --blocked-only --output thread-analysis.html"
     },
     "deadlock-detection": {
       "commandName": "Project",
-      "commandLineArgs": "deadlock-detection"
+      "commandLineArgs": "deadlock-detection --output deadlock-detection.html"
     },
     "exception-analysis": {
       "commandName": "Project",
-      "commandLineArgs": "exception-analysis"
+      "commandLineArgs": "exception-analysis --output exception-analysis.html"
     },
     "exception-analysis (with addresses)": {
       "commandName": "Project",
-      "commandLineArgs": "exception-analysis --addresses"
+      "commandLineArgs": "exception-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --addresses --stack --output exception-analysis.html"
     },
     "gc-roots (ServiceHost)": {
       "commandName": "Project",
-      "commandLineArgs": "gc-roots --type ServiceHost --max-results 5"
+      "commandLineArgs": "gc-roots --type ServiceHost --max-results 50 --output gc-roots.html"
     },
     "gc-roots (ChannelDispatcher)": {
       "commandName": "Project",
-      "commandLineArgs": "gc-roots --type ChannelDispatcher --max-results 5 --addresses"
+      "commandLineArgs": "gc-roots --type ChannelDispatcher --max-results 5 --addresses --output gc-roots.html"
     },
     "static-refs": {
       "commandName": "Project",
-      "commandLineArgs": "static-refs"
+      "commandLineArgs": "static-refs --output static-refs.html"
     },
     "static-refs (with addresses)": {
       "commandName": "Project",
-      "commandLineArgs": "static-refs --addresses"
+      "commandLineArgs": "static-refs --addresses --output static-refs.html"
     },
     "http-requests": {
       "commandName": "Project",
-      "commandLineArgs": "http-requests"
+      "commandLineArgs": "http-requests --output http-requests.html"
     },
     "http-requests (with addresses)": {
       "commandName": "Project",
-      "commandLineArgs": "http-requests --addresses"
+      "commandLineArgs": "http-requests --addresses --output http-requests.html"
     },
     "timer-leaks": {
       "commandName": "Project",
-      "commandLineArgs": "timer-leaks"
+      "commandLineArgs": "timer-leaks --output timer-leaks.html"
     },
     "timer-leaks (with addresses)": {
       "commandName": "Project",
-      "commandLineArgs": "timer-leaks --addresses"
+      "commandLineArgs": "timer-leaks --addresses --output timer-leaks.html"
     },
     "analyze": {
       "commandName": "Project",
-      "commandLineArgs": "analyze"
-    },
-    "analyze (to html)": {
-      "commandName": "Project",
       "commandLineArgs": "analyze --output report.html"
     },
-    "analyze (to markdown)": {
+    "async-stacks": {
       "commandName": "Project",
-      "commandLineArgs": "analyze --output report.md"
+      "commandLineArgs": "async-stacks --output async-stacks.html"
+    },
+    "async-stacks (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "async-stacks --addresses --output async-stacks.html"
+    },
+    "async-stacks (filter WcfService)": {
+      "commandName": "Project",
+      "commandLineArgs": "async-stacks --filter WcfService --top 50 --output async-stacks.html"
+    },
+    "connection-pool": {
+      "commandName": "Project",
+      "commandLineArgs": "connection-pool --output connection-pool.html"
+    },
+    "connection-pool (with call stacks)": {
+      "commandName": "Project",
+      "commandLineArgs": "connection-pool --addresses --output connection-pool.html"
+    },
+    "finalizer-queue": {
+      "commandName": "Project",
+      "commandLineArgs": "finalizer-queue --output finalizer-queue.html"
+    },
+    "finalizer-queue (top 50)": {
+      "commandName": "Project",
+      "commandLineArgs": "finalizer-queue --top 50 --output finalizer-queue.html"
+    },
+    "gen-summary": {
+      "commandName": "Project",
+      "commandLineArgs": "gen-summary --output gen-summary.html"
+    },
+    "handle-table": {
+      "commandName": "Project",
+      "commandLineArgs": "handle-table --output handle-table.html"
+    },
+    "handle-table (filter Strong)": {
+      "commandName": "Project",
+      "commandLineArgs": "handle-table --filter Strong --output handle-table.html"
+    },
+    "heap-fragmentation": {
+      "commandName": "Project",
+      "commandLineArgs": "heap-fragmentation --output heap-fragmentation.html"
+    },
+    "module-list": {
+      "commandName": "Project",
+      "commandLineArgs": "module-list --output module-list.html"
+    },
+    "module-list (app only)": {
+      "commandName": "Project",
+      "commandLineArgs": "module-list --app-only --output module-list.html"
+    },
+    "object-inspect": {
+      "commandName": "Project",
+      "commandLineArgs": "object-inspect --address 0x0000000000000000 --output object-inspect.html"
+    },
+    "object-inspect (deep)": {
+      "commandName": "Project",
+      "commandLineArgs": "object-inspect --address 0x0000000000000000 --depth 3 --output object-inspect.html"
+    },
+    "pinned-objects": {
+      "commandName": "Project",
+      "commandLineArgs": "pinned-objects --output pinned-objects.html"
+    },
+    "pinned-objects (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "pinned-objects --addresses --output pinned-objects.html"
+    },
+    "thread-pool": {
+      "commandName": "Project",
+      "commandLineArgs": "thread-pool --output thread-pool.html"
+    },
+    "type-instances (Exception)": {
+      "commandName": "Project",
+      "commandLineArgs": "type-instances --type Exception --top 50 --output type-instances.html"
+    },
+    "type-instances (Exception with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "type-instances --type Exception --top 50 --addresses --output type-instances.html"
+    },
+    "type-instances (gen2 large)": {
+      "commandName": "Project",
+      "commandLineArgs": "type-instances --type ServiceHost --gen 2 --min-size 1024 --output type-instances.html"
+    },
+    "wcf-channels": {
+      "commandName": "Project",
+      "commandLineArgs": "wcf-channels --output wcf-channels.html"
+    },
+    "wcf-channels (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "wcf-channels --addresses --output wcf-channels.html"
+    },
+    "weak-refs": {
+      "commandName": "Project",
+      "commandLineArgs": "weak-refs --output weak-refs.html"
+    },
+    "weak-refs (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "weak-refs --addresses --output weak-refs.html"
     },
     "trend-analysis (2 dumps lightweight)": {
       "commandName": "Project",
-      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_11_44_57AM__871__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_12_58_17PM__219__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\""
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\" --output trend.html"
     },
     "trend-analysis (2 dumps full)": {
       "commandName": "Project",
-      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_11_44_57AM__871__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_12_58_17PM__219__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --full --ignore-event \"SNINativeMethodWrapper\""
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\"--full --ignore-event \"SNINativeMethodWrapper\" --output trend.html"
     },
     "trend-analysis (to html)": {
       "commandName": "Project",
-      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --output trend.html"
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.html"
     },
     "trend-analysis (from list file)": {
       "commandName": "Project",

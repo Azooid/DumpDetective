@@ -105,5 +105,41 @@ internal static class GenSummaryCommand
                         "Review object lifetimes — use object pooling for frequently allocated types.");
 
         sink.Table(["Segment Address", "Kind", "Committed"], segRows, $"{segRows.Count} segment(s)");
+
+        // ── Frozen / POH detail ──────────────────────────────────────────────
+        if (frozen > 0 || poh > 0)
+        {
+            sink.Section("Frozen Segment & POH Detail");
+            if (frozen > 0)
+                sink.Alert(AlertLevel.Info,
+                    $"Frozen segment: {DumpHelpers.FormatSize(frozen)}.",
+                    "Frozen segments contain string literals and other read-only data mapped from PE images. " +
+                    "This memory is shared between processes and cannot be freed until the AppDomain is unloaded.");
+            if (poh > 0)
+                sink.Alert(AlertLevel.Info,
+                    $"POH (Pinned Object Heap): {DumpHelpers.FormatSize(poh)}.",
+                    "The POH segregates pinned objects to reduce fragmentation of Gen0/Gen1/Gen2. " +
+                    "Objects allocated with MemoryPool<T> / ArrayPool<T> and pinned for I/O land here.",
+                    "If POH is unexpectedly large, audit pinned buffer sizes and lifetimes.");
+
+            // Count objects in Frozen and POH segments
+            if (ctx.Heap.CanWalkHeap)
+            {
+                long frozenObj = 0, pohObj = 0;
+                long frozenSize = 0, pohSize = 0;
+                foreach (var obj in ctx.Heap.EnumerateObjects())
+                {
+                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
+                    if (seg is null) continue;
+                    if (seg.Kind == GCSegmentKind.Frozen) { frozenObj++; frozenSize += (long)obj.Size; }
+                    if (seg.Kind == GCSegmentKind.Pinned) { pohObj++;    pohSize    += (long)obj.Size; }
+                }
+                sink.KeyValues([
+                    ("Frozen objects",     $"{frozenObj:N0}  ({DumpHelpers.FormatSize(frozenSize)})"),
+                    ("POH objects",        $"{pohObj:N0}  ({DumpHelpers.FormatSize(pohSize)})"),
+                ]);
+            }
+        }
     }
 }

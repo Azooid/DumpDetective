@@ -128,6 +128,36 @@ internal static class StringDuplicatesCommand
             ["Count", "Wasted", "Total", "Length", "Pattern", "Value"],
             rows,
             $"Top {rows.Count} duplicate groups by wasted bytes" + (pattern is not null ? $" (filter={pattern})" : ""));
+
+        // ── Interning candidates ───────────────────────────────────────────────
+        // Short strings (≤50 chars) with ≥100 copies are ideal string.Intern() candidates
+        var internCandidates = candidates
+            .Where(r => r.Count >= 100 && r.Len <= 50 && r.Hint is not "guid" and not "stackframe")
+            .OrderByDescending(r => r.Wasted)
+            .Take(20)
+            .ToList();
+        if (internCandidates.Count > 0)
+        {
+            sink.Section("Interning Candidates");
+            sink.Alert(AlertLevel.Info,
+                $"{internCandidates.Count} short string(s) duplicated 100+ times — prime candidates for string.Intern().",
+                "string.Intern() returns a single canonical instance from an intern pool, eliminating duplicates.",
+                "Use sparingly: interned strings live until AppDomain unload. Prefer compile-time constants for fixed identifiers.");
+            var internRows = internCandidates.Select(r =>
+            {
+                string display = r.Value.Length > 60 ? r.Value[..60] + "…" : r.Value;
+                display = display.Replace("\r", "\\r").Replace("\n", "\\n");
+                return new[]
+                {
+                    r.Count.ToString("N0"),
+                    DumpHelpers.FormatSize(r.Wasted),
+                    r.Len.ToString("N0"),
+                    $"\"{display}\"",
+                };
+            }).ToList();
+            sink.Table(["Copies", "Wasted", "Length", "Value"], internRows,
+                "Short strings duplicated ≥ 100 times");
+        }
     }
 
     // ── Pattern classification ─────────────────────────────────────────────

@@ -1,6 +1,7 @@
 using DumpDetective.Core;
 using DumpDetective.Helpers;
 using DumpDetective.Output;
+using Microsoft.Diagnostics.Runtime;
 using Spectre.Console;
 
 namespace DumpDetective.Commands;
@@ -124,5 +125,45 @@ internal static class LargeObjectsCommand
             .OrderByDescending(r => r[2])
             .ToList();
         sink.Table(["Segment", "Objects", "Total Size"], bySegment, "By segment");
+
+        // ── LOH free space analysis ───────────────────────────────────────────
+        sink.Section("LOH Free Space Analysis");
+        long lohCommitted = 0, lohFree = 0, lohLive = 0;
+        var  freeType     = ctx.Heap.FreeType;
+        foreach (var seg in ctx.Heap.Segments.Where(s => s.Kind == GCSegmentKind.Large))
+            lohCommitted += (long)seg.CommittedMemory.Length;
+
+        if (lohCommitted > 0)
+        {
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid) continue;
+                var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
+                if (seg?.Kind != GCSegmentKind.Large) continue;
+                long size = (long)obj.Size;
+                if (obj.Type == freeType) lohFree += size;
+                else                      lohLive += size;
+            }
+            double lohFragPct = lohCommitted > 0 ? lohFree * 100.0 / lohCommitted : 0;
+            sink.KeyValues([
+                ("LOH committed",      DumpHelpers.FormatSize(lohCommitted)),
+                ("LOH live objects",   DumpHelpers.FormatSize(lohLive)),
+                ("LOH free (holes)",   DumpHelpers.FormatSize(lohFree)),
+                ("LOH fragmentation",  $"{lohFragPct:F1}%"),
+            ]);
+            if (lohFragPct >= 50)
+                sink.Alert(AlertLevel.Critical,
+                    $"LOH is {lohFragPct:F0}% fragmented. Reuse of large arrays is being prevented by holes.",
+                    "LOH is not compacted by default. Fragmented LOH wastes virtual address space.",
+                    "Use ArrayPool<T>.Shared, MemoryPool<T>, or enable GCSettings.LargeObjectHeapCompactionMode.");
+            else if (lohFragPct >= 25)
+                sink.Alert(AlertLevel.Warning,
+                    $"LOH fragmentation at {lohFragPct:F0}%. Monitor for growth.",
+                    advice: "Consider ArrayPool<byte>.Shared for large temporary buffers.");
+        }
+        else
+        {
+            sink.Text("No LOH segments found.");
+        }
     }
 }

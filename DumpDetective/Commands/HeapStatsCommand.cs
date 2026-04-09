@@ -17,6 +17,7 @@ internal static class HeapStatsCommand
           -s, --min-size <bytes>     Minimum total size to include
           -f, --filter <name>        Only show types whose name contains <name>
           --gen <0|1|2|loh|poh>      Filter to a specific generation
+          --sort-by <size|count>     Sort order (default: size)
           -o, --output <file>        Write report to file (.md / .html / .txt)
           -h, --help                 Show this help
         """;
@@ -25,7 +26,7 @@ internal static class HeapStatsCommand
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        int top = 50; long minSize = 0; string? filter = null; string? genFilter = null;
+        int top = 50; long minSize = 0; string? filter = null; string? genFilter = null; string sortBy = "size";
         var (dumpPath, output) = CommandBase.ParseCommon(args);
 
         for (int i = 0; i < args.Length; i++)
@@ -33,14 +34,15 @@ internal static class HeapStatsCommand
             if ((args[i] is "--top"      or "-n") && i + 1 < args.Length) int.TryParse(args[++i], out top);
             else if ((args[i] is "--min-size" or "-s") && i + 1 < args.Length) long.TryParse(args[++i], out minSize);
             else if ((args[i] is "--filter"   or "-f") && i + 1 < args.Length) filter = args[++i];
-            else if (args[i] == "--gen" && i + 1 < args.Length) genFilter = args[++i].ToLowerInvariant();
+            else if (args[i] == "--gen"      && i + 1 < args.Length) genFilter = args[++i].ToLowerInvariant();
+            else if (args[i] == "--sort-by"  && i + 1 < args.Length) sortBy    = args[++i].ToLowerInvariant();
         }
 
-        return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, top, minSize, filter, genFilter));
+        return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, top, minSize, filter, genFilter, sortBy));
     }
 
     internal static void Render(DumpContext ctx, IRenderSink sink, int top = 50, long minSize = 0,
-                                string? filter = null, string? genFilter = null)
+                                string? filter = null, string? genFilter = null, string sortBy = "size")
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
 
@@ -106,7 +108,7 @@ internal static class HeapStatsCommand
 
         var ordered = stats
             .Where(kv => kv.Value.Size >= minSize)
-            .OrderByDescending(kv => kv.Value.Size)
+            .OrderByDescending(kv => sortBy == "count" ? kv.Value.Count : kv.Value.Size)
             .Take(top)
             .ToList();
 
@@ -122,7 +124,7 @@ internal static class HeapStatsCommand
         sink.Section("Heap Statistics");
         if (rows.Count == 0) { sink.Text("No types match the specified filters."); return; }
         sink.Table(["Type", "Gen", "Count", "Total Size", "% of Heap"], rows,
-            $"Top {rows.Count} types by size" + (genFilter is not null ? $" (gen={genFilter})" : ""));
+            $"Top {rows.Count} types by {sortBy}" + (genFilter is not null ? $" (gen={genFilter})" : ""));
 
         sink.KeyValues(
         [

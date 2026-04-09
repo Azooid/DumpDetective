@@ -144,6 +144,19 @@ internal static class HttpRequestsCommand
                 .ToList();
             if (reqRows.Count > 0)
                 sink.Table(["Method", "URI", "Size"], reqRows, $"First {reqRows.Count} requests with URI");
+
+            // ── URL scheme+host prefix grouping ───────────────────────────────
+            var prefixGroups = requests
+                .Where(r => r.Uri.Length > 0)
+                .GroupBy(r => ExtractHostPrefix(r.Uri))
+                .Where(g => g.Key.Length > 0)
+                .OrderByDescending(g => g.Count())
+                .Take(20)
+                .Select(g => new[] { g.Key, g.Count().ToString("N0"), DumpHelpers.FormatSize(g.Sum(r => r.Size)) })
+                .ToList();
+            if (prefixGroups.Count > 0)
+                sink.Table(["Host (scheme://host)", "Request Count", "Total Size"], prefixGroups,
+                    "Grouped by destination host — identifies chattiest endpoints");
         }
 
         // ── Response status code distribution ─────────────────────────────────
@@ -231,4 +244,17 @@ internal static class HttpRequestsCommand
         >= 500           => "5xx Server Error",
         _                => "",
     };
+
+    static string ExtractHostPrefix(string uri)
+    {
+        try
+        {
+            if (Uri.TryCreate(uri, UriKind.Absolute, out var u))
+                return $"{u.Scheme}://{u.Host}{(u.IsDefaultPort ? "" : $":{u.Port}")}";
+        }
+        catch { }
+        // Fallback: just return up to the 3rd slash
+        int third = uri.IndexOf('/', uri.IndexOf("//", StringComparison.Ordinal) + 2);
+        return third > 0 ? uri[..third] : uri;
+    }
 }

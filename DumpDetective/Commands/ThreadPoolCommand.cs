@@ -125,6 +125,17 @@ internal static class ThreadPoolCommand
                             "Check for long-running tasks blocking TP threads.");
             else if (waitingToRun > 100)
                 sink.Alert(AlertLevel.Warning, $"{waitingToRun:N0} tasks waiting to run.");
+            else if (waitingToRun > 0 && tp is not null)
+            {
+                // Saturation ratio: queue depth vs. worker headroom
+                int headroom = Math.Max(tp.MaxThreads - tp.ActiveWorkerThreads, 1);
+                double ratio = (double)waitingToRun / headroom;
+                if (ratio > 5.0)
+                    sink.Alert(AlertLevel.Warning,
+                        $"{waitingToRun:N0} queued tasks vs {headroom} idle workers (ratio {ratio:F1}×) — potential burst.",
+                        "Queue depth is 5× available workers. A thread-injection delay may create latency spikes.",
+                        "Profile with dotnet-trace or PerfView to confirm thread-starvation patterns.");
+            }
 
             int faulted = taskStateCounts["Faulted"];
             if (faulted > 0)

@@ -94,8 +94,7 @@ static string[] InjectDumpPath(string[] commandArgs)
 static bool IsDumpArg(string a) =>
     !a.StartsWith('-') &&
     (a.EndsWith(".dmp",  StringComparison.OrdinalIgnoreCase) ||
-     a.EndsWith(".mdmp", StringComparison.OrdinalIgnoreCase) ||
-     File.Exists(a));
+     a.EndsWith(".mdmp", StringComparison.OrdinalIgnoreCase));
 
 static int UnknownCommand(string name)
 {

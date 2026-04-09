@@ -77,15 +77,23 @@ internal static class WeakRefsCommand
         if (aliveByType.Count > 0)
             sink.Table(["Alive Object Type", "Count"], aliveByType, "Top types currently alive via weak reference");
 
-        // Collected handles
+        // Collected handles — show by weak ref kind breakdown + aging advisory
         int collectedByShort = refs.Count(r => !r.Alive && r.Kind == "WeakShort");
         int collectedByLong  = refs.Count(r => !r.Alive && r.Kind == "WeakLong");
         if (collectedCount > 0)
+        {
             sink.KeyValues([
-                ("Collected (WeakShort)", collectedByShort.ToString("N0")),
-                ("Collected (WeakLong)",  collectedByLong.ToString("N0")),
+                ("Collected (WeakShort)", $"{collectedByShort:N0}  (tracking-resurrection disabled)"),
+                ("Collected (WeakLong)",  $"{collectedByLong:N0}  (tracking-resurrection enabled)"),
                 ("Note", "Collected object types are unavailable — object graphs were reclaimed by GC"),
             ]);
+
+            if (collectedByLong > collectedByShort && collectedByLong > 100)
+                sink.Alert(AlertLevel.Info,
+                    $"{collectedByLong:N0} WeakLong handles with collected targets — these prevent resurrection tracking.",
+                    "WeakLong handles keep the object's finalizer-resurrection reference alive longer than needed.",
+                    "Prefer WeakReference<T>(trackResurrection: false) unless you need post-finalize tracking.");
+        }
 
         if (showAddr && refs.Count > 0)
         {

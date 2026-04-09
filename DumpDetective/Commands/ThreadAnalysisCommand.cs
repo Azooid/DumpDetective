@@ -15,6 +15,7 @@ internal static class ThreadAnalysisCommand
         Options:
           -s, --stacks          Show top-10 stack frames per thread (collapsible in HTML)
           -b, --blocked-only    Show only threads that appear blocked
+          --name <substr>       Filter by thread name (case-insensitive)
           -o, --output <file>   Write report to file (.md / .html / .txt)
           -h, --help            Show this help
         """;
@@ -24,17 +25,21 @@ internal static class ThreadAnalysisCommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         bool showStacks = false, blockedOnly = false;
+        string? nameFilter = null;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
-        foreach (var a in args)
+        for (int i = 0; i < args.Length; i++)
         {
-            if (a is "--stacks"       or "-s") showStacks  = true;
-            if (a is "--blocked-only" or "-b") blockedOnly = true;
+            if (args[i] is "--stacks"       or "-s") showStacks  = true;
+            else if (args[i] is "--blocked-only" or "-b") blockedOnly = true;
+            else if (args[i] == "--name" && i + 1 < args.Length) nameFilter = args[++i];
         }
 
-        return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, showStacks, blockedOnly));
+        return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, showStacks, blockedOnly, nameFilter));
     }
 
-    internal static void Render(DumpContext ctx, IRenderSink sink, bool showStacks = false, bool blockedOnly = false)
+    internal static void Render(DumpContext ctx, IRenderSink sink,
+                                bool showStacks = false, bool blockedOnly = false,
+                                string? nameFilter = null)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
 
@@ -47,7 +52,13 @@ internal static class ThreadAnalysisCommand
         // Build ManagedThreadId → thread name by scanning managed Thread objects on heap
         var threadNames = BuildThreadNameMap(ctx);
 
-        var toShow = blockedOnly ? threads.Where(IsLikelyBlocked).ToList() : threads;
+        var toShow = threads.AsEnumerable();
+        if (blockedOnly)  toShow = toShow.Where(IsLikelyBlocked);
+        if (nameFilter is not null)
+            toShow = toShow.Where(t =>
+                threadNames.TryGetValue(t.ManagedThreadId, out var n) &&
+                n.Contains(nameFilter, StringComparison.OrdinalIgnoreCase));
+        var toShowList = toShow.ToList();
 
         int blockedCount = threads.Count(IsLikelyBlocked);
 
@@ -55,11 +66,21 @@ internal static class ThreadAnalysisCommand
         sink.KeyValues(
         [
             ("Total threads",   threads.Count.ToString("N0")),
+            ("Alive",           threads.Count(t => t.IsAlive).ToString("N0")),
             ("Likely blocked",  blockedCount.ToString("N0")),
             ("With exception",  threads.Count(t => t.CurrentException is not null).ToString("N0")),
             ("GC cooperative",  threads.Count(t => t.GCMode == GCMode.Cooperative).ToString("N0")),
             ("Named threads",   threadNames.Count.ToString("N0")),
         ]);
+
+        // Thread category breakdown
+        var categories = threads
+            .GroupBy(t => ClassifyThread(t, threadNames))
+            .OrderByDescending(g => g.Count())
+            .Select(g => new[] { g.Key, g.Count().ToString("N0") })
+            .ToList();
+        if (categories.Count > 1)
+            sink.Table(["Category", "Count"], categories, "Thread categories");
 
         if (blockedCount >= threads.Count / 2 && threads.Count > 4)
             sink.Alert(AlertLevel.Critical, $"{blockedCount} of {threads.Count} threads are blocked.",
@@ -67,47 +88,51 @@ internal static class ThreadAnalysisCommand
         else if (blockedCount > 0)
             sink.Alert(AlertLevel.Warning, $"{blockedCount} thread(s) appear blocked on synchronization primitives.");
 
-        if (toShow.Count == 0) { sink.Text("No threads match the filter."); return; }
+        if (toShowList.Count == 0) { sink.Text("No threads match the filter."); return; }
 
         string sectionTitle = blockedOnly
-            ? $"Blocked Threads ({toShow.Count})"
-            : $"All Threads ({toShow.Count})";
+            ? $"Blocked Threads ({toShowList.Count})"
+            : nameFilter is not null
+                ? $"Filtered Threads ({toShowList.Count})"
+                : $"All Threads ({toShowList.Count})";
 
         if (!showStacks)
         {
             sink.Section(sectionTitle);
             var rows = new List<string[]>();
-            foreach (var t in toShow)
+            foreach (var t in toShowList)
             {
                 threadNames.TryGetValue(t.ManagedThreadId, out string? threadName);
                 string ex       = FormatException(t.CurrentException);
                 string lockInfo = GetLockInfo(t);
+                string category = ClassifyThread(t, threadNames);
                 rows.Add([
                     $"{t.ManagedThreadId}",
                     $"{t.OSThreadId}",
                     threadName ?? "",
-                    t.State.ToString(),
+                    category,
                     t.GCMode.ToString(),
                     ex,
                     lockInfo,
                 ]);
             }
-            sink.Table(["Mgd ID", "OS ID", "Thread Name", "State", "GC Mode", "Exception", "Waiting On"], rows);
+            sink.Table(["Mgd ID", "OS ID", "Thread Name", "Category", "GC Mode", "Exception", "Waiting On"], rows);
         }
         else
         {
             sink.Section(sectionTitle);
-            foreach (var t in toShow)
+            foreach (var t in toShowList)
             {
                 threadNames.TryGetValue(t.ManagedThreadId, out string? threadName);
                 string ex       = FormatException(t.CurrentException);
                 string lockInfo = GetLockInfo(t);
                 bool   blocked  = IsLikelyBlocked(t);
+                string category = ClassifyThread(t, threadNames);
 
                 string detailTitle =
                     $"Thread {t.ManagedThreadId}" +
                     (threadName is not null ? $" [{threadName}]" : "") +
-                    $"  OS:{t.OSThreadId}  {t.State}" +
+                    $"  OS:{t.OSThreadId}  [{category}]" +
                     (blocked   ? "  ⚠ BLOCKED"       : "") +
                     (ex.Length > 0   ? $"  ex:{ex}"  : "") +
                     (lockInfo.Length > 0 ? $"  {lockInfo}" : "");
@@ -136,7 +161,7 @@ internal static class ThreadAnalysisCommand
         }
 
         // Exception details section for threads carrying exceptions
-        var excThreads = toShow.Where(t => t.CurrentException is not null).ToList();
+        var excThreads = toShowList.Where(t => t.CurrentException is not null).ToList();
         if (excThreads.Count > 0)
         {
             sink.Section("Exception Details");
@@ -156,6 +181,33 @@ internal static class ThreadAnalysisCommand
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Categorizes a thread by its likely role based on name, stack, and state.
+    /// </summary>
+    static string ClassifyThread(ClrThread t, Dictionary<int, string> names)
+    {
+        if (names.TryGetValue(t.ManagedThreadId, out string? name) && !string.IsNullOrEmpty(name))
+        {
+            if (name.Contains("Finalizer",   StringComparison.OrdinalIgnoreCase)) return "Finalizer";
+            if (name.Contains("GC",           StringComparison.OrdinalIgnoreCase)) return "GC";
+            if (name.Contains("Timer",        StringComparison.OrdinalIgnoreCase)) return "Timer";
+            if (name.Contains("ThreadPool",   StringComparison.OrdinalIgnoreCase)) return "ThreadPool";
+            if (name.Contains("Background",   StringComparison.OrdinalIgnoreCase)) return "Background";
+        }
+        try
+        {
+            var frameMethods = t.EnumerateStackTrace().Take(5).Select(f => f.Method?.Name ?? "").ToList();
+            if (frameMethods.Any(m => m.Contains("Finaliz", StringComparison.OrdinalIgnoreCase))) return "Finalizer";
+            if (frameMethods.Any(m => m is "GarbageCollect" or "Collect"))                       return "GC";
+            if (frameMethods.Any(m => m.Contains("Dispatch", StringComparison.OrdinalIgnoreCase))) return "ThreadPool";
+            if (frameMethods.Any(m => m.Contains("Main",     StringComparison.OrdinalIgnoreCase))) return "Main";
+            if (frameMethods.Any(m => m.Contains("Request",  StringComparison.OrdinalIgnoreCase))) return "Request Handler";
+            if (IsLikelyBlocked(t))                                                               return "Blocked";
+        }
+        catch { }
+        return t.IsAlive ? "Managed" : "Dead";
+    }
 
     /// <summary>
     /// Scans the heap for System.Threading.Thread objects and maps

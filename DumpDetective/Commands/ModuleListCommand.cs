@@ -56,28 +56,49 @@ internal static class ModuleListCommand
             .Where(m => !appOnly || m.Kind == "App")
             .OrderBy(m => m.Kind == "App" ? 0 : m.Kind == "GAC" ? 1 : 2)
             .ThenBy(m => m.FileName)
-            .Select(m => new[]
-            {
-                m.FileName,
-                m.Kind,
-                DumpHelpers.FormatSize(m.Size),
-                m.Path,
-            })
             .ToList();
 
-        sink.Section("Loaded Modules");
-        sink.Table(["Assembly", "Kind", "Size", "Path"], rows, $"{rows.Count} module(s)");
+        // Detect duplicates: same filename loaded from multiple paths
+        var duplicates = rows
+            .GroupBy(m => m.FileName, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .ToList();
 
-        int appCount    = modules.Count(m => ModuleKind(m.Name ?? m.AssemblyName ?? "") == "App");
-        int systemCount = modules.Count(m => ModuleKind(m.Name ?? m.AssemblyName ?? "") == "System");
-        int gacCount    = modules.Count(m => ModuleKind(m.Name ?? m.AssemblyName ?? "") == "GAC");
+        if (duplicates.Count > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{duplicates.Count} assembly name(s) loaded from multiple paths.",
+                "Duplicate assemblies can cause type identity mismatches and unexpected behavior.",
+                "Ensure only one version of each assembly is deployed. Check binding redirects.");
+
+        sink.Section("Loaded Modules");
+        sink.Table(
+            ["Assembly", "Kind", "Size", "Path"],
+            rows.Select(m => new[] { m.FileName, m.Kind, DumpHelpers.FormatSize(m.Size), m.Path }).ToList(),
+            $"{rows.Count} module(s)");
+
+        int appCount    = rows.Count(m => m.Kind == "App");
+        int systemCount = rows.Count(m => m.Kind == "System");
+        int gacCount    = rows.Count(m => m.Kind == "GAC");
 
         sink.KeyValues([
-            ("Total modules",   modules.Count.ToString("N0")),
+            ("Total modules",   rows.Count.ToString("N0")),
             ("App modules",     appCount.ToString("N0")),
             ("System modules",  systemCount.ToString("N0")),
             ("GAC modules",     gacCount.ToString("N0")),
+            ("Duplicate names", duplicates.Count.ToString("N0")),
         ]);
+
+        if (duplicates.Count > 0)
+        {
+            sink.Section("Duplicate Assemblies");
+            foreach (var dup in duplicates)
+            {
+                sink.BeginDetails($"{dup.Key}  — {dup.Count()} copies", open: true);
+                var dupRows = dup.Select(m => new[] { m.Kind, DumpHelpers.FormatSize(m.Size), m.Path }).ToList();
+                sink.Table(["Kind", "Size", "Path"], dupRows);
+                sink.EndDetails();
+            }
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 using DumpDetective.Core;
 using DumpDetective.Helpers;
 using DumpDetective.Output;
+using Microsoft.Diagnostics.Runtime;
 using Spectre.Console;
 
 namespace DumpDetective.Commands;
@@ -45,8 +46,10 @@ internal static class StaticRefsCommand
 
         // Enumerate via module type-def map — covers all types, even those with no live instances
         // (unlike the old heap-object approach which missed never-instantiated static classes).
-        var byDeclType = new Dictionary<string, List<string[]>>(StringComparer.Ordinal);
+        var byDeclType     = new Dictionary<string, List<(long Size, string[] Row)>>(StringComparer.Ordinal);
+        var sizeByDeclType = new Dictionary<string, long>(StringComparer.Ordinal);
         int total = 0;
+        long totalSize = 0;
 
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning static fields...", _ =>
         {
@@ -78,7 +81,8 @@ internal static class StaticRefsCommand
                                 var value = field.ReadObject(appDomain);
                                 if (value.IsNull || !value.IsValid) continue;
                                 string valType  = value.Type?.Name ?? "?";
-                                string sizeStr  = DumpHelpers.FormatSize((long)value.Size);
+                                long   retained = RetainedSize(value, ctx.Heap);
+                                string sizeStr  = DumpHelpers.FormatSize(retained);
                                 string isCol    = IsCollection(valType) ? "✓" : "—";
                                 string addrStr  = showAddr ? $"0x{value.Address:X16}" : "";
 
@@ -91,8 +95,10 @@ internal static class StaticRefsCommand
                                     list = [];
                                     byDeclType[declType] = list;
                                 }
-                                list.Add(row);
+                                list.Add((retained, row));
                                 total++;
+                                totalSize += retained;
+                                sizeByDeclType[declType] = sizeByDeclType.GetValueOrDefault(declType) + retained;
                             }
                             catch { }
                         }
@@ -105,9 +111,13 @@ internal static class StaticRefsCommand
         if (total == 0) { sink.Text("No non-null static reference fields found."); return; }
 
         sink.KeyValues([
-            ("Declaring types",  byDeclType.Count.ToString("N0")),
-            ("Static fields",    total.ToString("N0")),
-            ("Collection fields", byDeclType.Values.SelectMany(v => v).Count(r => r[3] == "✓").ToString("N0")),
+            ("Declaring types",        byDeclType.Count.ToString("N0")),
+            ("Static fields",          total.ToString("N0")),
+            ("Total retained size",    DumpHelpers.FormatSize(totalSize)),
+            ("Largest declaring type", sizeByDeclType.Count > 0
+                                            ? $"{sizeByDeclType.MaxBy(kv => kv.Value).Key.Split('.').Last()}  ({DumpHelpers.FormatSize(sizeByDeclType.MaxBy(kv => kv.Value).Value)})"
+                                            : "—"),
+            ("Collection fields",      byDeclType.Values.SelectMany(v => v).Count(r => r.Row[3] == "✓").ToString("N0")),
         ]);
 
         sink.Alert(AlertLevel.Info,
@@ -118,18 +128,46 @@ internal static class StaticRefsCommand
             ? ["Field", "Value Type", "Size", "Collection?", "Address"]
             : ["Field", "Value Type", "Size", "Collection?"];
 
-        foreach (var kvp in byDeclType.OrderByDescending(kv => kv.Value.Count))
+        foreach (var kvp in byDeclType.OrderByDescending(kv => sizeByDeclType.GetValueOrDefault(kv.Key)))
         {
-            bool hasCollection = kvp.Value.Any(r => r[3] == "✓");
+            bool hasCollection = kvp.Value.Any(r => r.Row[3] == "✓");
+            sizeByDeclType.TryGetValue(kvp.Key, out long declSize);
+            var sortedRows = kvp.Value
+                .OrderByDescending(r => r.Size)
+                .Select(r => r.Row)
+                .ToList();
             sink.BeginDetails(
-                $"{kvp.Key}  —  {kvp.Value.Count} field(s)" + (hasCollection ? "  ⚠ has collection" : ""),
+                $"{kvp.Key}  —  {kvp.Value.Count} field(s)  {DumpHelpers.FormatSize(declSize)}" + (hasCollection ? "  ⚠ has collection" : ""),
                 open: hasCollection || kvp.Value.Count > 5);
-            sink.Table(headers, kvp.Value);
+            sink.Table(headers, sortedRows);
             sink.EndDetails();
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // BFS walk from root — returns sum of sizes of all reachable objects.
+    // Each field gets its own visited set so independent roots are counted fully.
+    static long RetainedSize(ClrObject root, ClrHeap heap)
+    {
+        if (!root.IsValid) return 0;
+        var visited = new HashSet<ulong> { root.Address };
+        var queue   = new Queue<ClrObject>();
+        queue.Enqueue(root);
+        long total  = 0;
+        while (queue.Count > 0)
+        {
+            var obj = queue.Dequeue();
+            if (!obj.IsValid || obj.Type is null) continue;
+            total += (long)obj.Size;
+            foreach (var child in obj.EnumerateReferences())
+            {
+                if (child.IsValid && visited.Add(child.Address))
+                    queue.Enqueue(child);
+            }
+        }
+        return total;
+    }
 
     static bool IsCollection(string typeName) =>
         typeName.Contains("List<",       StringComparison.Ordinal) ||
