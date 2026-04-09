@@ -85,6 +85,14 @@ internal sealed class HtmlSink : IRenderSink
     public void Text(string line)  => _w.WriteLine($"<p>{H(line)}</p>");
     public void BlankLine()        => _w.WriteLine("<br>");
 
+    public void BeginDetails(string title, bool open = false)
+    {
+        string openAttr = open ? " open" : string.Empty;
+        _w.WriteLine($"<details{openAttr}><summary>{H(title)}</summary><div class=\"details-body\">");
+    }
+
+    public void EndDetails() => _w.WriteLine("</div></details>");
+
     public void Dispose()
     {
         if (_inSection) _w.WriteLine("</div>");
@@ -127,6 +135,14 @@ internal sealed class HtmlSink : IRenderSink
           .alert-info{background:#eff6ff;border-left:4px solid #3b82f6}
           .detail{color:#555;font-size:12px}
           .advice{color:#16a34a;font-size:12px}
+          details{border:1px solid #dde3ea;border-radius:6px;margin:.5rem 0}
+          summary{padding:.55rem .85rem;cursor:pointer;font-weight:600;font-size:.88rem;color:#1e3a6e;list-style:none;user-select:none;background:#f7f9fc;border-radius:6px}
+          details[open] summary{border-radius:6px 6px 0 0;border-bottom:1px solid #dde3ea}
+          summary::marker{display:none}
+          summary::-webkit-details-marker{display:none}
+          summary::before{content:'▶';font-size:.65rem;margin-right:.45rem;display:inline-block;transition:transform .15s;color:#7e93b5}
+          details[open] summary::before{transform:rotate(90deg)}
+          .details-body{padding:.5rem .85rem}
         </style></head>
         <body><main>
         """);

@@ -58,6 +58,9 @@ internal sealed class MarkdownSink : IRenderSink
 
     public void Text(string line)  => _w.WriteLine(line);
     public void BlankLine()        => _w.WriteLine();
+    public void BeginDetails(string title, bool open = false)
+    { _w.WriteLine($"### {title}"); _w.WriteLine(); }
+    public void EndDetails()       => _w.WriteLine();
     public void Dispose()          => _w.Dispose();
 
     static string E(string s) => s.Replace("|", "\\|").Replace("`", "'");

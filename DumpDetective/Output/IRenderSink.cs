@@ -16,6 +16,9 @@ public interface IRenderSink : IDisposable
     void Alert(AlertLevel level, string title, string? detail = null, string? advice = null);
     void Text(string line);
     void BlankLine();
+    /// <summary>Begins a collapsible group (accordion). Content follows until <see cref="EndDetails"/>.</summary>
+    void BeginDetails(string title, bool open = false);
+    void EndDetails();
 
     bool    IsFile   { get; }
     string? FilePath { get; }
