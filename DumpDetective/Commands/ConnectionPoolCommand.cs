@@ -13,14 +13,9 @@ internal static partial class ConnectionPoolCommand
         Usage: DumpDetective connection-pool <dump-file> [options]
 
         Options:
-          -a, --addresses    Show object addresses and call stacks per connection
+          -a, --addresses    Show object addresses per connection (up to 200)
           -o, --output <f>   Write report to file
           -h, --help         Show this help
-
-        Notes:
-          When --addresses is passed, each connection object that can be traced to
-          a thread stack shows the full managed call stack of that thread — revealing
-          exactly where the connection was opened or is currently being used.
         """;
 
     private static readonly string[] ConnectionPrefixes =
@@ -36,17 +31,12 @@ internal static partial class ConnectionPoolCommand
         "System.Data.Entity.DbContext",
     ];
 
-    // Per-connection enriched record
     private sealed record ConnectionInfo(
-        string   TypeName,
-        ulong    Addr,
-        long     Size,
-        string   State,
-        string   ConnStr,
-        int?     ThreadId,
-        uint     OSThreadId,
-        string   RootKind,
-        List<string> Stack);
+        string TypeName,
+        ulong  Addr,
+        long   Size,
+        string State,
+        string ConnStr);
 
     public static int Run(string[] args)
     {
@@ -84,88 +74,14 @@ internal static partial class ConnectionPoolCommand
         });
 
         if (rawFound.Count == 0) { sink.Text("No database connection objects found."); return; }
-        var connAddrs = rawFound.Select(f => f.Addr).ToHashSet();
 
-        // ── Phase 2: build thread stack-range map ─────────────────────────────
-        // For stack-rooted connections we need: thread id, OS thread id, stack frames
-        var threadInfo = ctx.Runtime.Threads
-            .Where(t => t.IsAlive && t.StackBase != 0 && t.StackLimit != 0)
-            .Select(t => (
-                Thread: t,
-                Lo: Math.Min(t.StackBase, t.StackLimit),
-                Hi: Math.Max(t.StackBase, t.StackLimit)))
+        var connections = rawFound
+            .Select(f => new ConnectionInfo(f.Type, f.Addr, f.Size, f.State, f.ConnStr))
             .ToList();
-
-        // addr → (managedThreadId, osThreadId)
-        var addrToThread = new Dictionary<ulong, (int MgdId, uint OsId)>();
-        // managedThreadId → stack frames (lazy – built on demand)
-        var threadStacks  = new Dictionary<int, List<string>>();
-
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Tracing GC roots for connections...", _ =>
-        {
-            foreach (var root in ctx.Heap.EnumerateRoots())
-            {
-                if (!connAddrs.Contains(root.Object)) continue;
-
-                string rootKind = root.RootKind switch
-                {
-                    ClrRootKind.Stack             => "Stack",
-                    ClrRootKind.StrongHandle      => "Strong Handle",
-                    ClrRootKind.PinnedHandle      => "Pinned Handle",
-                    ClrRootKind.AsyncPinnedHandle  => "Async-Pinned",
-                    ClrRootKind.RefCountedHandle   => "RefCount Handle",
-                    ClrRootKind.FinalizerQueue     => "Finalizer Queue",
-                    _                              => root.RootKind.ToString(),
-                };
-
-                // For stack roots — identify thread by slot address range
-                if (root.RootKind == ClrRootKind.Stack && root.Address != 0)
-                {
-                    foreach (var (thread, lo, hi) in threadInfo)
-                    {
-                        if (root.Address < lo || root.Address > hi) continue;
-
-                        addrToThread[root.Object] = (thread.ManagedThreadId, thread.OSThreadId);
-
-                        // Collect stack frames for this thread if not already done
-                        if (!threadStacks.ContainsKey(thread.ManagedThreadId))
-                        {
-                            threadStacks[thread.ManagedThreadId] = thread
-                                .EnumerateStackTrace()
-                                .Select(f => f.FrameName ?? f.Method?.Signature ?? f.ToString() ?? "?")
-                                .Where(s => s.Length > 0 && s != "?")
-                                .Take(30)
-                                .ToList();
-                        }
-                        break;
-                    }
-                }
-                else if (!addrToThread.ContainsKey(root.Object))
-                {
-                    // Mark as non-stack root so we don't re-tag it as unknown
-                    addrToThread[root.Object] = (-1, 0);
-                }
-            }
-        });
-
-        // ── Phase 3: assemble enriched records ───────────────────────────────
-        var connections = rawFound.Select(f =>
-        {
-            addrToThread.TryGetValue(f.Addr, out var tInfo);
-            int? threadId = tInfo.MgdId > 0 ? tInfo.MgdId : null;
-            List<string> stack = threadId.HasValue && threadStacks.TryGetValue(threadId.Value, out var s) ? s : [];
-            string rootKind = tInfo.MgdId == -1 ? "Non-stack root"
-                            : tInfo.MgdId ==  0 ? "No known root"
-                            : "Stack";
-            return new ConnectionInfo(f.Type, f.Addr, f.Size, f.State, f.ConnStr,
-                                      threadId, tInfo.OsId, rootKind, stack);
-        }).ToList();
 
         // ── Summary ───────────────────────────────────────────────────────────
         sink.Section("Summary");
-        long totalSize   = connections.Sum(c => c.Size);
-        int  stackRooted = connections.Count(c => c.ThreadId.HasValue);
-        int  noRoot      = connections.Count(c => c.RootKind == "No known root");
+        long totalSize = connections.Sum(c => c.Size);
 
         const int DefaultMaxPool = 100;
         var poolGroups = connections
@@ -181,11 +97,9 @@ internal static partial class ConnectionPoolCommand
             .ToList();
 
         sink.KeyValues([
-            ("Total connection objects",      connections.Count.ToString("N0")),
-            ("Total size",                    DumpHelpers.FormatSize(totalSize)),
-            ("Pool groups (type+connstr)",    poolGroups.Count.ToString("N0")),
-            ("Live on thread stacks",         stackRooted.ToString("N0")),
-            ("No known GC root",              noRoot.ToString("N0")),
+            ("Total connection objects",   connections.Count.ToString("N0")),
+            ("Total size",                 DumpHelpers.FormatSize(totalSize)),
+            ("Pool groups (type+connstr)", poolGroups.Count.ToString("N0")),
         ]);
 
         if (connections.Count > 50)
@@ -243,70 +157,19 @@ internal static partial class ConnectionPoolCommand
         if (connStrGroups.Count > 0)
             sink.Table(["Connection String (masked)", "Count"], connStrGroups, "Distinct connection strings (passwords masked)");
 
-        // ── Per-connection detail with call stacks ────────────────────────────
+        // ── Per-connection address listing ────────────────────────────────────
         if (showAddr)
         {
-            sink.Section("Per-Connection Detail & Call Stacks");
-            sink.Alert(AlertLevel.Info,
-                "Call stacks show the managed thread that holds this connection object on its stack at the time of the dump.",
-                "A 'No known root' connection is not referenced from any thread stack — it may be pooled, leaked, or held by a static field.");
-
-            int idx = 0;
-            foreach (var c in connections.Take(200))
+            sink.Section("Per-Connection Addresses");
+            var addrRows = connections.Take(200).Select(c => new[]
             {
-                idx++;
-                bool hasStack = c.Stack.Count > 0;
-
-                string title = $"#{idx}  {c.TypeName}  @ 0x{c.Addr:X16}";
-                if (c.State.Length > 0)          title += $"  [{c.State}]";
-                if (c.ThreadId.HasValue)          title += $"  Thread {c.ThreadId} (OS: 0x{c.OSThreadId:X})";
-                else                              title += $"  [{c.RootKind}]";
-
-                // Open by default if: "Open"/"Executing" state or on a thread
-                bool open = c.State is "Open" or "Executing" or "Fetching" || c.ThreadId.HasValue;
-                sink.BeginDetails(title, open: open);
-
-                sink.KeyValues([
-                    ("Type",             c.TypeName),
-                    ("Address",          $"0x{c.Addr:X16}"),
-                    ("State",            c.State.Length > 0 ? c.State : "—"),
-                    ("Size",             DumpHelpers.FormatSize(c.Size)),
-                    ("Connection str",   c.ConnStr.Length > 0 ? c.ConnStr : "—"),
-                    ("GC root kind",     c.RootKind),
-                    ("Thread (managed)", c.ThreadId.HasValue  ? $"Thread {c.ThreadId}" : "—"),
-                    ("Thread (OS)",      c.OSThreadId != 0    ? $"0x{c.OSThreadId:X}"  : "—"),
-                ]);
-
-                if (hasStack)
-                {
-                    // Highlight connection-related frames
-                    var frameRows = c.Stack.Select((f, i) =>
-                    {
-                        bool isConnFrame = f.Contains("Connection",  StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("Execute",     StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("Open",        StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("DbContext",   StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("Repository",  StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("DataAccess",  StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("SqlCommand",  StringComparison.OrdinalIgnoreCase)
-                                        || f.Contains("Query",       StringComparison.OrdinalIgnoreCase);
-                        string marker = isConnFrame ? "►" : " ";
-                        return new[] { i.ToString(), marker, f };
-                    }).ToList();
-                    sink.Table(["#", "", "Stack Frame"], frameRows, $"Thread {c.ThreadId} — {c.Stack.Count} frame(s)  (► = connection-related)");
-                }
-                else if (c.ThreadId.HasValue)
-                {
-                    sink.Text("  (no managed frames available for this thread)");
-                }
-                else
-                {
-                    sink.Text($"  Not held on any thread stack — root kind: {c.RootKind}.");
-                    sink.Text("  The connection may be stored in a static field, cache, or returned to the pool.");
-                }
-
-                sink.EndDetails();
-            }
+                $"0x{c.Addr:X16}",
+                c.TypeName,
+                c.State.Length > 0 ? c.State : "—",
+                DumpHelpers.FormatSize(c.Size),
+                c.ConnStr.Length > 0 ? c.ConnStr : "—",
+            }).ToList();
+            sink.Table(["Address", "Type", "State", "Size", "Connection String (masked)"], addrRows);
 
             if (connections.Count > 200)
                 sink.Alert(AlertLevel.Info, $"Showing first 200 of {connections.Count:N0} connection objects.");

@@ -12,17 +12,9 @@ internal static class TimerLeaksCommand
         Usage: DumpDetective timer-leaks <dump-file> [options]
 
         Options:
-          -a, --addresses    Show per-timer detail with GC roots, call stacks, and module (up to 200)
+          -a, --addresses    Show individual timer object addresses (up to 200 per type)
           -o, --output <f>   Write report to file (.md / .html / .txt)
           -h, --help         Show this help
-
-        Notes:
-          --addresses shows per-timer details including:
-            • GC root kind (what is keeping the timer alive)
-            • For stack-rooted timers: the full managed call stack of the holding thread
-            • Any threads actively executing the callback at the time of the dump
-          Most timers are held by Strong Handle (the TimerQueue) — in that case the
-          Module (DLL) column identifies the registering assembly.
         """;
 
     private static readonly HashSet<string> TimerTypeSet = new(StringComparer.OrdinalIgnoreCase)
@@ -89,106 +81,6 @@ internal static class TimerLeaksCommand
         else if (timers.Count > 100)
             sink.Alert(AlertLevel.Warning, $"{timers.Count:N0} timer objects detected.");
 
-        // ── Phase 2: thread stack collection + GC root tracing ────────────────
-        // addrToRoots:     timerAddr → list of (RootKind, Detail, StackFrames)
-        // callbackThreads: callbackMethod → threads actively running it right now
-        var addrToRoots     = new Dictionary<ulong, List<(string Kind, string Detail, List<string> Frames)>>();
-        var callbackThreads = new Dictionary<string, List<(int MgdId, uint OsId, List<string> Frames)>>(StringComparer.Ordinal);
-
-        if (showAddr)
-        {
-            var timerAddrs  = timers.Select(t => t.Addr).ToHashSet();
-            var callbackSet = timers.Where(t => t.Callback.Length > 0)
-                                    .Select(t => t.Callback)
-                                    .ToHashSet(StringComparer.Ordinal);
-
-            // Pre-collect frames for every alive thread, and detect active callback execution
-            var framesByThread = new Dictionary<int, (ClrThread Thread, List<string> Frames)>();
-            var threadRanges   = new List<(ClrThread Thread, ulong Lo, ulong Hi)>();
-
-            AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Collecting thread stacks...", _ =>
-            {
-                foreach (var thread in ctx.Runtime.Threads.Where(t => t.IsAlive))
-                {
-                    var frames = thread.EnumerateStackTrace()
-                        .Select(f => f.FrameName ?? f.Method?.Signature ?? "")
-                        .Where(f => f.Length > 0)
-                        .Take(40)
-                        .ToList();
-
-                    framesByThread[thread.ManagedThreadId] = (thread, frames);
-
-                    if (thread.StackBase != 0 && thread.StackLimit != 0)
-                        threadRanges.Add((thread,
-                            Math.Min(thread.StackBase, thread.StackLimit),
-                            Math.Max(thread.StackBase, thread.StackLimit)));
-
-                    if (frames.Count == 0) continue;
-
-                    // Check if this thread is currently running any known timer callback
-                    foreach (var cb in callbackSet)
-                    {
-                        string methodShort = cb.Contains('.') ? cb[(cb.LastIndexOf('.') + 1)..] : cb;
-                        if (!frames.Any(f => f.Contains(methodShort, StringComparison.OrdinalIgnoreCase))) continue;
-
-                        if (!callbackThreads.TryGetValue(cb, out var tlist))
-                        {
-                            tlist = [];
-                            callbackThreads[cb] = tlist;
-                        }
-                        if (!tlist.Any(x => x.MgdId == thread.ManagedThreadId))
-                            tlist.Add((thread.ManagedThreadId, thread.OSThreadId, frames));
-                    }
-                }
-            });
-
-            AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Tracing GC roots for timers...", _ =>
-            {
-                foreach (var root in ctx.Heap.EnumerateRoots())
-                {
-                    if (!timerAddrs.Contains(root.Object)) continue;
-
-                    string kind = root.RootKind switch
-                    {
-                        ClrRootKind.Stack             => "Stack",
-                        ClrRootKind.StrongHandle      => "Strong Handle",
-                        ClrRootKind.PinnedHandle      => "Pinned Handle",
-                        ClrRootKind.AsyncPinnedHandle  => "Async-Pinned",
-                        ClrRootKind.RefCountedHandle   => "RefCount Handle",
-                        ClrRootKind.FinalizerQueue     => "Finalizer Queue",
-                        _                              => root.RootKind.ToString(),
-                    };
-
-                    string       detail = "";
-                    List<string> frames = [];
-
-                    if (root.RootKind == ClrRootKind.Stack && root.Address != 0)
-                    {
-                        foreach (var (thread, lo, hi) in threadRanges)
-                        {
-                            if (root.Address < lo || root.Address > hi) continue;
-                            detail = $"Thread {thread.ManagedThreadId} (OS: 0x{thread.OSThreadId:X})";
-                            if (framesByThread.TryGetValue(thread.ManagedThreadId, out var tf))
-                                frames = tf.Frames;
-                            break;
-                        }
-                        if (detail.Length == 0) detail = $"slot 0x{root.Address:X}";
-                    }
-                    else if (root.Address != 0)
-                    {
-                        detail = $"handle 0x{root.Address:X}";
-                    }
-
-                    if (!addrToRoots.TryGetValue(root.Object, out var rlist))
-                    {
-                        rlist = [];
-                        addrToRoots[root.Object] = rlist;
-                    }
-                    rlist.Add((kind, detail, frames));
-                }
-            });
-        }
-
         // ── Callback summary table by type ────────────────────────────────────
         foreach (var g in timers.GroupBy(t => t.Type).OrderByDescending(g => g.Count()))
         {
@@ -207,99 +99,21 @@ internal static class TimerLeaksCommand
                 })
                 .ToList();
             sink.Table(["Callback Method", "Module (DLL)", "Count", "Period", "Due In"], cbGroups);
-            sink.EndDetails();
-        }
 
-        // ── Per-timer detail with GC roots + call stacks ──────────────────────
-        if (showAddr)
-        {
-            sink.Section("Per-Timer Detail & Call Stacks");
-            sink.Alert(AlertLevel.Info,
-                "Root Kind shows what keeps each timer alive. Strong Handle = TimerQueue holds it (normal). " +
-                "Use Module (DLL) to identify the registering assembly. " +
-                "Stack-rooted timers show the holding thread's full call stack. " +
-                "Timers marked ▶ EXECUTING have a thread actively running the callback right now.");
-
-            int idx = 0;
-            foreach (var t in timers.OrderBy(x => x.PeriodMs).Take(200))
+            if (showAddr)
             {
-                idx++;
-                addrToRoots.TryGetValue(t.Addr, out var roots);
-                callbackThreads.TryGetValue(t.Callback, out var activeThreads);
-                bool noRoot      = roots is null || roots.Count == 0;
-                bool isExecuting = activeThreads is { Count: > 0 };
-                string rootSummary = noRoot
-                    ? "No known root"
-                    : string.Join(", ", roots!.Select(r => r.Kind).Distinct());
-
-                sink.BeginDetails(
-                    $"#{idx}  {t.Type}  @ 0x{t.Addr:X16}  [{rootSummary}]" + (isExecuting ? "  ▶ EXECUTING" : ""),
-                    open: noRoot || isExecuting);
-
-                sink.KeyValues([
-                    ("Type",           t.Type),
-                    ("Address",        $"0x{t.Addr:X16}"),
-                    ("Size",           DumpHelpers.FormatSize(t.Size)),
-                    ("Period",         FormatInterval(t.PeriodMs)),
-                    ("Due In",         FormatInterval(t.DueMs)),
-                    ("Callback",       t.Callback.Length > 0 ? t.Callback : "—"),
-                    ("Module (DLL)",   t.Module.Length > 0 ? t.Module : "—"),
-                    ("GC Root",        rootSummary),
-                    ("Active threads", isExecuting ? activeThreads!.Count.ToString() : "0"),
-                ]);
-
-                // GC roots — with stack frames where available
-                if (!noRoot)
+                var addrRows = g.Take(200).Select(t => new[]
                 {
-                    foreach (var (kind, detail, frames) in roots!)
-                    {
-                        if (frames.Count > 0)
-                        {
-                            var frameRows = frames
-                                .Select((f, i) => new[] { i.ToString(), f })
-                                .ToList();
-                            sink.Table(["#", "Stack Frame"],
-                                frameRows,
-                                $"Root: {kind}  —  {detail}  (call stack of holding thread)");
-                        }
-                        else
-                        {
-                            sink.Text($"  Root: {kind}  —  {(detail.Length > 0 ? detail : "—")}");
-                            if (kind == "Strong Handle")
-                                sink.Text("  → Held by the TimerQueue (static). No thread stack available — check Module (DLL) to identify the leak source.");
-                        }
-                    }
-                }
-                else
-                {
-                    sink.Alert(AlertLevel.Warning, "No GC root found — timer may be unreachable and awaiting finalizer/collection.");
-                }
-
-                // Threads actively running the callback right now
-                if (isExecuting)
-                {
-                    string methodShort = t.Callback.Contains('.') ? t.Callback[(t.Callback.LastIndexOf('.') + 1)..] : t.Callback;
-                    foreach (var (mgdId, osId, frames) in activeThreads!)
-                    {
-                        var frameRows = frames
-                            .Select((f, i) =>
-                            {
-                                bool hot = f.Contains(methodShort, StringComparison.OrdinalIgnoreCase);
-                                return new[] { i.ToString(), hot ? "►" : " ", f };
-                            })
-                            .ToList();
-                        sink.Table(
-                            ["#", "", "Stack Frame"],
-                            frameRows,
-                            $"Thread {mgdId} (OS: 0x{osId:X}) is actively executing this callback  (► = callback frame)");
-                    }
-                }
-
-                sink.EndDetails();
+                    $"0x{t.Addr:X16}",
+                    t.Callback.Length > 0 ? t.Callback : "—",
+                    FormatInterval(t.PeriodMs),
+                    FormatInterval(t.DueMs),
+                    DumpHelpers.FormatSize(t.Size),
+                }).ToList();
+                sink.Table(["Address", "Callback", "Period", "Due In", "Size"], addrRows);
             }
 
-            if (timers.Count > 200)
-                sink.Alert(AlertLevel.Info, $"Showing first 200 of {timers.Count:N0} timer objects (ordered by period).");
+            sink.EndDetails();
         }
 
         // ── Period frequency buckets ──────────────────────────────────────────
