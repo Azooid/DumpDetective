@@ -11,6 +11,7 @@ internal static class TrendAnalysisCommand
 {
     private const string Help = """
         Usage: DumpDetective trend-analysis <dump1> <dump2> [<dump3> ...] [options]
+               DumpDetective trend-analysis <dump-directory> [options]
                DumpDetective trend-analysis --list <paths.txt> [options]
 
         Analyzes multiple dumps and reports memory/leak trends over time.
@@ -18,6 +19,7 @@ internal static class TrendAnalysisCommand
 
         Options:
           --list <file>          Read dump paths from a text file (one path per line)
+                                 Entries can be dump files or directories.
           --full                 Run full collection per dump (includes event leaks,
                                  string duplicates — slower but more data)
           --ignore-event <type>  Exclude publisher types whose name contains <type>
@@ -28,6 +30,7 @@ internal static class TrendAnalysisCommand
 
         Example:
           DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+          DumpDetective trend-analysis D:\\dumps --output trends.html
           DumpDetective trend-analysis --list dumps.txt --full --output report.md
           DumpDetective trend-analysis d1.dmp d2.dmp --full \\
               --ignore-event SNINativeMethodWrapper --ignore-event System.Data
@@ -41,7 +44,7 @@ internal static class TrendAnalysisCommand
             return 0;
         }
 
-        var    dumpPaths   = new List<string>();
+        var    inputs      = new List<string>();
         bool   full        = false;
         string? output     = null;
         string? listFile   = null;
@@ -58,7 +61,7 @@ internal static class TrendAnalysisCommand
             else if (args[i] == "--ignore-event" && i + 1 < args.Length)
                 ignoreEvents.Add(args[++i]);
             else if (!args[i].StartsWith('-'))
-                dumpPaths.Add(args[i]);
+                inputs.Add(args[i]);
         }
 
         // Load from list file
@@ -69,24 +72,32 @@ internal static class TrendAnalysisCommand
                 Console.Error.WriteLine($"Error: list file not found: {listFile}");
                 return 1;
             }
-            dumpPaths.AddRange(
+            inputs.AddRange(
                 File.ReadAllLines(listFile)
                     .Select(l => l.Trim())
                     .Where(l => l.Length > 0 && !l.StartsWith('#')));
         }
 
-        if (dumpPaths.Count < 2)
+        var dumpPaths = ExpandDumpInputs(inputs, out var missingPaths, out var invalidDumpFiles);
+
+        if (missingPaths.Count > 0)
         {
-            Console.Error.WriteLine("Error: at least 2 dump files are required for trend analysis.");
-            Console.Error.WriteLine(Help);
+            foreach (var p in missingPaths)
+                Console.Error.WriteLine($"Error: file or directory not found: {p}");
             return 1;
         }
 
-        var missing = dumpPaths.Where(p => !File.Exists(p)).ToList();
-        if (missing.Count > 0)
+        if (invalidDumpFiles.Count > 0)
         {
-            foreach (var p in missing)
-                Console.Error.WriteLine($"Error: file not found: {p}");
+            foreach (var p in invalidDumpFiles)
+                Console.Error.WriteLine($"Error: not a dump file (.dmp/.mdmp): {p}");
+            return 1;
+        }
+
+        if (dumpPaths.Count < 2)
+        {
+            Console.Error.WriteLine("Error: at least 2 dump files are required for trend analysis (after directory expansion).");
+            Console.Error.WriteLine(Help);
             return 1;
         }
 
@@ -140,6 +151,43 @@ internal static class TrendAnalysisCommand
             AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
         return 0;
     }
+
+    private static List<string> ExpandDumpInputs(
+        IEnumerable<string> inputs,
+        out List<string> missingPaths,
+        out List<string> invalidDumpFiles)
+    {
+        var dumps = new List<string>();
+        missingPaths = [];
+        invalidDumpFiles = [];
+
+        foreach (var input in inputs)
+        {
+            if (Directory.Exists(input))
+            {
+                dumps.AddRange(Directory.EnumerateFiles(input, "*.dmp", SearchOption.AllDirectories));
+                dumps.AddRange(Directory.EnumerateFiles(input, "*.mdmp", SearchOption.AllDirectories));
+                continue;
+            }
+
+            if (File.Exists(input))
+            {
+                if (IsDumpFile(input))
+                    dumps.Add(input);
+                else
+                    invalidDumpFiles.Add(input);
+                continue;
+            }
+
+            missingPaths.Add(input);
+        }
+
+        return [.. dumps.Distinct(StringComparer.OrdinalIgnoreCase)];
+    }
+
+    private static bool IsDumpFile(string path) =>
+        path.EndsWith(".dmp", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".mdmp", StringComparison.OrdinalIgnoreCase);
 
     // ── Renderer ──────────────────────────────────────────────────────────────
 

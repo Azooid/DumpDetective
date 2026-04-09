@@ -38,6 +38,11 @@ internal static class EventAnalysisCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, HashSet<string>? excludes = null, bool showAddr = false)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
+
+        sink.Header(
+            "Dump Detective — Event Analysis Report",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
+
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
         var leaks = new List<(string PublisherType, ulong PublisherAddr, string FieldName, string DelegateType, List<(string TargetType, ulong TargetAddr, ulong DelAddr)> Subs)>();

@@ -19,10 +19,19 @@ internal sealed class HtmlSink : IRenderSink
 
     public void Header(string title, string? subtitle = null)
     {
+        string meta = string.Empty;
+        if (subtitle is not null)
+        {
+            var parts = subtitle
+                .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Select(p => $"<span class=\"chip\">{H(p)}</span>");
+            meta = $"<div class=\"hero-meta\">{string.Join(string.Empty, parts)}</div>";
+        }
+
         _w.WriteLine($"""
             <div class="hero">
               <h1>{H(title)}</h1>
-              {(subtitle is not null ? $"<p class=\"sub\">{H(subtitle)}</p>" : "")}
+              {meta}
             </div>
             """);
     }
@@ -37,26 +46,30 @@ internal sealed class HtmlSink : IRenderSink
     public void KeyValues(IReadOnlyList<(string Key, string Value)> pairs, string? title = null)
     {
         if (title is not null) _w.WriteLine($"<h3>{H(title)}</h3>");
-        _w.WriteLine("<table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>");
+        _w.WriteLine("<div class=\"table-wrap\"><table><thead><tr><th>Key</th><th>Value</th></tr></thead><tbody>");
         foreach (var (k, v) in pairs)
             _w.WriteLine($"<tr><td>{H(k)}</td><td>{H(v)}</td></tr>");
-        _w.WriteLine("</tbody></table>");
+        _w.WriteLine("</tbody></table></div>");
     }
 
     public void Table(string[] headers, IReadOnlyList<string[]> rows, string? caption = null)
     {
         if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
-        _w.WriteLine("<table><thead><tr>");
+        _w.WriteLine("<div class=\"table-wrap\"><table><thead><tr>");
         foreach (var h in headers) _w.Write($"<th>{H(h)}</th>");
         _w.WriteLine("</tr></thead><tbody>");
         foreach (var row in rows)
         {
             _w.Write("<tr>");
             for (int i = 0; i < headers.Length; i++)
-                _w.Write($"<td>{H(i < row.Length ? row[i] : "")}</td>");
+            {
+                var cell = i < row.Length ? row[i] : string.Empty;
+                var cls = cell.Length > 80 ? " class=\"long-text\"" : string.Empty;
+                _w.Write($"<td{cls}>{H(cell)}</td>");
+            }
             _w.WriteLine("</tr>");
         }
-        _w.WriteLine("</tbody></table>");
+        _w.WriteLine("</tbody></table></div>");
     }
 
     public void Alert(AlertLevel level, string title, string? detail = null, string? advice = null)
@@ -90,17 +103,22 @@ internal sealed class HtmlSink : IRenderSink
         <title>Dump Detective Report</title>
         <style>
           *{box-sizing:border-box;margin:0;padding:0}
-          body{font-family:system-ui,-apple-system,sans-serif;background:#f4f6f9;color:#222;font-size:14px;line-height:1.5}
-          .hero{background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff;padding:2rem;margin-bottom:1rem}
-          .hero h1{font-size:1.6rem;margin-bottom:.4rem}
-          .hero .sub{opacity:.7;font-size:.9rem;font-family:monospace}
+          body{font-family:system-ui,-apple-system,sans-serif;background:#f3f6fb;color:#222;font-size:14px;line-height:1.5}
+          .hero{background:linear-gradient(135deg,#1f2a44,#233a63);color:#fff;padding:2rem;margin-bottom:1rem;border-bottom:1px solid #d9e2ef}
+          .hero h1{font-size:1.6rem;margin-bottom:.65rem;line-height:1.25}
+          .hero-meta{display:flex;flex-wrap:wrap;gap:.45rem}
+          .chip{display:inline-block;padding:.22rem .62rem;border-radius:999px;background:rgba(191,219,254,.18);border:1px solid rgba(191,219,254,.35);color:#eaf2ff;font-size:.78rem;letter-spacing:.02em}
           main{max-width:1200px;margin:0 auto;padding:.75rem 1rem}
           .card{background:#fff;border-radius:8px;padding:1.25rem;margin:.75rem 0;box-shadow:0 1px 4px rgba(0,0,0,.08)}
           h2{font-size:1.1rem;margin-bottom:.75rem;color:#1a1a2e}
           h3{font-size:.95rem;margin:.6rem 0 .4rem;color:#333}
+          .table-wrap{width:100%;overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch}
           table{width:100%;border-collapse:collapse;font-size:13px;margin:.5rem 0}
+          .table-wrap table{min-width:720px}
           th{background:#f0f4f8;padding:.4rem .7rem;text-align:left;font-weight:600;border-bottom:2px solid #dde3ea}
           td{padding:.35rem .7rem;border-bottom:1px solid #eef0f3}
+          th,td{white-space:nowrap}
+          td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:460px;line-height:1.35}
           tr:hover td{background:#fafbfc}
           p.caption{font-size:12px;color:#888;margin-bottom:.3rem}
           .alert{padding:.6rem 1rem;border-radius:5px;margin:.4rem 0;font-size:13px}

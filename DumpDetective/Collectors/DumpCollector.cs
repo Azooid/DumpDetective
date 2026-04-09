@@ -50,28 +50,18 @@ public static class DumpCollector
 
     private static DumpSnapshot CollectFromContext(DumpContext ctx, bool full)
     {
-        var snapshot = new DumpSnapshot
-        {
-            DumpPath          = ctx.DumpPath,
-            DumpFileSizeBytes = File.Exists(ctx.DumpPath) ? new FileInfo(ctx.DumpPath).Length : 0,
-            FileTime          = ctx.FileTime,
-            IsFullMode        = full,
-        };
+
+        var snapshot = CreateSnapshot(ctx.DumpPath, ctx.FileTime, full);
         snapshot.ClrVersion = ctx.ClrVersion;
-        CollectAll(ctx.Runtime, snapshot, full);
-        GenerateFindings(snapshot);
-        return snapshot;
+        return FinalizeSnapshot(ctx.Runtime, snapshot, full, progress: null);
     }
 
     private static DumpSnapshot Collect(string dumpPath, bool full, Action<string>? progress = null)
     {
-        var snapshot = new DumpSnapshot
-        {
-            DumpPath          = dumpPath,
-            DumpFileSizeBytes = File.Exists(dumpPath) ? new FileInfo(dumpPath).Length : 0,
-            FileTime          = File.Exists(dumpPath) ? File.GetLastWriteTime(dumpPath) : DateTime.UtcNow,
-            IsFullMode        = full,
-        };
+        var snapshot = CreateSnapshot(
+            dumpPath,
+            File.Exists(dumpPath) ? File.GetLastWriteTime(dumpPath) : DateTime.UtcNow,
+            full);
 
         var (runtime, dataTarget) = DumpHelpers.OpenDump(dumpPath);
         using var _dt = dataTarget;
@@ -80,7 +70,20 @@ public static class DumpCollector
         if (runtime is null) return snapshot;
 
         snapshot.ClrVersion = runtime.ClrInfo?.Version.ToString();
+        return FinalizeSnapshot(runtime, snapshot, full, progress);
+    }
 
+    private static DumpSnapshot CreateSnapshot(string dumpPath, DateTime fileTime, bool full)
+        => new()
+        {
+            DumpPath          = dumpPath,
+            DumpFileSizeBytes = File.Exists(dumpPath) ? new FileInfo(dumpPath).Length : 0,
+            FileTime          = fileTime,
+            IsFullMode        = full,
+        };
+
+    private static DumpSnapshot FinalizeSnapshot(ClrRuntime runtime, DumpSnapshot snapshot, bool full, Action<string>? progress)
+    {
         CollectAll(runtime, snapshot, full, progress);
         GenerateFindings(snapshot);
         return snapshot;
