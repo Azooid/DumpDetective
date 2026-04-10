@@ -15,18 +15,26 @@ internal static class AnalyzeCommand
     private const string Help = """
         Usage: DumpDetective analyze <dump-file> [options]
 
-        Single-pass full health report: memory, threads, async, leaks, event
-        subscriptions, string duplicates, WCF, connections, and more.
-        Each issue is scored and produces a 0-100 health score.
+        Scored health report for a single dump.
+
+        Report modes
+        ─────────────
+          (default)  Mini report — lightweight scored summary:
+                     memory, threads, exceptions, async backlog, leaks, handles, WCF,
+                     connections, modules.  Fast (~heap walk once).
+
+          --full     Full report — scored summary PLUS all 20+ individual command
+                     reports embedded as chapters in one document.
+                     Recommended with --output; significantly slower.
 
         Options:
-          --full               Include string-duplicate and event-leak analysis (slower)
+          --full               Full combined report (scored summary + all sub-reports)
           -o, --output <file>  Write report to file (.md / .html / .txt)
           -h, --help           Show this help
 
-        Example:
+        Examples:
           DumpDetective analyze app.dmp
-          DumpDetective analyze app.dmp --full --output report.html
+          DumpDetective analyze app.dmp --full --output full-report.html
         """;
 
     public static int Run(string[] args)
@@ -49,37 +57,109 @@ internal static class AnalyzeCommand
 
         CommandBase.PrintAnalyzing(dumpPath);
 
+        // ── Phase 1: snapshot collection (always with progress) ───────────────
         DumpSnapshot snap = null!;
         var sw = Stopwatch.StartNew();
         AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .SpinnerStyle(Style.Parse("blue"))
-            .Start($"Running {(full ? "full" : "lightweight")} analysis on {Markup.Escape(Path.GetFileName(dumpPath))}...", ctx =>
+            .Start($"Running {(full ? "full" : "mini")} analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", ctx =>
             {
                 void Upd(string msg) =>
                     ctx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
+                // Full collection captures string dupes + event leaks for the summary score
                 snap = full
                     ? DumpCollector.CollectFull(dumpPath, Upd)
                     : DumpCollector.CollectLightweight(dumpPath, Upd);
             });
-        AnsiConsole.MarkupLine($"[dim]  Analysis complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
+        AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
 
-        using var sink = IRenderSink.Create(outputPath);
-        RenderReport(snap, sink);
+        if (!full)
+        {
+            // ── Mini: scored summary only ─────────────────────────────────────
+            using var sink = IRenderSink.Create(outputPath);
+            RenderReport(snap, sink);
+            if (sink.IsFile && sink.FilePath is not null)
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+            return 0;
+        }
 
-        if (sink.IsFile && sink.FilePath is not null)
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
-        return 0;
+        // ── Full: scored summary + all individual sub-reports ─────────────────
+        // Re-open dump so every sub-command can walk the heap independently.
+        AnsiConsole.MarkupLine("[dim]Opening dump for detailed sub-reports...[/]");
+        return CommandBase.Execute(dumpPath, outputPath, (ctx, sink) =>
+        {
+            // Chapter 1 — Scored summary (uses already-collected snapshot)
+            RenderReport(snap, sink);
+
+            // Chapters 2-N — Individual command reports
+            AnsiConsole.MarkupLine("[bold blue]Embedding detailed sub-reports:[/]");
+            RenderEmbeddedReports(ctx, sink);
+        });
     }
 
-    // ── Renderer (used by both this command and TrendAnalysisCommand) ─────────
+    // ── Embedded sub-reports (full mode only) ─────────────────────────────────
 
-    internal static void RenderReport(DumpSnapshot s, IRenderSink sink)
+    internal static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink)
+    {
+        // Each command writes its own Header+Sections, becoming a natural "chapter".
+        // SuppressVerbose suppresses the repeated "Analyzing: <path>" lines and
+        // per-pass counters from individual commands. Each command's own Status spinner
+        // still runs normally — they are sequential so there's no nesting conflict.
+        const int Total = 22;
+        var overallSw = Stopwatch.StartNew();
+        int step = 0;
+
+        CommandBase.SuppressVerbose = true;
+        try
+        {
+            void Step(string label, Action fn)
+            {
+                step++;
+                AnsiConsole.MarkupLine($"    [dim]{step,2}/{Total}[/]  {Markup.Escape(label)}…");
+                fn();
+            }
+
+            Step("Heap Statistics",     () => HeapStatsCommand.Render(ctx, sink, top: 100));
+            Step("Gen Summary",         () => GenSummaryCommand.Render(ctx, sink));
+            Step("Heap Fragmentation",  () => HeapFragmentationCommand.Render(ctx, sink));
+            Step("Large Objects",       () => LargeObjectsCommand.Render(ctx, sink, top: 100));
+            Step("High-Refs Analysis",  () => HighRefsCommand.Render(ctx, sink, top: 50, minRefs: 5));
+            Step("Exception Analysis",  () => ExceptionAnalysisCommand.Render(ctx, sink, top: 50, showStack: true));
+            Step("Thread Analysis",     () => ThreadAnalysisCommand.Render(ctx, sink, showStacks: true));
+            Step("Thread Pool",         () => ThreadPoolCommand.Render(ctx, sink));
+            Step("Async Stacks",        () => AsyncStacksCommand.Render(ctx, sink, top: 100));
+            Step("Deadlock Detection",  () => DeadlockDetectionCommand.Render(ctx, sink));
+            Step("Finalizer Queue",     () => FinalizerQueueCommand.Render(ctx, sink, top: 50));
+            Step("Handle Table",        () => HandleTableCommand.Render(ctx, sink));
+            Step("Pinned Objects",      () => PinnedObjectsCommand.Render(ctx, sink));
+            Step("Weak Refs",           () => WeakRefsCommand.Render(ctx, sink));
+            Step("Static Refs",         () => StaticRefsCommand.Render(ctx, sink));
+            Step("Timer Leaks",         () => TimerLeaksCommand.Render(ctx, sink));
+            Step("Event Analysis",      () => EventAnalysisCommand.Render(ctx, sink));
+            Step("String Duplicates",   () => StringDuplicatesCommand.Render(ctx, sink, top: 100, minCount: 2));
+            Step("WCF Channels",        () => WcfChannelsCommand.Render(ctx, sink));
+            Step("Connection Pool",     () => ConnectionPoolCommand.Render(ctx, sink));
+            Step("HTTP Requests",       () => HttpRequestsCommand.Render(ctx, sink));
+            Step("Module List",         () => ModuleListCommand.Render(ctx, sink));
+        }
+        finally
+        {
+            CommandBase.SuppressVerbose = false;
+        }
+
+        AnsiConsole.MarkupLine($"  [dim]  ✓ {step}/{Total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+    }
+
+    // ── Renderer (used by this command, TrendAnalysisCommand, and full mode) ──
+
+    internal static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true)
     {
         string scoreColor = s.HealthScore >= 70 ? "green" : s.HealthScore >= 40 ? "yellow" : "red";
-        sink.Header(
-            "Dump Detective — Analysis Report",
-            $"{Path.GetFileName(s.DumpPath)}  |  {s.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {s.ClrVersion ?? "unknown"}  |  Score: {s.HealthScore}/100");
+        if (includeHeader)
+            sink.Header(
+                "Dump Detective — Analysis Report",
+                $"{Path.GetFileName(s.DumpPath)}  |  {s.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {s.ClrVersion ?? "unknown"}  |  Score: {s.HealthScore}/100");
 
         // ── Findings ──────────────────────────────────────────────────────────
         sink.Section("Findings");

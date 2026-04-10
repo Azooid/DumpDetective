@@ -15,10 +15,14 @@ public sealed class DumpSnapshot
     public long   Gen0Bytes        { get; set; }
     public long   Gen1Bytes        { get; set; }
     public long   Gen2Bytes        { get; set; }
-    public long   LohBytes         { get; set; }
-    public long   PohBytes         { get; set; }
-    public long   FrozenBytes      { get; set; }
+    public long   LohBytes            { get; set; }  // committed memory in LOH segments
+    public long   LohLiveBytes        { get; set; }  // sum of live object sizes in LOH (≥85 KB objects)
+    public long   LohFreeBytes        => Math.Max(0L, LohBytes - LohLiveBytes);  // fragmentation free space
+    public double LohFragmentationPct => LohBytes > 0 ? LohFreeBytes * 100.0 / LohBytes : 0;
+    public long   PohBytes            { get; set; }
+    public long   FrozenBytes         { get; set; }
     public double FragmentationPct { get; set; }
+    public long   HeapFreeBytes    { get; set; }  // absolute free/dead bytes across all segments
 
     // ── Object counts ─────────────────────────────────────────────────────────
     public long TotalObjectCount { get; set; }

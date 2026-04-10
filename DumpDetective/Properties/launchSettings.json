@@ -88,9 +88,13 @@
       "commandName": "Project",
       "commandLineArgs": "timer-leaks --addresses --output timer-leaks.html"
     },
-    "analyze": {
+    "analyze (mini)": {
       "commandName": "Project",
       "commandLineArgs": "analyze --output report.html"
+    },
+    "analyze (full)": {
+      "commandName": "Project",
+      "commandLineArgs": "analyze --full --output report-full.html"
     },
     "async-stacks": {
       "commandName": "Project",
@@ -192,9 +196,13 @@
       "commandName": "Project",
       "commandLineArgs": "weak-refs --addresses --output weak-refs.html"
     },
-    "trend-analysis (2 dumps lightweight)": {
+    "trend-analysis (mini)": {
       "commandName": "Project",
       "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\" --output trend.html"
+    },
+    "trend-analysis (full — per-dump reports)": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\" --full --output trend-full.html"
     },
     "trend-analysis (2 dumps full)": {
       "commandName": "Project",

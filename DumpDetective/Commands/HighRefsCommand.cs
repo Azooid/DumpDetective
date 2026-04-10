@@ -128,7 +128,8 @@ internal static class HighRefsCommand
                 }
             }
         });
-        AnsiConsole.MarkupLine($"[dim]  Pass 1 complete ({sw1.Elapsed.TotalSeconds:F1}s — {totalObjs:N0} objects, {totalRefs:N0} references)[/]");
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine($"[dim]  Pass 1 complete ({sw1.Elapsed.TotalSeconds:F1}s — {totalObjs:N0} objects, {totalRefs:N0} references)[/]");
 
         // ── Identify top candidates ───────────────────────────────────────────
         var topAddrs = inboundCounts
@@ -185,7 +186,8 @@ internal static class HighRefsCommand
                 }
             }
         });
-        AnsiConsole.MarkupLine($"[dim]  Pass 2 complete ({sw2.Elapsed.TotalSeconds:F1}s)[/]");
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine($"[dim]  Pass 2 complete ({sw2.Elapsed.TotalSeconds:F1}s)[/]");
 
         // ── Materialise candidate metadata ────────────────────────────────────
         var candidates = new List<(ulong Addr, CandidateInfo Info)>(topAddrs.Count);

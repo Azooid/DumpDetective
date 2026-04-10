@@ -237,7 +237,8 @@ public static class DumpCollector
         foreach (var seg in heap.Segments)
             committed += (long)seg.CommittedMemory.Length;
 
-        long freeBytes = 0;
+        long freeBytes    = 0;
+        long lohLiveBytes = 0;  // sum of live object sizes ≥85 KB (actual LOH residents)
 
         var typeStatsByMt = new Dictionary<ulong, TypeAgg>(8192);
         var exCounts      = new Dictionary<string, int>(128, StringComparer.Ordinal);
@@ -252,6 +253,7 @@ public static class DumpCollector
         int timerCount = 0, wcfCount = 0, wcfFaulted = 0, connCount = 0;
         long processedCount = 0;
         long totalObjects = 0;
+        long largestFreeBlock = 0;
         var watch = new Stopwatch();
         watch.Start();
         foreach (var obj in heap.EnumerateObjects())
@@ -281,6 +283,7 @@ public static class DumpCollector
             if (type.IsFree)
             {
                 freeBytes += size;
+
                 continue;
             }
 
@@ -300,7 +303,10 @@ public static class DumpCollector
             }
 
             if (size >= 85_000)
+            {
                 s.LohObjectCount++;
+                lohLiveBytes += size;
+            }
 
             if (meta.IsException)
             {
@@ -361,8 +367,9 @@ public static class DumpCollector
                 }
             }
         }
-
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
+        s.HeapFreeBytes    = freeBytes;
+        s.LohLiveBytes     = lohLiveBytes;
 
         var topTypes = new List<TypeStat>(typeStatsByMt.Count);
         foreach (var kv in typeStatsByMt)

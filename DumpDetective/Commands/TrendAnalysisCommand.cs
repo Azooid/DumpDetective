@@ -147,6 +147,50 @@ internal static class TrendAnalysisCommand
         using var sink = IRenderSink.Create(output);
         RenderTrend(snapshots, sink, ignoreEvents);
 
+        // ── Full mode: append per-dump scored summary + embedded sub-reports ──
+        if (full)
+        {
+            AnsiConsole.MarkupLine("[bold]Rendering per-dump detailed reports…[/]");
+            for (int i = 0; i < dumpPaths.Count; i++)
+            {
+                var label    = $"D{i + 1}";
+                var path     = dumpPaths[i];
+                var snap     = snapshots[i];
+                var dispName = ShortName(path);
+                var sc       = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
+                AnsiConsole.MarkupLine(
+                    $"  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
+                    $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
+
+                // Chapter header for this dump
+                sink.Header(
+                    $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
+                    $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
+
+                // Mini scored summary (uses already-collected snapshot, no extra I/O).
+                // includeHeader:false avoids a duplicate "Analysis Report" hero —
+                // the "Per-Dump Report: DX" hero written above is sufficient.
+                AnalyzeCommand.RenderReport(snap, sink, includeHeader: false);
+
+                // Full sub-reports — re-open dump for live heap-walk commands
+                try
+                {
+                    using var ctx = DumpContext.Open(path);
+                    AnalyzeCommand.RenderEmbeddedReports(ctx, sink);
+                }
+                catch (Exception ex)
+                {
+                    AnsiConsole.MarkupLine($"  [yellow]⚠ Could not render sub-reports: {Markup.Escape(ex.Message)}[/]");
+                    sink.Alert(AlertLevel.Warning,
+                        $"Could not re-open {dispName} for sub-reports: {ex.Message}");
+                }
+
+                // Release memory between dumps
+                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                GC.WaitForPendingFinalizers();
+            }
+        }
+
         if (sink.IsFile && sink.FilePath is not null)
             AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
         return 0;
@@ -237,14 +281,124 @@ internal static class TrendAnalysisCommand
         AddRow("Total Objects",      s => s.TotalObjectCount,  s => s.TotalObjectCount.ToString("N0"));
         AddRow("Heap — SOH",         s => SohBytes(s),         s => DumpHelpers.FormatSize(SohBytes(s)));
         AddRow("Heap — LOH",         s => s.LohBytes,          s => DumpHelpers.FormatSize(s.LohBytes));
+        AddRow("  LOH Live",          s => s.LohLiveBytes,       s => DumpHelpers.FormatSize(s.LohLiveBytes));
+        AddRow("  LOH Free",          s => s.LohFreeBytes,       s => DumpHelpers.FormatSize(s.LohFreeBytes));
+        AddRow("  LOH Frag %",        s => s.LohFragmentationPct,s => $"{s.LohFragmentationPct:F1}%");
         AddRow("Heap — Total",       s => s.TotalHeapBytes,    s => DumpHelpers.FormatSize(s.TotalHeapBytes));
-        AddRow("LOH Object Count",   s => s.LohObjectCount,    s => s.LohObjectCount.ToString("N0"));
-        AddRow("Finalize Queue",     s => s.FinalizerQueueDepth, s => s.FinalizerQueueDepth.ToString("N0"));
-        AddRow("Unique Strings",     s => s.UniqueStringCount, s => s.UniqueStringCount.ToString("N0"));
-        AddRow("Total String Mem",   s => s.StringTotalBytes,  s => DumpHelpers.FormatSize(s.StringTotalBytes));
-        AddRow("Event Instances",    s => s.EventSubscriberTotal, s => s.EventSubscriberTotal.ToString("N0"));
-        AddRow("Event Types",        s => s.EventLeakFieldCount,  s => s.EventLeakFieldCount.ToString("N0"));
+        AddRow("Fragmentation (free)",s => s.HeapFreeBytes,  s => $"{s.FragmentationPct:F1}% ");
+        AddRow("Fragmentation %",     s => s.HeapFreeBytes,  s => $"{s.FragmentationPct:F1}%");
+        AddRow("LOH Object Count",    s => s.LohObjectCount,    s => s.LohObjectCount.ToString("N0"));
+        AddRow("Finalize Queue",      s => s.FinalizerQueueDepth, s => s.FinalizerQueueDepth.ToString("N0"));
+        AddRow("Unique Strings",      s => s.UniqueStringCount, s => s.UniqueStringCount.ToString("N0"));
+        AddRow("Total String Mem",    s => s.StringTotalBytes,  s => DumpHelpers.FormatSize(s.StringTotalBytes));
+        AddRow("Event Instances",     s => s.EventSubscriberTotal, s => s.EventSubscriberTotal.ToString("N0"));
+        AddRow("Event Types",         s => s.EventLeakFieldCount,  s => s.EventLeakFieldCount.ToString("N0"));
+        AddRow("Handles — Pinned",   s => s.PinnedHandleCount, s => s.PinnedHandleCount.ToString("N0"));
+        AddRow("Handles — Strong",   s => s.StrongHandleCount, s => s.StrongHandleCount.ToString("N0"));
+        AddRow("Handles — Weak",     s => s.WeakHandleCount,   s => s.WeakHandleCount.ToString("N0"),   higherIsBad: false);
+        AddRow("Modules (App)",       s => s.AppModuleCount,    s => $"{s.AppModuleCount} / {s.ModuleCount}");
         sink.Table(growthCols, growthRows);
+
+        // ── 3. Thread & Application Pressure ───────────────────────────────────
+        sink.Section("3. Thread & Application Pressure");
+        {
+            // Helper builds a metric row: [label, d1val, d2val, ..., trend]
+            string[] MRow(string label, Func<DumpSnapshot, string> fmt, string trend)
+                => new[] { label }.Concat(snaps.Select(fmt)).Append(trend).ToArray();
+
+            // Thread counts
+            sink.Table(
+                new[] { "Metric" }.Concat(labels).Append("Trend").ToArray(),
+                new List<string[]>
+                {
+                    MRow("Threads (Total)",         s => s.ThreadCount.ToString("N0"),         Trend(s0.ThreadCount, sN.ThreadCount)),
+                    MRow("  Alive",                 s => s.AliveThreadCount.ToString("N0"),    Trend(s0.AliveThreadCount, sN.AliveThreadCount)),
+                    MRow("  Blocked",               s => s.BlockedThreadCount.ToString("N0"),  Trend(s0.BlockedThreadCount, sN.BlockedThreadCount)),
+                    MRow("  With Active Exception", s => s.ExceptionThreadCount.ToString("N0"),Trend(s0.ExceptionThreadCount, sN.ExceptionThreadCount)),
+                    MRow("Thread Pool — Active",    s => s.TpActiveWorkers.ToString("N0"),     Trend(s0.TpActiveWorkers, sN.TpActiveWorkers)),
+                    MRow("Thread Pool — Idle",      s => s.TpIdleWorkers.ToString("N0"),       Trend(s0.TpIdleWorkers, sN.TpIdleWorkers, higherIsBad: false)),
+                    MRow("Async Backlog",           s => s.AsyncBacklogTotal.ToString("N0"),   Trend(s0.AsyncBacklogTotal, sN.AsyncBacklogTotal)),
+                    MRow("Timer Objects",           s => s.TimerCount.ToString("N0"),           Trend(s0.TimerCount, sN.TimerCount)),
+                    MRow("WCF Objects",             s => s.WcfObjectCount.ToString("N0"),       Trend(s0.WcfObjectCount, sN.WcfObjectCount)),
+                    MRow("  WCF Faulted",           s => s.WcfFaultedCount.ToString("N0"),     Trend(s0.WcfFaultedCount, sN.WcfFaultedCount)),
+                    MRow("DB Connections",          s => s.ConnectionCount.ToString("N0"),      Trend(s0.ConnectionCount, sN.ConnectionCount)),
+                },
+                "Thread and application-level object counts across dumps");
+
+            // GC generation breakdown
+            sink.Table(
+                new[] { "Generation" }.Concat(labels).Append("Trend").ToArray(),
+                new List<string[]>
+                {
+                    MRow("Gen 0",          s => DumpHelpers.FormatSize(s.Gen0Bytes),       Trend(s0.Gen0Bytes, sN.Gen0Bytes)),
+                    MRow("Gen 1",          s => DumpHelpers.FormatSize(s.Gen1Bytes),       Trend(s0.Gen1Bytes, sN.Gen1Bytes)),
+                    MRow("Gen 2",          s => DumpHelpers.FormatSize(s.Gen2Bytes),       Trend(s0.Gen2Bytes, sN.Gen2Bytes)),
+                    MRow("LOH",            s => DumpHelpers.FormatSize(s.LohBytes),        Trend(s0.LohBytes, sN.LohBytes)),
+                    MRow("POH",            s => DumpHelpers.FormatSize(s.PohBytes),        Trend(s0.PohBytes, sN.PohBytes)),
+                    MRow("Fragmentation (free)", s => $"{s.FragmentationPct:F1}%  ({DumpHelpers.FormatSize(s.HeapFreeBytes)} free)", Trend(s0.HeapFreeBytes, sN.HeapFreeBytes)),
+                },
+                "GC generation sizes and fragmentation across dumps");
+
+            // Top exception types cross-dump
+            var allExTypes = snaps
+                .SelectMany(s => s.ExceptionCounts.Select(e => e.Type))
+                .Distinct()
+                .ToList();
+            if (allExTypes.Count > 0)
+            {
+                var exCols = new[] { "Exception Type" }.Concat(labels).ToArray();
+                var exRows = allExTypes
+                    .Select(t =>
+                    {
+                        var counts = snaps.Select(s =>
+                        {
+                            var e = s.ExceptionCounts.FirstOrDefault(x => x.Type == t);
+                            return e == default ? "—" : e.Count.ToString("N0");
+                        }).ToArray();
+                        return (string[])[t, .. counts];
+                    })
+                    .OrderByDescending(r =>
+                    {
+                        int max = 0;
+                        for (int i = 1; i < r.Length; i++)
+                            if (int.TryParse(r[i].Replace(",",""), out int v) && v > max) max = v;
+                        return max;
+                    })
+                    .Take(10)
+                    .ToList();
+                sink.Table(exCols, exRows, "Top exception types across dumps");
+            }
+
+            // Top async methods cross-dump
+            var allAsyncMethods = snaps
+                .SelectMany(s => s.TopAsyncMethods.Select(m => m.Method))
+                .Distinct()
+                .ToList();
+            if (allAsyncMethods.Count > 0)
+            {
+                var aCols = new[] { "Async Method" }.Concat(labels).ToArray();
+                var aRows = allAsyncMethods
+                    .Select(m =>
+                    {
+                        var counts = snaps.Select(s =>
+                        {
+                            var am = s.TopAsyncMethods.FirstOrDefault(x => x.Method == m);
+                            return am == default ? "—" : am.Count.ToString("N0");
+                        }).ToArray();
+                        return (string[])[m, .. counts];
+                    })
+                    .OrderByDescending(r =>
+                    {
+                        int max = 0;
+                        for (int i = 1; i < r.Length; i++)
+                            if (int.TryParse(r[i].Replace(",",""), out int v) && v > max) max = v;
+                        return max;
+                    })
+                    .Take(10)
+                    .ToList();
+                sink.Table(aCols, aRows, "Top async state machine methods across dumps");
+            }
+        }
 
         // ── 4. Event Leak Analysis ────────────────────────────────────────────
         sink.Section("4. Event Leak Analysis");
@@ -387,6 +541,32 @@ internal static class TrendAnalysisCommand
 
             if (typeRows.Count > 0)
                 sink.Table(typeCols, typeRows, "Top 15 types by peak instance count across dumps");
+
+            // Top types by size (bytes) — separate table sorted by peak total bytes
+            var typeSizeCols = new[] { "Type" }
+                .Concat(labels.Select(l => $"{l} Size"))
+                .Append("Trend")
+                .ToArray();
+            var typeSizeRows = snaps
+                .SelectMany(s => s.TopTypes.Select(t => t.Name))
+                .Distinct()
+                .Select(name =>
+                {
+                    var sizes = snaps.Select(s =>
+                    {
+                        var t = s.TopTypes.FirstOrDefault(x => x.Name == name);
+                        return (raw: t?.TotalBytes ?? 0L, fmt: t is null ? "—" : DumpHelpers.FormatSize(t.TotalBytes));
+                    }).ToArray();
+                    string trend = Trend(sizes[0].raw, sizes[^1].raw);
+                    return (row: (string[])[name, .. sizes.Select(x => x.fmt), trend],
+                            peak: sizes.Max(x => x.raw));
+                })
+                .OrderByDescending(x => x.peak)
+                .Take(15)
+                .Select(x => x.row)
+                .ToList();
+            if (typeSizeRows.Count > 0)
+                sink.Table(typeSizeCols, typeSizeRows, "Top 15 types by peak total size across dumps");
         }
 
         // ── 7. Rooted Objects Analysis ────────────────────────────────────────
@@ -522,7 +702,7 @@ internal static class TrendAnalysisCommand
         return name[..keepStem] + "\u2026" + ext;   // e.g. "very-long-dump-filena\u2026.dmp"
     }
 
-    static string Trend(double first, double last, bool higherIsBad)
+    static string Trend(double first, double last, bool higherIsBad = true)
     {
         if (first <= 0) return "~";
         double pct   = (last - first) / first * 100;

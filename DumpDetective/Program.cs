@@ -77,7 +77,7 @@ static void PrintHelp()
     Console.WriteLine("  connection-pool    Database connection objects and leak detection");
     Console.WriteLine("  high-refs          Highly-referenced \"hub\" objects — retention, caches, shared state");
     Console.WriteLine("  module-list        Loaded assemblies with path and size");
-    Console.WriteLine("  analyze            Full scored health report for a single dump");
+    Console.WriteLine("  analyze            Scored health report — mini (default) or full (--full, all sub-reports)");
     Console.WriteLine("  trend-analysis     Trend report across multiple dumps");
     Console.WriteLine();
     Console.WriteLine("Run 'DumpDetective <command> --help' for command-specific help.");

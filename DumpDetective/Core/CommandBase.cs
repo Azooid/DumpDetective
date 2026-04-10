@@ -105,9 +105,19 @@ public static class CommandBase
         return true;
     }
 
+    /// <summary>
+    /// When <see langword="true"/>, per-command verbose console prints
+    /// (PrintAnalyzing, pass counters) are suppressed — used when rendering
+    /// embedded sub-reports inside full/trend combined reports.
+    /// </summary>
+    public static bool SuppressVerbose { get; set; }
+
     /// <summary>Writes a styled "Analyzing: path" header line to the console.</summary>
     public static void PrintAnalyzing(string dumpPath)
-        => AnsiConsole.MarkupLine(
+    {
+        if (SuppressVerbose) return;
+        AnsiConsole.MarkupLine(
             $"[dim]Analyzing:[/] {Markup.Escape(Path.GetFileName(dumpPath))}  " +
             $"[dim]{Markup.Escape(Path.GetDirectoryName(dumpPath) ?? "")}[/]");
+    }
 }
