@@ -183,7 +183,7 @@ internal sealed class HtmlSink : IRenderSink
         string icon = level switch { AlertLevel.Critical => "✗", AlertLevel.Warning => "⚠", _ => "ℹ" };
         _w.Write($"<div class=\"alert {cls}\"><div class=\"alert-title\"><span class=\"alert-icon\">{icon}</span>{H(title)}</div>");
         if (detail is not null) _w.Write($"<div class=\"alert-detail\">{H(detail)}</div>");
-        if (advice  is not null) _w.Write($"<div class=\"alert-advice\">→ {H(advice)}</div>");
+        if (advice  is not null) _w.Write($"<div class=\"alert-advice\"><span class=\"advice-label\">💡 Recommendation</span>{H(advice)}</div>");
         _w.WriteLine("</div>");
     }
 
@@ -335,8 +335,9 @@ internal sealed class HtmlSink : IRenderSink
         .alert-info{background:#eff6ff;border-color:#bfdbfe;border-left:4px solid #3b82f6}
         .alert-title{font-weight:600;margin-bottom:.2rem}
         .alert-icon{margin-right:.35rem}
-        .alert-detail{color:#4b5563;font-size:12px;margin-top:.2rem}
-        .alert-advice{color:#15803d;font-size:12px;margin-top:.2rem}
+        .alert-detail{color:#4b5563;font-size:12px;margin-top:.2rem;font-style:italic}
+        .alert-advice{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #16a34a;border-radius:4px;padding:.35rem .6rem;margin-top:.45rem;font-size:12.5px;color:#14532d;line-height:1.5}
+        .advice-label{display:block;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#15803d;margin-bottom:.15rem}
 
         /* ── Details accordion ────────────────────────────────────────── */
         details{border:1px solid #e2e8f0;border-radius:6px;margin:.4rem 0;overflow:hidden}
@@ -532,18 +533,20 @@ internal sealed class HtmlSink : IRenderSink
           rows.sort(function(a, b){
             const av = (a.cells[col]?.textContent ?? '').trim();
             const bv = (b.cells[col]?.textContent ?? '').trim();
-            const an = parseFloat(av.replace(/[, ]/g,''));
-            const bn = parseFloat(bv.replace(/[, ]/g,''));
-            if(!isNaN(an) && !isNaN(bn)) return asc ? an-bn : bn-an;
-            // Size strings: detect KB/MB/GB
+            // Size strings first (KB/MB/GB/TB) — must run before parseFloat
+            // because parseFloat("1.04 MB") === 1.04 which loses the unit
             const toBytes = function(s){
-              const m = s.match(/([\d.]+)\s*(B|KB|MB|GB|TB)/i);
+              const m = s.match(/^([\d,.]+)\s*(B|KB|MB|GB|TB)$/i);
               if(!m) return NaN;
               const mul = {B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776};
-              return parseFloat(m[1]) * (mul[m[2].toUpperCase()]||1);
+              return parseFloat(m[1].replace(/,/g,'')) * (mul[m[2].toUpperCase()]||1);
             };
             const ab = toBytes(av), bb = toBytes(bv);
             if(!isNaN(ab) && !isNaN(bb)) return asc ? ab-bb : bb-ab;
+            // Plain numbers (strip commas/spaces before parse)
+            const an = parseFloat(av.replace(/[, ]/g,''));
+            const bn = parseFloat(bv.replace(/[, ]/g,''));
+            if(!isNaN(an) && !isNaN(bn)) return asc ? an-bn : bn-an;
             return asc ? av.localeCompare(bv) : bv.localeCompare(av);
           });
           rows.forEach(function(r){ tbody.appendChild(r); });

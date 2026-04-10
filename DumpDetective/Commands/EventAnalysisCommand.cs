@@ -108,6 +108,21 @@ internal static class EventAnalysisCommand
                     foreach (var field in obj.Type.Fields)
                     {
                         if (!field.IsObjectReference || field.Type is null || !IsDelegate(field.Type)) continue;
+                        // Skip bare Action / Func / callback fields — not event subscriptions
+                        var ft = field.Type.Name ?? string.Empty;
+                        if (ft.StartsWith("System.Action",           StringComparison.Ordinal) ||
+                            ft.StartsWith("System.Func",             StringComparison.Ordinal) ||
+                            ft.StartsWith("System.Threading.Thread", StringComparison.Ordinal))
+                            continue;
+                        // Also skip fields literally named "action" / "callback" / "handler" (compiler closures)
+                        var fn = field.Name ?? string.Empty;
+                        if (fn.Equals("action",   StringComparison.OrdinalIgnoreCase) ||
+                            fn.Equals("callback", StringComparison.OrdinalIgnoreCase) ||
+                            fn.Equals("handler",  StringComparison.OrdinalIgnoreCase) ||
+                            fn.Equals("func",     StringComparison.OrdinalIgnoreCase) ||
+                            fn.Equals("del",      StringComparison.OrdinalIgnoreCase) ||
+                            fn.Equals("delegate", StringComparison.OrdinalIgnoreCase))
+                            continue;
                         try
                         {
                             var delVal = field.ReadObject(obj.Address, false);

@@ -245,15 +245,14 @@ public static class DumpCollector
         var asyncCounts   = new Dictionary<string, int>(512, StringComparer.Ordinal);
 
         var collectFullData = full;
-        var stringValues = collectFullData ? new Dictionary<string, (int Count, long Size)>(65536, StringComparer.Ordinal) : null;
-        var eventLeakTotals = collectFullData ? new Dictionary<(string Publisher, string Field), int>(4096) : null;
+        var stringValues    = collectFullData ? new Dictionary<string, (int Count, long Size)>(65536, StringComparer.Ordinal) : null;
+        var eventLeakTotals = new Dictionary<(string Publisher, string Field), int>(4096); // collected in all modes
 
         var typeMetaCache = new Dictionary<ulong, HeapTypeMeta>(8192);
 
         int timerCount = 0, wcfCount = 0, wcfFaulted = 0, connCount = 0;
         long processedCount = 0;
         long totalObjects = 0;
-        long largestFreeBlock = 0;
         var watch = new Stopwatch();
         watch.Start();
         foreach (var obj in heap.EnumerateObjects())
@@ -273,7 +272,7 @@ public static class DumpCollector
             if (!typeMetaCache.TryGetValue(mt, out var meta))
             {
                 var computedTypeName = type.Name ?? string.Empty;
-                meta = BuildHeapTypeMeta(type, computedTypeName, collectFullData);
+                meta = BuildHeapTypeMeta(type, computedTypeName, includeDelegateFields: true);
                 typeMetaCache[mt] = meta;
             }
             var typeName = meta.Name;
@@ -334,6 +333,26 @@ public static class DumpCollector
             if (meta.IsConnection)
                 connCount++;
 
+            // Event leak counting — always collected (mini + full)
+            foreach (var field in meta.DelegateFields)
+            {
+                try
+                {
+                    var delVal = field.Field.ReadObject(obj.Address, false);
+                    if (delVal.IsNull || !delVal.IsValid)
+                        continue;
+
+                    int subs = CountSubscribers(delVal);
+                    if (subs > 0)
+                    {
+                        (string Publisher, string Field) key = (typeName, field.Name);
+                        ref int existing = ref CollectionsMarshal.GetValueRefOrAddDefault<(string Publisher, string Field), int>(eventLeakTotals, key, out bool leakExists);
+                        existing = leakExists ? existing + subs : subs;
+                    }
+                }
+                catch { }
+            }
+
             if (!collectFullData)
                 continue;
 
@@ -343,28 +362,6 @@ public static class DumpCollector
                 ref var sv = ref CollectionsMarshal.GetValueRefOrAddDefault(stringValues, val, out bool svExists);
                 sv = svExists ? (sv.Count + 1, sv.Size + size) : (1, size);
                 s.StringTotalBytes += size;
-            }
-
-            if (eventLeakTotals is not null)
-            {
-                foreach (var field in meta.DelegateFields)
-                {
-                    try
-                    {
-                        var delVal = field.Field.ReadObject(obj.Address, false);
-                        if (delVal.IsNull || !delVal.IsValid)
-                            continue;
-
-                        int subs = CountSubscribers(delVal);
-                        if (subs > 0)
-                        {
-                            (string Publisher, string Field) key = (typeName, field.Name);
-                            ref int existing = ref CollectionsMarshal.GetValueRefOrAddDefault<(string Publisher, string Field), int>(eventLeakTotals, key, out bool leakExists);
-                            existing = leakExists ? existing + subs : subs;
-                        }
-                    }
-                    catch { }
-                }
             }
         }
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
@@ -435,7 +432,7 @@ public static class DumpCollector
             s.TopStringDuplicates = duplicateStats;
         }
 
-        if (collectFullData && eventLeakTotals is not null)
+        if (eventLeakTotals.Count > 0)
         {
             var grouped = new List<EventLeakStat>(eventLeakTotals.Count);
             foreach (var kv in eventLeakTotals)
@@ -484,8 +481,15 @@ public static class DumpCollector
             var tmp = new List<DelegateFieldMeta>();
             foreach (var f in type.Fields)
             {
-                if (f.IsObjectReference && f.Type is not null && IsDelegate(f.Type))
-                    tmp.Add(new DelegateFieldMeta(f, f.Name ?? "<?>"));
+                if (!f.IsObjectReference || f.Type is null || !IsDelegate(f.Type))
+                    continue;
+                // Skip bare Action / Func fields — they are callbacks, not events
+                var ft = f.Type.Name ?? string.Empty;
+                if (ft.StartsWith("System.Action",           StringComparison.Ordinal) ||
+                    ft.StartsWith("System.Func",             StringComparison.Ordinal) ||
+                    ft.StartsWith("System.Threading.Thread", StringComparison.Ordinal))
+                    continue;
+                tmp.Add(new DelegateFieldMeta(f, f.Name ?? "<?>"));
             }
 
             if (tmp.Count > 0)
