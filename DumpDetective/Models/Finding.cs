@@ -6,5 +6,6 @@ public sealed record Finding(
     FindingSeverity Severity,
     string          Category,
     string          Headline,
-    string?         Detail  = null,
-    string?         Advice  = null);
+    string?         Detail    = null,
+    string?         Advice    = null,
+    int             Deduction = 0);

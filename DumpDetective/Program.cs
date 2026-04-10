@@ -38,6 +38,7 @@ return args[0] switch
     "weak-refs"          => WeakRefsCommand.Run(commandArgs),
     "wcf-channels"       => WcfChannelsCommand.Run(commandArgs),
     "connection-pool"    => ConnectionPoolCommand.Run(commandArgs),
+    "high-refs"          => HighRefsCommand.Run(commandArgs),
     "module-list"        => ModuleListCommand.Run(commandArgs),
     "analyze"            => AnalyzeCommand.Run(commandArgs),
     "trend-analysis"     => TrendAnalysisCommand.Run(commandArgs),
@@ -74,6 +75,7 @@ static void PrintHelp()
     Console.WriteLine("  weak-refs          WeakReference handles — alive vs collected");
     Console.WriteLine("  wcf-channels       WCF service/channel objects and their state");
     Console.WriteLine("  connection-pool    Database connection objects and leak detection");
+    Console.WriteLine("  high-refs          Highly-referenced \"hub\" objects — retention, caches, shared state");
     Console.WriteLine("  module-list        Loaded assemblies with path and size");
     Console.WriteLine("  analyze            Full scored health report for a single dump");
     Console.WriteLine("  trend-analysis     Trend report across multiple dumps");

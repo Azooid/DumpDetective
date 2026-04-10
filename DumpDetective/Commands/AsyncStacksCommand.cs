@@ -112,11 +112,12 @@ internal static class AsyncStacksCommand
                 kv.Key.State,
                 kv.Value.ToString("N0"),
                 $"{kv.Value * 100.0 / Math.Max(1, total):F1}%",
+                kv.Key.State == "Awaiting" ? ClassifyAwait(kv.Key.Method) : "",
             })
             .ToList();
 
         sink.Section($"Top {rows.Count} State Machines by Method + State");
-        sink.Table(["Method", "State", "Count", "%"], rows,
+        sink.Table(["Method", "State", "Count", "%", "Await Hint"], rows,
             $"Top {rows.Count} of {counts.Count} unique (method, state) combinations");
 
         // State breakdown sub-summary
@@ -166,5 +167,45 @@ internal static class AsyncStacksCommand
         int gt = typeName.IndexOf(">d__", lt < 0 ? 0 : lt, StringComparison.Ordinal);
         if (lt < 0 || gt < 0) return typeName;
         return $"{typeName[..lt].TrimEnd('+')} .{typeName[(lt + 1)..gt]}";
+    }
+
+    static string ClassifyAwait(string method)
+    {
+        if (method.Contains("Http",     StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Request",  StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Rest",     StringComparison.OrdinalIgnoreCase) ||
+            method.StartsWith("System.Net", StringComparison.OrdinalIgnoreCase))
+            return "HTTP/Network";
+        if (method.Contains("Sql",      StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Query",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Database", StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("DbContext",StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Execute",  StringComparison.OrdinalIgnoreCase) ||
+            (method.Contains("Db",      StringComparison.OrdinalIgnoreCase) &&
+             !method.Contains("Debug",  StringComparison.OrdinalIgnoreCase)))
+            return "Database";
+        if (method.Contains("Redis",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Cache",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Memcache", StringComparison.OrdinalIgnoreCase))
+            return "Cache";
+        if (method.Contains("Queue",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("ServiceBus",StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Kafka",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Message",  StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Publish",  StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Consume",  StringComparison.OrdinalIgnoreCase))
+            return "Messaging";
+        if (method.Contains("File",     StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Stream",   StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Read",     StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Write",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("IO",       StringComparison.OrdinalIgnoreCase))
+            return "File/I/O";
+        if (method.Contains("Semaphore",StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Mutex",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Lock",     StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("WaitAsync",StringComparison.OrdinalIgnoreCase))
+            return "Lock/Sync";
+        return "";
     }
 }

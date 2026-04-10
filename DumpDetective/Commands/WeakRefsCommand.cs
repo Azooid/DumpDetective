@@ -106,5 +106,77 @@ internal static class WeakRefsCommand
             }).ToList();
             sink.Table(["Kind", "Status", "Type", "Address"], rows, $"First {rows.Count} handles");
         }
+
+        // ── ConditionalWeakTable detection ────────────────────────────────────
+        if (!ctx.Heap.CanWalkHeap) return;
+
+        var cwtInstances = new List<(string TypeParam, int Entries)>();
+        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning for ConditionalWeakTable...", _ =>
+        {
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                var name = obj.Type.Name ?? string.Empty;
+                if (!name.StartsWith("System.Runtime.CompilerServices.ConditionalWeakTable",
+                        StringComparison.Ordinal)) continue;
+
+                int entryCount = 0;
+                try
+                {
+                    // .NET 6+: _container._entries
+                    var container = obj.ReadObjectField("_container");
+                    if (!container.IsNull && container.IsValid)
+                    {
+                        var entries = container.ReadObjectField("_entries");
+                        if (!entries.IsNull && entries.IsValid && entries.Type?.IsArray == true)
+                            entryCount = entries.AsArray().Length;
+                    }
+                }
+                catch { }
+                if (entryCount == 0)
+                {
+                    try
+                    {
+                        // Fallback: direct _entries
+                        var entries = obj.ReadObjectField("_entries");
+                        if (!entries.IsNull && entries.IsValid && entries.Type?.IsArray == true)
+                            entryCount = entries.AsArray().Length;
+                    }
+                    catch { }
+                }
+
+                // Extract type params from "ConditionalWeakTable`2[K, V]" style name
+                string typeParam = name.Contains('[') ? name[name.IndexOf('[')..] : "";
+                cwtInstances.Add((typeParam, entryCount));
+            }
+        });
+
+        if (cwtInstances.Count > 0)
+        {
+            sink.Section("ConditionalWeakTable Instances");
+            sink.KeyValues([("Total ConditionalWeakTable instances", cwtInstances.Count.ToString("N0"))]);
+
+            var cwtRows = cwtInstances
+                .GroupBy(c => c.TypeParam)
+                .OrderByDescending(g => g.Sum(c => c.Entries))
+                .Take(20)
+                .Select(g => new[]
+                {
+                    g.Key.Length > 0 ? g.Key : "<unknown type params>",
+                    g.Count().ToString("N0"),
+                    g.Sum(c => c.Entries).ToString("N0"),
+                })
+                .ToList();
+            sink.Table(["Type Parameters", "Instances", "Total Entries"], cwtRows,
+                "ConditionalWeakTable instances by type parameter combination");
+
+            int totalEntries = cwtInstances.Sum(c => c.Entries);
+            if (totalEntries > 100_000)
+                sink.Alert(AlertLevel.Warning,
+                    $"{totalEntries:N0} total entries across {cwtInstances.Count} ConditionalWeakTable instance(s).",
+                    "ConditionalWeakTable is commonly used for per-object metadata (e.g., by frameworks and aspect libraries).",
+                    "Large entry counts may indicate a leak in framework-level metadata attachment. " +
+                    "Keys are held weakly, but values are kept alive as long as the key is reachable.");
+        }
     }
 }

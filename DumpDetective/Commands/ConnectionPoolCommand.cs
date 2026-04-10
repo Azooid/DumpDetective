@@ -38,6 +38,18 @@ internal static partial class ConnectionPoolCommand
         string State,
         string ConnStr);
 
+    private static readonly string[] CommandTypePrefixes =
+    [
+        "System.Data.SqlClient.SqlCommand",
+        "Microsoft.Data.SqlClient.SqlCommand",
+        "System.Data.OleDb.OleDbCommand",
+        "System.Data.Odbc.OdbcCommand",
+        "Oracle.ManagedDataAccess.Client.OracleCommand",
+        "Npgsql.NpgsqlCommand",
+        "MySql.Data.MySqlClient.MySqlCommand",
+        "Microsoft.EntityFrameworkCore.Storage.RelationalCommand",
+    ];
+
     public static int Run(string[] args)
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
@@ -173,6 +185,56 @@ internal static partial class ConnectionPoolCommand
 
             if (connections.Count > 200)
                 sink.Alert(AlertLevel.Info, $"Showing first 200 of {connections.Count:N0} connection objects.");
+        }
+
+        // ── Active SQL commands ───────────────────────────────────────────────
+        sink.Section("Active SQL Commands");
+        var commandTexts = new List<(string Type, string CommandText)>();
+        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning DbCommand objects...", _ =>
+        {
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                var tname = obj.Type.Name ?? string.Empty;
+                bool match = false;
+                foreach (var p in CommandTypePrefixes)
+                    if (tname.StartsWith(p, StringComparison.OrdinalIgnoreCase)) { match = true; break; }
+                if (!match) continue;
+
+                string cmdText = "";
+                foreach (var field in new[] { "_commandText", "CommandText", "_sqlText", "_commandTextTmp", "_text" })
+                {
+                    try { cmdText = obj.ReadStringField(field) ?? ""; if (cmdText.Length > 0) break; } catch { }
+                }
+                if (cmdText.Length > 0)
+                    commandTexts.Add((tname, cmdText));
+            }
+        });
+
+        if (commandTexts.Count == 0)
+        {
+            sink.Text("No DbCommand objects with readable command text found.");
+        }
+        else
+        {
+            var cmdGroups = commandTexts
+                .GroupBy(c => c.CommandText.Length > 200 ? c.CommandText[..200] : c.CommandText)
+                .Select(g => new[]
+                {
+                    g.Count().ToString("N0"),
+                    g.First().Type.Contains('.') ? g.First().Type[(g.First().Type.LastIndexOf('.') + 1)..] : g.First().Type,
+                    g.Key.Length > 120 ? g.Key[..117] + "…" : g.Key,
+                })
+                .OrderByDescending(r => int.Parse(r[0].Replace(",", "")))
+                .ToList();
+            sink.Table(["Count", "Type", "Command Text"], cmdGroups,
+                $"{commandTexts.Count:N0} DbCommand object(s) with command text — {cmdGroups.Count} distinct queries");
+
+            if (commandTexts.Count > 20)
+                sink.Alert(AlertLevel.Warning,
+                    $"{commandTexts.Count:N0} DbCommand objects with command text found on heap.",
+                    "Commands should be created, executed, and disposed promptly — not cached on the heap.",
+                    "Use parameterized queries and dispose SqlCommand objects after use.");
         }
     }
 

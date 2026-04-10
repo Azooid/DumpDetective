@@ -15,6 +15,7 @@ internal static class ThreadAnalysisCommand
         Options:
           -s, --stacks          Show top-10 stack frames per thread (collapsible in HTML)
           -b, --blocked-only    Show only threads that appear blocked
+          --state <s>           Filter by lifecycle state: blocked|running|dead|all (default: all)
           --name <substr>       Filter by thread name (case-insensitive)
           -o, --output <file>   Write report to file (.md / .html / .txt)
           -h, --help            Show this help
@@ -25,21 +26,22 @@ internal static class ThreadAnalysisCommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         bool showStacks = false, blockedOnly = false;
-        string? nameFilter = null;
+        string? nameFilter = null, stateFilter = null;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
         {
             if (args[i] is "--stacks"       or "-s") showStacks  = true;
             else if (args[i] is "--blocked-only" or "-b") blockedOnly = true;
-            else if (args[i] == "--name" && i + 1 < args.Length) nameFilter = args[++i];
+            else if (args[i] == "--name"  && i + 1 < args.Length) nameFilter  = args[++i];
+            else if (args[i] == "--state" && i + 1 < args.Length) stateFilter = args[++i].ToLowerInvariant();
         }
 
-        return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, showStacks, blockedOnly, nameFilter));
+        return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, showStacks, blockedOnly, nameFilter, stateFilter));
     }
 
     internal static void Render(DumpContext ctx, IRenderSink sink,
                                 bool showStacks = false, bool blockedOnly = false,
-                                string? nameFilter = null)
+                                string? nameFilter = null, string? stateFilter = null)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
 
@@ -54,6 +56,10 @@ internal static class ThreadAnalysisCommand
 
         var toShow = threads.AsEnumerable();
         if (blockedOnly)  toShow = toShow.Where(IsLikelyBlocked);
+        // --state filter (overrides --blocked-only if both specified)
+        if (stateFilter is "blocked") toShow = threads.AsEnumerable().Where(IsLikelyBlocked);
+        else if (stateFilter is "running") toShow = threads.AsEnumerable().Where(t => t.IsAlive && !IsLikelyBlocked(t));
+        else if (stateFilter is "dead")    toShow = threads.AsEnumerable().Where(t => !t.IsAlive);
         if (nameFilter is not null)
             toShow = toShow.Where(t =>
                 threadNames.TryGetValue(t.ManagedThreadId, out var n) &&
@@ -90,11 +96,13 @@ internal static class ThreadAnalysisCommand
 
         if (toShowList.Count == 0) { sink.Text("No threads match the filter."); return; }
 
-        string sectionTitle = blockedOnly
-            ? $"Blocked Threads ({toShowList.Count})"
-            : nameFilter is not null
-                ? $"Filtered Threads ({toShowList.Count})"
-                : $"All Threads ({toShowList.Count})";
+        string sectionTitle = stateFilter is not null and not "all"
+            ? $"Threads — state={stateFilter} ({toShowList.Count})"
+            : blockedOnly
+                ? $"Blocked Threads ({toShowList.Count})"
+                : nameFilter is not null
+                    ? $"Filtered Threads ({toShowList.Count})"
+                    : $"All Threads ({toShowList.Count})";
 
         if (!showStacks)
         {

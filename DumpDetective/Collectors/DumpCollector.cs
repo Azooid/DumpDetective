@@ -551,7 +551,7 @@ public static class DumpCollector
 
         void Add(FindingSeverity sev, string cat, string headline, string? detail = null, string? advice = null, int deduct = 0)
         {
-            findings.Add(new Finding(sev, cat, headline, detail, advice));
+            findings.Add(new Finding(sev, cat, headline, detail, advice, deduct));
             score = Math.Max(0, score - deduct);
         }
 

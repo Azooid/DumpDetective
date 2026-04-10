@@ -6,7 +6,7 @@ using DumpDetective.Output;
 
 using Spectre.Console;
 
-using System.Reflection.Emit;
+using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
@@ -50,6 +50,7 @@ internal static class AnalyzeCommand
         CommandBase.PrintAnalyzing(dumpPath);
 
         DumpSnapshot snap = null!;
+        var sw = Stopwatch.StartNew();
         AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .SpinnerStyle(Style.Parse("blue"))
@@ -61,6 +62,7 @@ internal static class AnalyzeCommand
                     ? DumpCollector.CollectFull(dumpPath, Upd)
                     : DumpCollector.CollectLightweight(dumpPath, Upd);
             });
+        AnsiConsole.MarkupLine($"[dim]  Analysis complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
 
         using var sink = IRenderSink.Create(outputPath);
         RenderReport(snap, sink);
@@ -96,6 +98,24 @@ internal static class AnalyzeCommand
             ("Health score", $"{s.HealthScore}/100  [{ScoreLabel(s.HealthScore)}]"),
             ("Mode",         s.IsFullMode ? "Full" : "Lightweight"),
         ]);
+
+        // ── Score breakdown ────────────────────────────────────────────────────
+        var breakdownRows = s.Findings
+            .Where(f => f.Deduction > 0)
+            .OrderByDescending(f => f.Deduction)
+            .Select(f => new[]
+            {
+                f.Category,
+                f.Headline.Length > 65 ? f.Headline[..62] + "…" : f.Headline,
+                $"-{f.Deduction}",
+            })
+            .ToList();
+        if (breakdownRows.Count > 0)
+        {
+            int totalDeducted = 100 - s.HealthScore;
+            sink.Table(["Category", "Finding", "Pts Deducted"], breakdownRows,
+                $"Score breakdown: {s.HealthScore}/100 (−{totalDeducted} total)");
+        }
 
         // ── Memory ────────────────────────────────────────────────────────────
         sink.Section("Memory");

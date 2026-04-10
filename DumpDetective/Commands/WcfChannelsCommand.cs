@@ -34,7 +34,7 @@ internal static class WcfChannelsCommand
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        var objects = new List<(string Type, ulong Addr, string State, string Endpoint, string FaultReason)>();
+        var objects = new List<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)>();
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning WCF objects...", _ =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
@@ -45,9 +45,10 @@ internal static class WcfChannelsCommand
 
                 string state       = ReadCommunicationState(obj);
                 string endpoint    = ReadEndpointAddress(obj);
+                string binding     = ReadBindingType(obj);
                 string faultReason = ReadFaultReason(obj, state);
 
-                objects.Add((name, obj.Address, state, endpoint, faultReason));
+                objects.Add((name, obj.Address, state, endpoint, binding, faultReason));
             }
         });
 
@@ -63,15 +64,18 @@ internal static class WcfChannelsCommand
         var summaryRows = grouped.Select(g => {
             int faulted  = g.Count(o => o.State == "Faulted");
             int opened   = g.Count(o => o.State == "Opened");
+            string bindings = string.Join(", ",
+                g.Select(o => o.Binding).Where(b => b.Length > 0).Distinct().Take(3));
             return new[]
             {
                 g.Key,
                 g.Count().ToString("N0"),
                 opened.ToString("N0"),
                 faulted > 0 ? faulted.ToString("N0") : "—",
+                bindings.Length > 0 ? bindings : "—",
             };
         }).ToList();
-        sink.Table(["Type", "Count", "Opened", "Faulted"], summaryRows);
+        sink.Table(["Type", "Count", "Opened", "Faulted", "Binding"], summaryRows);
 
         int faultedTotal = objects.Count(o => o.State == "Faulted");
         if (faultedTotal > 0)
@@ -108,9 +112,9 @@ internal static class WcfChannelsCommand
         {
             var addrRows = objects.Take(200).Select(o => new[]
             {
-                $"0x{o.Addr:X16}", o.Type, o.State, o.Endpoint, o.FaultReason,
+                $"0x{o.Addr:X16}", o.Type, o.State, o.Binding, o.Endpoint, o.FaultReason,
             }).ToList();
-            sink.Table(["Address", "Type", "State", "Endpoint", "Fault Reason"], addrRows);
+            sink.Table(["Address", "Type", "State", "Binding", "Endpoint", "Fault Reason"], addrRows);
         }
     }
 
@@ -180,6 +184,35 @@ internal static class WcfChannelsCommand
             }
             catch { }
         }
+        return "";
+    }
+
+    static string ReadBindingType(Microsoft.Diagnostics.Runtime.ClrObject obj)
+    {
+        // Try reading a binding object from common field names
+        foreach (var field in new[] { "_binding", "binding", "_channelFactory" })
+        {
+            try
+            {
+                var bindObj = obj.ReadObjectField(field);
+                if (bindObj.IsNull || !bindObj.IsValid) continue;
+                string? typeName = bindObj.Type?.Name;
+                if (!string.IsNullOrEmpty(typeName))
+                {
+                    // Shorten: "System.ServiceModel.BasicHttpBinding" → "BasicHttpBinding"
+                    int dot = typeName.LastIndexOf('.');
+                    return dot >= 0 ? typeName[(dot + 1)..] : typeName!;
+                }
+            }
+            catch { }
+        }
+        // Fallback: infer from the channel type name itself
+        var name = obj.Type?.Name ?? string.Empty;
+        if (name.Contains("BasicHttp",    StringComparison.OrdinalIgnoreCase)) return "BasicHttpBinding";
+        if (name.Contains("NetTcp",       StringComparison.OrdinalIgnoreCase)) return "NetTcpBinding";
+        if (name.Contains("WSHttp",       StringComparison.OrdinalIgnoreCase)) return "WSHttpBinding";
+        if (name.Contains("NetNamedPipe", StringComparison.OrdinalIgnoreCase)) return "NetNamedPipeBinding";
+        if (name.Contains("NetMsmq",      StringComparison.OrdinalIgnoreCase)) return "NetMsmqBinding";
         return "";
     }
 }

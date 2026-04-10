@@ -207,6 +207,18 @@
     "trend-analysis (from list file)": {
       "commandName": "Project",
       "commandLineArgs": "trend-analysis --list dumps.txt --output trend.html"
+    },
+    "high-refs": {
+      "commandName": "Project",
+      "commandLineArgs": "high-refs --top 30 --output high-refs.html"
+    },
+    "high-refs (min 50 refs)": {
+      "commandName": "Project",
+      "commandLineArgs": "high-refs --top 50 --min-refs 50 --output high-refs.html"
+    },
+    "high-refs (with addresses)": {
+      "commandName": "Project",
+      "commandLineArgs": "high-refs --top 30 --addresses --output high-refs.html"
     }
   }
 }

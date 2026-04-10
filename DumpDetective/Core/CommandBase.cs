@@ -1,5 +1,6 @@
 using DumpDetective.Output;
 using Spectre.Console;
+using System.Diagnostics;
 
 namespace DumpDetective.Core;
 
@@ -32,6 +33,8 @@ public static class CommandBase
         try
         {
             using var ctx  = DumpContext.Open(dumpPath);
+            if (ctx.ArchWarning is not null)
+                AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(ctx.ArchWarning)}[/]");
             using var sink = IRenderSink.Create(outputPath);
             body(ctx, sink);
             if (sink.IsFile && sink.FilePath is not null)
@@ -65,6 +68,25 @@ public static class CommandBase
                 dumpPath = args[i];
         }
         return (dumpPath, outputPath);
+    }
+
+    /// <summary>
+    /// Returns the effective <paramref name="requestedTop"/> value, automatically
+    /// increasing it to at least 200 when writing to a file (so reports are more
+    /// complete than the interactive console default).
+    /// </summary>
+    public static int EffectiveTop(int requestedTop, string? outputPath) =>
+        outputPath is null ? requestedTop : Math.Max(requestedTop, 200);
+
+    /// <summary>
+    /// Runs a status spinner with <paramref name="message"/>, then prints the
+    /// elapsed time once the body completes.
+    /// </summary>
+    public static void TimedStatus(string message, Action<StatusContext> body)
+    {
+        var sw = Stopwatch.StartNew();
+        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start(message, body);
+        AnsiConsole.MarkupLine($"[dim]  ({sw.Elapsed.TotalSeconds:F1}s)[/]");
     }
 
     /// <summary>

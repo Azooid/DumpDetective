@@ -133,9 +133,69 @@ internal static class HeapStatsCommand
             ("Total objects", totalObjs.ToString("N0")),
             ("Total size",    DumpHelpers.FormatSize(totalSize)),
         ]);
+
+        // ── Generic type specialization bloat ─────────────────────────────────
+        // Detect open-generic types with many distinct closed specializations
+        var genericGroups = stats.Keys
+            .Where(t => t.Contains('<'))
+            .GroupBy(GetOpenGeneric)
+            .Where(g => g.Count() >= 5)
+            .Select(g =>
+            {
+                long gCount = g.Sum(t => stats[t].Count);
+                long gSize  = g.Sum(t => stats[t].Size);
+                return new[] { g.Key, g.Count().ToString("N0"), gCount.ToString("N0"), DumpHelpers.FormatSize(gSize) };
+            })
+            .OrderByDescending(r => int.Parse(r[1].Replace(",", "")))
+            .Take(20)
+            .ToList();
+        if (genericGroups.Count > 0)
+        {
+            sink.Section("Generic Type Specialization Bloat");
+            sink.Alert(AlertLevel.Info,
+                $"{genericGroups.Count} generic type(s) with 5+ distinct closed-type specializations.",
+                "Each distinct generic specialization (e.g., List<int>, List<string>) generates a separate JIT compilation, " +
+                "contributing to code-size bloat and increased startup time.",
+                "Prefer interfaces or base types for generic constraints where the concrete type doesn't affect performance.");
+            sink.Table(["Open Generic", "Specializations", "Total Objects", "Total Size"], genericGroups,
+                "Generic types with ≥ 5 distinct closed specializations");
+        }
+
+        // ── Logging framework event accumulation ──────────────────────────────
+        var logPrefixes = new[]
+        {
+            "log4net.Core.LoggingEvent",
+            "NLog.LogEventInfo",
+            "Serilog.Events.LogEvent",
+        };
+        var logRows = stats
+            .Where(kv => logPrefixes.Any(p => kv.Key.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(kv => kv.Value.Count)
+            .Select(kv => new[] { kv.Key, kv.Value.Count.ToString("N0"), DumpHelpers.FormatSize(kv.Value.Size) })
+            .ToList();
+        if (logRows.Count > 0)
+        {
+            long logTotal = stats
+                .Where(kv => logPrefixes.Any(p => kv.Key.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+                .Sum(kv => kv.Value.Count);
+            sink.Section("Logging Framework Accumulation");
+            sink.Alert(
+                logTotal > 10_000 ? AlertLevel.Critical : AlertLevel.Warning,
+                $"{logTotal:N0} logging event object(s) from log4net/NLog/Serilog found on heap.",
+                "Logging event objects on the heap indicate an appender is backing up or not flushing. " +
+                "Possible causes: slow disk/network appender, async appender with unbounded queue, or shutdown before flush.",
+                "Use a bounded async appender queue. Ensure Dispose/Flush is called on shutdown. Consider structured logging with lower retention.");
+            sink.Table(["Type", "Count", "Size"], logRows);
+        }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    static string GetOpenGeneric(string typeName)
+    {
+        int bt = typeName.IndexOf('<');
+        return bt >= 0 ? typeName[..bt] + "<>" : typeName;
+    }
 
     static string EphemeralGen(ClrSegment seg, ulong addr)
     {

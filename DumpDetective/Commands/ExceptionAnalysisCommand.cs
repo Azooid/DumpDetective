@@ -124,10 +124,14 @@ internal static class ExceptionAnalysisCommand
             .Take(top)
             .Select(kv =>
             {
-                var recs    = byType.TryGetValue(kv.Key, out var l) ? l : [];
-                int actCnt  = recs.Count(r => r.IsActive);
-                int hr      = recs.FirstOrDefault(r => r.HResult != 0)?.HResult ?? 0;
+                var recs     = byType.TryGetValue(kv.Key, out var l) ? l : [];
+                int actCnt   = recs.Count(r => r.IsActive);
+                int hr       = recs.FirstOrDefault(r => r.HResult != 0)?.HResult ?? 0;
                 string inner = recs.FirstOrDefault(r => r.InnerType is not null)?.InnerType ?? "—";
+                // Sample message: prefer active instance, then any with a non-empty message
+                string msg   = recs.FirstOrDefault(r => r.IsActive && r.Message.Length > 0)?.Message
+                            ?? recs.FirstOrDefault(r => r.Message.Length > 0)?.Message ?? "—";
+                if (msg.Length > 80) msg = msg[..77] + "…";
                 return new[]
                 {
                     kv.Key,
@@ -135,11 +139,12 @@ internal static class ExceptionAnalysisCommand
                     actCnt > 0 ? $"⚡ {actCnt}" : "—",
                     hr != 0 ? $"0x{hr:X8}" : "—",
                     inner,
+                    msg,
                 };
             })
             .ToList();
         sink.Table(
-            ["Exception Type", "Count", "Active", "HResult", "Inner Exception"],
+            ["Exception Type", "Count", "Active", "HResult", "Inner Exception", "Sample Message"],
             summaryRows,
             $"{totalAll:N0} total  |  {totals.Count} distinct type(s)");
 
@@ -174,17 +179,37 @@ internal static class ExceptionAnalysisCommand
                 foreach (var t in activeThreads)
                 {
                     var ex = t.CurrentException!;
-                    sink.Text($"Thread {t.ManagedThreadId}  ⚡ {ex.Type?.Name ?? "?"}  — current call stack:");
+                    sink.BeginDetails(
+                        $"Thread {t.ManagedThreadId}  OS:0x{t.OSThreadId:X4}  ⚡ {ex.Type?.Name ?? "?"}  — current call stack",
+                        open: true);
                     var frameRows = ex.StackTrace
                         .Take(20)
                         .Select(f => new[] { f.Method?.Signature ?? f.ToString() ?? "?" })
                         .ToList();
                     if (frameRows.Count > 0)
                         sink.Table(["Stack Frame"], frameRows);
+                    else
+                        sink.Text("  (no managed frames)");
+                    sink.EndDetails();
                 }
             }
         }
-
+        // ── 2b. HResult grouping ───────────────────────────────────────────────────
+        var hresultGroups = byType.Values
+            .SelectMany(l => l)
+            .Where(r => r.HResult != 0)
+            .GroupBy(r => r.HResult)
+            .Select(g =>
+            {
+                string label = KnownHResult(g.Key);
+                string types = string.Join(", ", g.Select(r => r.Type.Split('.').Last()).Distinct().Take(3));
+                return new[] { $"0x{g.Key:X8}", label, g.Count().ToString("N0"), types };
+            })
+            .OrderByDescending(r => int.Parse(r[2].Replace(",", "")))
+            .ToList();
+        if (hresultGroups.Count > 0)
+            sink.Table(["HResult", "Meaning", "Count", "Exception Types"], hresultGroups,
+                "HResult distribution across all exception objects");
         // ── 3. Original throw stacks (--stack) ───────────────────────────────
         if (showStack && byType.Count > 0)
         {
@@ -200,11 +225,19 @@ internal static class ExceptionAnalysisCommand
                           ?? recs.FirstOrDefault();
                 if (sample is null) continue;
 
+                bool isActive = recs.Any(r => r.IsActive);
+                int  count    = totals.GetValueOrDefault(typeName);
+                string activeTag = isActive ? "  ⚡ ACTIVE" : "";
+                string detailTitle =
+                    $"{typeName}  ({count:N0} instance(s)){activeTag}";
+
+                sink.BeginDetails(detailTitle, open: isActive);
+
                 var infoRows = new List<string[]>();
                 if (!string.IsNullOrEmpty(sample.Message))
                     infoRows.Add(["Message", sample.Message]);
                 if (sample.HResult != 0)
-                    infoRows.Add(["HResult", $"0x{sample.HResult:X8}"]);
+                    infoRows.Add(["HResult", $"0x{sample.HResult:X8}  {KnownHResult(sample.HResult)}".TrimEnd()]);
                 if (sample.InnerType is not null)
                     infoRows.Add(["Inner Exception", sample.InnerType]);
                 if (showAddr)
@@ -212,7 +245,6 @@ internal static class ExceptionAnalysisCommand
                 string status = sample.IsActive ? $"⚡ ACTIVE on thread {sample.ThreadId}" : "inactive";
                 infoRows.Add(["Status", status]);
 
-                sink.Text($"▸ {typeName}  ({totals.GetValueOrDefault(typeName):N0} instance(s))");
                 if (infoRows.Count > 0)
                     sink.Table(["Field", "Value"], infoRows);
 
@@ -221,6 +253,8 @@ internal static class ExceptionAnalysisCommand
                         sample.StackTrace.Select(f => new[] { f }).ToList());
                 else
                     sink.Text("  (no stack trace available — exception may not have been thrown yet)");
+
+                sink.EndDetails();
             }
         }
 
@@ -317,4 +351,31 @@ internal static class ExceptionAnalysisCommand
                                    isActive, isActive ? threadInfo.ThreadId : null,
                                    isActive ? threadInfo.OSThreadId : 0, stack);
     }
+
+    static string KnownHResult(int hr) => hr switch
+    {
+        unchecked((int)0x80004005) => "E_FAIL (general failure)",
+        unchecked((int)0x80070005) => "E_ACCESSDENIED",
+        unchecked((int)0x80070057) => "E_INVALIDARG",
+        unchecked((int)0x8007000E) => "E_OUTOFMEMORY",
+        unchecked((int)0x80131500) => "COR_E_EXCEPTION",
+        unchecked((int)0x80131501) => "COR_E_ARITHMETIC",
+        unchecked((int)0x80131502) => "COR_E_ARRAYTYPEMISMATCH",
+        unchecked((int)0x80131503) => "COR_E_BADIMAGEFORMAT",
+        unchecked((int)0x80131509) => "COR_E_INVALIDOPERATION",
+        unchecked((int)0x8013150A) => "COR_E_IO",
+        unchecked((int)0x80131517) => "COR_E_NULLREFERENCE",
+        unchecked((int)0x8013152D) => "COR_E_STACKOVERFLOW",
+        unchecked((int)0x80131535) => "COR_E_TIMEOUT",
+        unchecked((int)0x80131539) => "COR_E_UNAUTHORIZEDACCESS",
+        unchecked((int)0x80131620) => "COR_E_THREADABORT",
+        unchecked((int)0x80070006) => "E_HANDLE",
+        unchecked((int)0x8007001F) => "ERROR_GEN_FAILURE",
+        unchecked((int)0x800700B7) => "ERROR_ALREADY_EXISTS",
+        unchecked((int)0x8007045A) => "ERROR_GRACEFUL_DISCONNECT",
+        unchecked((int)0x80072EE7) => "WININET_E_NAME_NOT_RESOLVED",
+        unchecked((int)0x80072EFE) => "WININET_E_CONNECTION_ABORTED",
+        unchecked((int)0x80072EFF) => "WININET_E_CONNECTION_RESET",
+        _ => "",
+    };
 }

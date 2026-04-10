@@ -147,16 +147,21 @@ internal static class StringDuplicatesCommand
             {
                 string display = r.Value.Length > 60 ? r.Value[..60] + "…" : r.Value;
                 display = display.Replace("\r", "\\r").Replace("\n", "\\n");
+                // Check whether the CLR already has this value in its intern pool.
+                // This catches BCL constants (HTTP methods, MIME types, common identifiers)
+                // that are interned in any .NET process.
+                bool alreadyInterned = string.IsInterned(r.Value) is not null;
                 return new[]
                 {
                     r.Count.ToString("N0"),
                     DumpHelpers.FormatSize(r.Wasted),
                     r.Len.ToString("N0"),
+                    alreadyInterned ? "Yes — BCL constant" : "",
                     $"\"{display}\"",
                 };
             }).ToList();
-            sink.Table(["Copies", "Wasted", "Length", "Value"], internRows,
-                "Short strings duplicated ≥ 100 times");
+            sink.Table(["Copies", "Wasted", "Length", "CLR Interned", "Value"], internRows,
+                "Short strings duplicated ≥ 100 times — 'CLR Interned' means already in the intern pool");
         }
     }
 
