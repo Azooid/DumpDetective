@@ -168,8 +168,25 @@ Specify an output file with `-o` / `--output`:
 |---|---|
 | `.html` | Interactive HTML — sticky sidebar nav, collapsible sections, sortable/filterable tables, styled alert cards |
 | `.md` | Markdown — suitable for wiki pages or GitHub |
+| `.json` | Structured JSON — full report data, convertible to any format later (see below) |
 | `.txt` | Plain text |
 | *(none)* | Console (Spectre.Console with colour) |
+
+### JSON output and offline HTML conversion
+
+Use `--output report.json` with any command to capture a structured JSON report. The JSON preserves all report data — chapters, sections, tables, key-value pairs, alerts, findings, and details accordions — including the nav level of each chapter so the sidebar hierarchy is reproduced exactly.
+
+To convert a saved JSON report to the same interactive HTML that DumpDetective produces natively, run the included Python script (Python 3.8+, no extra packages required):
+
+```bash
+# output path auto-derived: report.json → report.html
+python json_to_html.py report.json
+
+# explicit output path
+python json_to_html.py report.json output.html
+```
+
+The script produces a self-contained HTML file identical in structure, styling, and JavaScript to a direct `--output .html` run.
 
 ---
 
@@ -196,8 +213,11 @@ DumpDetective/
     ├── IRenderSink.cs           Format-agnostic output interface
     ├── HtmlSink.cs              HTML renderer
     ├── MarkdownSink.cs          Markdown renderer
+    ├── JsonSink.cs              JSON renderer (structured, offline-convertible)
     ├── TextSink.cs              Plain text renderer
     └── ConsoleSink.cs           Spectre.Console renderer
+
+json_to_html.py                 Converts a .json report back to interactive HTML
 ```
 
 ---

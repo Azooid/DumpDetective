@@ -28,6 +28,7 @@ public interface IRenderSink : IDisposable
         null                                                                      => new ConsoleSink(),
         { } p when p.EndsWith(".html", StringComparison.OrdinalIgnoreCase)       => new HtmlSink(p),
         { } p when p.EndsWith(".md",   StringComparison.OrdinalIgnoreCase)       => new MarkdownSink(p),
-        { } p                                                                     => new TextSink(p),
+        { } p when p.EndsWith(".json", StringComparison.OrdinalIgnoreCase) => new JsonSink(p),
+        { } p      => new TextSink(p),
     };
 }
