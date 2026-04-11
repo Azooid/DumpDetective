@@ -557,6 +557,7 @@ public static class DumpCollector
 
     private static void GenerateFindings(DumpSnapshot s)
     {
+        var t     = DumpDetective.Core.ThresholdLoader.Current.Scoring;
         int score = 100;
         var findings = new List<Finding>();
 
@@ -567,90 +568,90 @@ public static class DumpCollector
         }
 
         // Memory
-        if (s.TotalHeapBytes > 2L * 1024 * 1024 * 1024)
-            Add(FindingSeverity.Critical, "Memory", $"Heap exceeds 2 GB ({FormatSize(s.TotalHeapBytes)})",
-                advice: "Check top memory consumers for leaked collections or cached data.", deduct: 15);
-        else if (s.TotalHeapBytes > 800L * 1024 * 1024)
-            Add(FindingSeverity.Warning, "Memory", $"Heap is large ({FormatSize(s.TotalHeapBytes)})", deduct: 8);
+        if (s.TotalHeapBytes > t.HeapCritGb * 1024L * 1024 * 1024)
+            Add(FindingSeverity.Critical, "Memory", $"Heap exceeds {t.HeapCritGb} GB ({FormatSize(s.TotalHeapBytes)})",
+                advice: "Check top memory consumers for leaked collections or cached data.", deduct: t.DeductHeapCrit);
+        else if (s.TotalHeapBytes > t.HeapWarnMb * 1024L * 1024)
+            Add(FindingSeverity.Warning, "Memory", $"Heap is large ({FormatSize(s.TotalHeapBytes)})", deduct: t.DeductHeapWarn);
 
-        if (s.LohBytes > 500L * 1024 * 1024)
+        if (s.LohBytes > t.LohWarnMb * 1024L * 1024)
             Add(FindingSeverity.Warning, "Memory", $"LOH is {FormatSize(s.LohBytes)}",
                 detail: "Large Object Heap cannot be compacted by default.",
-                advice: "Pool large byte arrays with ArrayPool<T>.", deduct: 10);
+                advice: "Pool large byte arrays with ArrayPool<T>.", deduct: t.DeductLoh);
 
-        if (s.FragmentationPct >= 40)
+        if (s.FragmentationPct >= t.FragCritPct)
             Add(FindingSeverity.Critical, "Memory", $"Heap fragmentation {s.FragmentationPct:F1}%",
-                advice: "Reduce GCHandle.Alloc(Pinned) and use Memory<T> for I/O buffers.", deduct: 10);
-        else if (s.FragmentationPct >= 20)
-            Add(FindingSeverity.Warning, "Memory", $"Heap fragmentation {s.FragmentationPct:F1}%", deduct: 5);
+                advice: "Reduce GCHandle.Alloc(Pinned) and use Memory<T> for I/O buffers.", deduct: t.DeductFragCrit);
+        else if (s.FragmentationPct >= t.FragWarnPct)
+            Add(FindingSeverity.Warning, "Memory", $"Heap fragmentation {s.FragmentationPct:F1}%", deduct: t.DeductFragWarn);
 
         // Finalizer queue
-        if (s.FinalizerQueueDepth > 500)
+        if (s.FinalizerQueueDepth > t.FinalizerCrit)
             Add(FindingSeverity.Critical, "Memory", $"Finalizer queue has {s.FinalizerQueueDepth:N0} objects",
-                advice: "Call Dispose() / use 'using'. Objects on this queue delay GC.", deduct: 15);
-        else if (s.FinalizerQueueDepth > 100)
-            Add(FindingSeverity.Warning, "Memory", $"Finalizer queue depth: {s.FinalizerQueueDepth:N0}", deduct: 5);
+                advice: "Call Dispose() / use 'using'. Objects on this queue delay GC.", deduct: t.DeductFinalizerCrit);
+        else if (s.FinalizerQueueDepth > t.FinalizerWarn)
+            Add(FindingSeverity.Warning, "Memory", $"Finalizer queue depth: {s.FinalizerQueueDepth:N0}", deduct: t.DeductFinalizerWarn);
 
         // Pinned objects
-        if (s.PinnedHandleCount > 2000)
+        if (s.PinnedHandleCount > t.PinnedWarn)
             Add(FindingSeverity.Warning, "Memory", $"{s.PinnedHandleCount:N0} pinned GC handles",
-                advice: "Replace GCHandle.Alloc(Pinned) with Memory<T> / MemoryPool<T>.", deduct: 5);
+                advice: "Replace GCHandle.Alloc(Pinned) with Memory<T> / MemoryPool<T>.", deduct: t.DeductPinned);
 
         // Event leaks
-        if (s.EventLeakMaxOnField > 1000)
+        if (s.EventLeakMaxOnField > t.EventPerFieldCrit)
             Add(FindingSeverity.Critical, "Leaks", $"Event leak: {s.EventLeakMaxOnField:N0} subscribers on a single field",
                 detail: s.TopEventLeaks.FirstOrDefault()?.PublisherType + "." + s.TopEventLeaks.FirstOrDefault()?.FieldName,
-                advice: "Unsubscribe event handlers when the subscriber is disposed.", deduct: 20);
-        else if (s.EventSubscriberTotal > 500)
-            Add(FindingSeverity.Warning, "Leaks", $"Event leaks: {s.EventLeakFieldCount:N0} fields, {s.EventSubscriberTotal:N0} total subscribers", deduct: 10);
+                advice: "Unsubscribe event handlers when the subscriber is disposed.", deduct: t.DeductEventCrit);
+        else if (s.EventSubscriberTotal > t.EventTotalWarn)
+            Add(FindingSeverity.Warning, "Leaks", $"Event leaks: {s.EventLeakFieldCount:N0} fields, {s.EventSubscriberTotal:N0} total subscribers", deduct: t.DeductEventWarn);
 
         // String waste
-        if (s.StringWastedBytes > 100L * 1024 * 1024)
+        if (s.StringWastedBytes > t.StringWasteWarnMb * 1024L * 1024)
             Add(FindingSeverity.Warning, "Memory", $"String duplication wastes {FormatSize(s.StringWastedBytes)}",
-                advice: "Use string interning or shared constants for repeated strings.", deduct: 5);
+                advice: "Use string interning or shared constants for repeated strings.", deduct: t.DeductString);
 
         // Async backlog
-        if (s.AsyncBacklogTotal > 500)
+        if (s.AsyncBacklogTotal > t.AsyncCrit)
             Add(FindingSeverity.Critical, "Async", $"{s.AsyncBacklogTotal:N0} async continuations suspended",
                 detail: s.TopAsyncMethods.FirstOrDefault() is var top && top != default
                     ? $"Top: {top.Method} ({top.Count:N0})" : null,
-                advice: "Investigate awaited operations for I/O or lock contention.", deduct: 10);
-        else if (s.AsyncBacklogTotal > 100)
-            Add(FindingSeverity.Warning, "Async", $"{s.AsyncBacklogTotal:N0} async continuations suspended", deduct: 5);
+                advice: "Investigate awaited operations for I/O or lock contention.", deduct: t.DeductAsyncCrit);
+        else if (s.AsyncBacklogTotal > t.AsyncWarn)
+            Add(FindingSeverity.Warning, "Async", $"{s.AsyncBacklogTotal:N0} async continuations suspended", deduct: t.DeductAsyncWarn);
 
         // Thread pool
         if (s.TpMaxWorkers > 0 && s.TpActiveWorkers >= s.TpMaxWorkers)
             Add(FindingSeverity.Critical, "Threading", $"Thread pool saturated ({s.TpActiveWorkers}/{s.TpMaxWorkers} workers)",
-                advice: "Avoid blocking synchronous calls on thread pool threads.", deduct: 15);
-        else if (s.TpActiveWorkers > s.TpMaxWorkers * 0.8 && s.TpMaxWorkers > 0)
-            Add(FindingSeverity.Warning, "Threading", $"Thread pool near capacity ({s.TpActiveWorkers}/{s.TpMaxWorkers})", deduct: 5);
+                advice: "Avoid blocking synchronous calls on thread pool threads.", deduct: t.DeductTpCrit);
+        else if (s.TpActiveWorkers > s.TpMaxWorkers * t.TpNearCapacityPct && s.TpMaxWorkers > 0)
+            Add(FindingSeverity.Warning, "Threading", $"Thread pool near capacity ({s.TpActiveWorkers}/{s.TpMaxWorkers})", deduct: t.DeductTpWarn);
 
         // Blocked threads
-        if (s.BlockedThreadCount > 20)
-            Add(FindingSeverity.Critical, "Threading", $"{s.BlockedThreadCount:N0} threads appear blocked", deduct: 10);
-        else if (s.BlockedThreadCount > 5)
-            Add(FindingSeverity.Warning, "Threading", $"{s.BlockedThreadCount:N0} threads appear blocked", deduct: 5);
+        if (s.BlockedThreadCount > t.BlockedCrit)
+            Add(FindingSeverity.Critical, "Threading", $"{s.BlockedThreadCount:N0} threads appear blocked", deduct: t.DeductBlockedCrit);
+        else if (s.BlockedThreadCount > t.BlockedWarn)
+            Add(FindingSeverity.Warning, "Threading", $"{s.BlockedThreadCount:N0} threads appear blocked", deduct: t.DeductBlockedWarn);
 
         // Exceptions on threads
-        if (s.ExceptionThreadCount > 5)
-            Add(FindingSeverity.Warning, "Exceptions", $"{s.ExceptionThreadCount:N0} threads have active exceptions", deduct: 5);
+        if (s.ExceptionThreadCount > t.ExceptionWarn)
+            Add(FindingSeverity.Warning, "Exceptions", $"{s.ExceptionThreadCount:N0} threads have active exceptions", deduct: t.DeductException);
 
         // WCF
-        if (s.WcfFaultedCount > 0)
+        if (s.WcfFaultedCount >= t.WcfFaultedWarn)
             Add(FindingSeverity.Warning, "WCF", $"{s.WcfFaultedCount:N0} faulted WCF channel(s)",
-                advice: "Call Abort() on faulted channels and recreate them.", deduct: 10);
+                advice: "Call Abort() on faulted channels and recreate them.", deduct: t.DeductWcf);
 
         // DB connections
-        if (s.ConnectionCount > 50)
+        if (s.ConnectionCount > t.DbConnectionCrit)
             Add(FindingSeverity.Critical, "Connections", $"{s.ConnectionCount:N0} DB connection objects on heap",
-                advice: "Wrap SqlConnection in 'using'. Verify connection pooling settings.", deduct: 10);
-        else if (s.ConnectionCount > 10)
-            Add(FindingSeverity.Warning, "Connections", $"{s.ConnectionCount:N0} DB connection objects on heap", deduct: 5);
+                advice: "Wrap SqlConnection in 'using'. Verify connection pooling settings.", deduct: t.DeductDbCrit);
+        else if (s.ConnectionCount > t.DbConnectionWarn)
+            Add(FindingSeverity.Warning, "Connections", $"{s.ConnectionCount:N0} DB connection objects on heap", deduct: t.DeductDbWarn);
 
         // Timers
-        if (s.TimerCount > 500)
+        if (s.TimerCount > t.TimerWarn)
             Add(FindingSeverity.Warning, "Leaks", $"{s.TimerCount:N0} timer objects on heap",
-                advice: "Dispose System.Timers.Timer instances. Check for timer leak pattern.", deduct: 5);
+                advice: "Dispose System.Timers.Timer instances. Check for timer leak pattern.", deduct: t.DeductTimer);
 
         if (findings.Count == 0)
             findings.Add(new Finding(FindingSeverity.Info, "Summary", "No significant issues detected."));

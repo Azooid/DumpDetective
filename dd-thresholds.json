@@ -1,0 +1,137 @@
+{
+  // ── dd-thresholds.json ──────────────────────────────────────────────────────
+  // Place this file next to the DumpDetective executable (or in the working
+  // directory) to override any threshold without recompiling.
+  // All values shown here are the built-in defaults.
+  // Comments and trailing commas are allowed.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  // Thresholds used by the per-dump health scorer (DumpCollector.GenerateFindings)
+  "scoring": {
+
+    // ── Heap size ───────────────────────────────────────────────────────────
+    "heapWarnMb":         800,   // warn when total managed heap exceeds this (MB)
+    "heapCritGb":           2,   // critical when total managed heap exceeds this (GB)
+    "lohWarnMb":          500,   // warn when LOH exceeds this (MB)
+
+    // ── Fragmentation ───────────────────────────────────────────────────────
+    "fragWarnPct":         20,   // warn at this heap fragmentation %
+    "fragCritPct":         40,   // critical at this heap fragmentation %
+
+    // ── Finalizer queue ─────────────────────────────────────────────────────
+    "finalizerWarn":      100,
+    "finalizerCrit":      500,
+
+    // ── Pinned handles ──────────────────────────────────────────────────────
+    "pinnedWarn":        2000,
+
+    // ── Event leaks ─────────────────────────────────────────────────────────
+    "eventPerFieldCrit": 1000,   // critical when a single event field has this many subscribers
+    "eventTotalWarn":     500,   // warn when total event subscribers across all fields exceeds this
+
+    // ── String duplication ──────────────────────────────────────────────────
+    "stringWasteWarnMb":  100,   // warn when wasted string bytes exceed this (MB)
+
+    // ── Async backlog ───────────────────────────────────────────────────────
+    "asyncWarn":          100,
+    "asyncCrit":          500,
+
+    // ── Thread pool ─────────────────────────────────────────────────────────
+    "tpNearCapacityPct":  0.8,   // warn when active workers exceed this fraction of max workers
+
+    // ── Threads ─────────────────────────────────────────────────────────────
+    "blockedWarn":          5,
+    "blockedCrit":         20,
+    "exceptionWarn":        5,
+
+    // ── WCF ─────────────────────────────────────────────────────────────────
+    "wcfFaultedWarn":       1,   // warn when faulted channel count >= this
+
+    // ── DB connections ──────────────────────────────────────────────────────
+    "dbConnectionWarn":    10,
+    "dbConnectionCrit":    50,
+
+    // ── Timers ──────────────────────────────────────────────────────────────
+    "timerWarn":          500,
+
+    // ── Score deductions (points subtracted per finding) ────────────────────
+    "deductHeapWarn":       8,
+    "deductHeapCrit":      15,
+    "deductLoh":           10,
+    "deductFragWarn":       5,
+    "deductFragCrit":      10,
+    "deductFinalizerWarn":  5,
+    "deductFinalizerCrit": 15,
+    "deductPinned":         5,
+    "deductEventCrit":     20,
+    "deductEventWarn":     10,
+    "deductString":         5,
+    "deductAsyncWarn":      5,
+    "deductAsyncCrit":     10,
+    "deductTpWarn":         5,
+    "deductTpCrit":        15,
+    "deductBlockedWarn":    5,
+    "deductBlockedCrit":   10,
+    "deductException":      5,
+    "deductWcf":           10,
+    "deductDbWarn":         5,
+    "deductDbCrit":        10,
+    "deductTimer":          5
+  },
+
+  // Thresholds used by the trend-analysis signal table and executive summary
+  "trend": {
+
+    // Health score (lower = worse, so warn/crit are lower bounds, higherIsBad: false)
+    "scoreWarn":           70,
+    "scoreCrit":           40,
+
+    // Heap total (MB)
+    "heapWarnMb":         512,
+    "heapCritMb":        1024,
+
+    // LOH size (MB)
+    "lohWarnMb":          100,
+    "lohCritMb":          500,
+
+    // Heap free / fragmentation (MB of free space, not %)
+    "fragWarnMb":          50,
+    "fragCritMb":         200,
+
+    // Threads
+    "blockedWarn":          5,
+    "blockedCrit":         20,
+    "asyncWarn":           50,
+    "asyncCrit":          200,
+    "exceptionWarn":        1,
+    "exceptionCrit":        5,
+
+    // Finalizer queue
+    "finalizerWarn":      100,
+    "finalizerCrit":     1000,
+
+    // Timers
+    "timerWarn":          500,
+    "timerCrit":         2000,
+
+    // WCF faulted channels
+    "wcfWarn":              1,
+    "wcfCrit":              5,
+
+    // DB connections
+    "dbWarn":              50,
+    "dbCrit":             200,
+
+    // Pinned handles
+    "pinnedWarn":          50,
+    "pinnedCrit":         200,
+
+    // Event subscribers (total across all fields)
+    "eventWarn":         1000,
+    "eventCrit":        10000,
+
+    // String waste (MB)
+    "stringWasteWarnMb":   10,
+    "stringWasteCritMb":   50
+  }
+}

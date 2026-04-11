@@ -290,72 +290,74 @@ internal static class TrendAnalysisCommand
                 incidentRows.Add([name, .. cells, Trend(v0, vN, higherIsBad)]);
             }
 
+            var tt = DumpDetective.Core.ThresholdLoader.Current.Trend;
+
             // Health
             IR("Health Score",
                 s => (s.HealthScore, $"{s.HealthScore}/100 {ScoreLabel(s.HealthScore)}"),
-                warnAt: 70, critAt: 40, higherIsBad: false);
+                warnAt: tt.ScoreWarn, critAt: tt.ScoreCrit, higherIsBad: false);
 
             // Memory
             IR("Heap Total",
                 s => (s.TotalHeapBytes / 1048576.0, DumpHelpers.FormatSize(s.TotalHeapBytes)),
-                warnAt: 512, critAt: 1024);
+                warnAt: tt.HeapWarnMb, critAt: tt.HeapCritMb);
             IR("LOH Size",
                 s => (s.LohBytes / 1048576.0, DumpHelpers.FormatSize(s.LohBytes)),
-                warnAt: 100, critAt: 500);
+                warnAt: tt.LohWarnMb, critAt: tt.LohCritMb);
             IR("Fragmentation",
                 s => (s.HeapFreeBytes / 1048576.0, $"{s.FragmentationPct:F1}% ({DumpHelpers.FormatSize(s.HeapFreeBytes)})"),
-                warnAt: 50, critAt: 200);
+                warnAt: tt.FragWarnMb, critAt: tt.FragCritMb);
 
             // Threads
             IR("Blocked Threads",
                 s => (s.BlockedThreadCount, s.BlockedThreadCount.ToString("N0")),
-                warnAt: 5, critAt: 20);
+                warnAt: tt.BlockedWarn, critAt: tt.BlockedCrit);
             IR("Async Backlog",
                 s => (s.AsyncBacklogTotal, s.AsyncBacklogTotal.ToString("N0")),
-                warnAt: 50, critAt: 200);
+                warnAt: tt.AsyncWarn, critAt: tt.AsyncCrit);
 
             // Exceptions
             IR("Active Exceptions",
                 s => (s.ExceptionThreadCount, s.ExceptionThreadCount.ToString("N0")),
-                warnAt: 1, critAt: 5);
+                warnAt: tt.ExceptionWarn, critAt: tt.ExceptionCrit);
 
             // Finalizer
             IR("Finalizer Queue",
                 s => (s.FinalizerQueueDepth, s.FinalizerQueueDepth.ToString("N0")),
-                warnAt: 100, critAt: 1000);
+                warnAt: tt.FinalizerWarn, critAt: tt.FinalizerCrit);
 
             // Timers
             IR("Timer Objects",
                 s => (s.TimerCount, s.TimerCount.ToString("N0")),
-                warnAt: 500, critAt: 2000);
+                warnAt: tt.TimerWarn, critAt: tt.TimerCrit);
 
             // WCF
             if (snaps.Any(s => s.WcfObjectCount > 0))
                 IR("WCF Faulted Channels",
                     s => (s.WcfFaultedCount, s.WcfFaultedCount == 0 ? "—" : s.WcfFaultedCount.ToString("N0")),
-                    warnAt: 1, critAt: 5);
+                    warnAt: tt.WcfWarn, critAt: tt.WcfCrit);
 
             // Connections
             if (snaps.Any(s => s.ConnectionCount > 0))
                 IR("DB Connections",
                     s => (s.ConnectionCount, s.ConnectionCount.ToString("N0")),
-                    warnAt: 50, critAt: 200);
+                    warnAt: tt.DbWarn, critAt: tt.DbCrit);
 
             // Handles — pinned handle growth is a GC pressure signal
             IR("Pinned Handles",
                 s => (s.PinnedHandleCount, s.PinnedHandleCount.ToString("N0")),
-                warnAt: 50, critAt: 200);
+                warnAt: tt.PinnedWarn, critAt: tt.PinnedCrit);
 
             // Event leaks
             IR("Event Subscribers",
                 s => (s.EventSubscriberTotal, s.EventSubscriberTotal.ToString("N0")),
-                warnAt: 1000, critAt: 10000);
+                warnAt: tt.EventWarn, critAt: tt.EventCrit);
 
             // String duplication (full mode only)
             if (snaps.Any(s => s.StringWastedBytes > 0))
                 IR("String Waste",
                     s => (s.StringWastedBytes / 1048576.0, DumpHelpers.FormatSize(s.StringWastedBytes)),
-                    warnAt: 10, critAt: 50);
+                    warnAt: tt.StringWasteWarnMb, critAt: tt.StringWasteCritMb);
 
             sink.Table(incidentCols, incidentRows,
                 "✓ good  ⚠ warning  ✗ critical  (thresholds are heuristic)");
@@ -379,23 +381,23 @@ internal static class TrendAnalysisCommand
                 else if (st == "⚠") warnings.Add(name);
             }
 
-            CheckSignal("Health Score",      sN.HealthScore,                      70, 40,    higherIsBad: false);
-            CheckSignal("Heap Total",        sN.TotalHeapBytes / 1048576.0,       512, 1024);
-            CheckSignal("LOH Size",          sN.LohBytes / 1048576.0,             100, 500);
-            CheckSignal("Fragmentation",     sN.HeapFreeBytes / 1048576.0,        50,  200);
-            CheckSignal("Blocked Threads",   sN.BlockedThreadCount,               5,   20);
-            CheckSignal("Async Backlog",     sN.AsyncBacklogTotal,                50,  200);
-            CheckSignal("Active Exceptions", sN.ExceptionThreadCount,             1,   5);
-            CheckSignal("Finalizer Queue",   sN.FinalizerQueueDepth,              100, 1000);
-            CheckSignal("Timer Objects",     sN.TimerCount,                       500, 2000);
+            CheckSignal("Health Score",      sN.HealthScore,                      tt.ScoreWarn,         tt.ScoreCrit,         higherIsBad: false);
+            CheckSignal("Heap Total",        sN.TotalHeapBytes / 1048576.0,       tt.HeapWarnMb,        tt.HeapCritMb);
+            CheckSignal("LOH Size",          sN.LohBytes / 1048576.0,             tt.LohWarnMb,         tt.LohCritMb);
+            CheckSignal("Fragmentation",     sN.HeapFreeBytes / 1048576.0,        tt.FragWarnMb,        tt.FragCritMb);
+            CheckSignal("Blocked Threads",   sN.BlockedThreadCount,               tt.BlockedWarn,       tt.BlockedCrit);
+            CheckSignal("Async Backlog",     sN.AsyncBacklogTotal,                tt.AsyncWarn,         tt.AsyncCrit);
+            CheckSignal("Active Exceptions", sN.ExceptionThreadCount,             tt.ExceptionWarn,     tt.ExceptionCrit);
+            CheckSignal("Finalizer Queue",   sN.FinalizerQueueDepth,              tt.FinalizerWarn,     tt.FinalizerCrit);
+            CheckSignal("Timer Objects",     sN.TimerCount,                       tt.TimerWarn,         tt.TimerCrit);
             if (snaps.Any(s => s.WcfObjectCount > 0))
-                CheckSignal("WCF Faulted Channels", sN.WcfFaultedCount,           1,   5);
+                CheckSignal("WCF Faulted Channels", sN.WcfFaultedCount,           tt.WcfWarn,           tt.WcfCrit);
             if (snaps.Any(s => s.ConnectionCount > 0))
-                CheckSignal("DB Connections",       sN.ConnectionCount,           50,  200);
-            CheckSignal("Pinned Handles",    sN.PinnedHandleCount,                50,  200);
-            CheckSignal("Event Subscribers", sN.EventSubscriberTotal,             1000, 10000);
+                CheckSignal("DB Connections",       sN.ConnectionCount,           tt.DbWarn,            tt.DbCrit);
+            CheckSignal("Pinned Handles",    sN.PinnedHandleCount,                tt.PinnedWarn,        tt.PinnedCrit);
+            CheckSignal("Event Subscribers", sN.EventSubscriberTotal,             tt.EventWarn,         tt.EventCrit);
             if (snaps.Any(s => s.StringWastedBytes > 0))
-                CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0,    10,  50);
+                CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0,    tt.StringWasteWarnMb, tt.StringWasteCritMb);
 
             var sb = new System.Text.StringBuilder();
             sb.Append($"Analysis covers {snaps.Count} memory dump{(snaps.Count == 1 ? "" : "s")} " +
