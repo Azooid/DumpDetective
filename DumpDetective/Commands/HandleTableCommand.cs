@@ -14,7 +14,7 @@ internal static class HandleTableCommand
         Options:
           -n, --top <N>       Top N object types per handle kind (default: 5)
           -f, --filter <k>    Only show handles whose kind contains <k>
-          -o, --output <f>    Write report to file
+          -o, --output <f>    Write report to file (.html / .md / .txt / .json)
           -h, --help          Show this help
         """;
 

@@ -18,7 +18,7 @@ internal static class HeapStatsCommand
           -f, --filter <name>        Only show types whose name contains <name>
           --gen <0|1|2|loh|poh>      Filter to a specific generation
           --sort-by <size|count>     Sort order (default: size)
-          -o, --output <file>        Write report to file (.md / .html / .txt)
+          -o, --output <file>        Write report to file (.html / .md / .txt / .json)
           -h, --help                 Show this help
         """;
 

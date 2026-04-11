@@ -120,4 +120,12 @@ public static class CommandBase
             $"[dim]Analyzing:[/] {Markup.Escape(Path.GetFileName(dumpPath))}  " +
             $"[dim]{Markup.Escape(Path.GetDirectoryName(dumpPath) ?? "")}[/]");
     }
+
+    /// <summary>
+    /// Standard output-file format hint to embed in command Help strings.
+    /// All formats are supported by every command via <see cref="IRenderSink"/> —
+    /// the <c>.json</c> output can be converted to any other format later with
+    /// <c>DumpDetective render &lt;file.json&gt;</c>.
+    /// </summary>
+    public const string OutputFormats = ".html / .md / .txt / .json";
 }

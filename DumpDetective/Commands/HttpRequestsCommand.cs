@@ -12,7 +12,7 @@ internal static class HttpRequestsCommand
 
         Options:
           -a, --addresses    Show object addresses (up to 200)
-          -o, --output <f>   Write report to file (.md / .html / .txt)
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

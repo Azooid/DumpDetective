@@ -17,7 +17,7 @@ internal static class LargeObjectsCommand
           -f, --filter <name>    Only show types whose name contains <name>
           -a, --addresses        Show object addresses
           --type-breakdown       Show aggregate size by type instead of individual objects
-          -o, --output <file>    Write report to file (.md / .html / .txt)
+          -o, --output <file>    Write report to file (.html / .md / .txt / .json)
           -h, --help             Show this help
         """;
 

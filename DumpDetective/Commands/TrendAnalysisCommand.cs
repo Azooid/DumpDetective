@@ -22,18 +22,27 @@ internal static class TrendAnalysisCommand
                                  Entries can be dump files or directories.
           --full                 Run full collection per dump (includes event leaks,
                                  string duplicates — slower but more data)
+          --baseline <n>         1-based index of the dump to use as baseline for
+                                 trend arrows and comparisons (default: 1 = first dump).
+                                 Example: --baseline 2  (compare everything against D2)
           --ignore-event <type>  Exclude publisher types whose name contains <type>
                                  from the Event Leak Analysis table. Repeatable.
                                  Example: --ignore-event SNINativeMethodWrapper
-          -o, --output <f>       Write report to file (.md / .html / .txt)
+          -o, --output <f>       Write report to file:
+                                   .html  — interactive HTML report
+                                   .md    — Markdown report
+                                   .txt   — plain text report
+                                   .json  — raw snapshot data (re-render any time
+                                            with 'trend-render' at any baseline,
+                                            no dump files needed)
           -h, --help             Show this help
 
         Example:
           DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
           DumpDetective trend-analysis D:\\dumps --output trends.html
           DumpDetective trend-analysis --list dumps.txt --full --output report.md
-          DumpDetective trend-analysis d1.dmp d2.dmp --full \\
-              --ignore-event SNINativeMethodWrapper --ignore-event System.Data
+          DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output snapshots.json
+          DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
         """;
 
     public static int Run(string[] args)
@@ -49,6 +58,7 @@ internal static class TrendAnalysisCommand
         string? output     = null;
         string? listFile   = null;
         var ignoreEvents   = new List<string>();
+        int     baselineArg = 1;   // 1-based; validated against actual dump count later
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -58,6 +68,14 @@ internal static class TrendAnalysisCommand
                 full = true;
             else if (args[i] == "--list" && i + 1 < args.Length)
                 listFile = args[++i];
+            else if (args[i] == "--baseline" && i + 1 < args.Length)
+            {
+                if (!int.TryParse(args[++i], out baselineArg) || baselineArg < 1)
+                {
+                    Console.Error.WriteLine("Error: --baseline must be a positive integer (1 = first dump).");
+                    return 1;
+                }
+            }
             else if (args[i] == "--ignore-event" && i + 1 < args.Length)
                 ignoreEvents.Add(args[++i]);
             else if (!args[i].StartsWith('-'))
@@ -144,8 +162,81 @@ internal static class TrendAnalysisCommand
 
         AnsiConsole.WriteLine();
 
+        // Validate and convert to 0-based
+        int baselineIndex = baselineArg - 1;
+        if (baselineIndex >= dumpPaths.Count)
+        {
+            Console.Error.WriteLine(
+                $"Error: --baseline {baselineArg} is out of range (only {dumpPaths.Count} dump(s) loaded).");
+            return 1;
+        }
+
+        // ── .json output = save raw snapshots (re-renderable with trend-render) ────────
+        if (output is not null && output.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        {
+            // In full mode, capture every sub-command's rendered output per dump so
+            // trend-render can replay it later without reopening the dump files.
+            DumpDetective.Models.ReportDoc?[]? subReports = null;
+            if (full)
+            {
+                subReports = new DumpDetective.Models.ReportDoc?[snapshots.Count];
+                AnsiConsole.MarkupLine("[bold]Capturing per-dump sub-reports for JSON export…[/]");
+                CommandBase.SuppressVerbose = true;
+                try
+                {
+                    for (int i = 0; i < dumpPaths.Count; i++)
+                    {
+                        var label    = $"D{i + 1}";
+                        var path     = dumpPaths[i];
+                        var snap     = snapshots[i];
+                        var sc       = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
+                        AnsiConsole.MarkupLine(
+                            $"  [bold]{label}[/]  [dim]{Markup.Escape(ShortName(path))}[/]  " +
+                            $"[{sc}]{snap.HealthScore}/100[/]");
+
+                        var cap = new DumpDetective.Output.CaptureSink();
+
+                        // Add the per-dump chapter header to the capture
+                        cap.Header(
+                            $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
+                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
+
+                        // Scored summary from snapshot (no heap re-open needed)
+                        AnalyzeCommand.RenderReport(snap, cap, includeHeader: false);
+
+                        // Full sub-reports — re-open dump for live heap-walk commands
+                        try
+                        {
+                            using var ctx = DumpContext.Open(path);
+                            AnalyzeCommand.RenderEmbeddedReports(ctx, cap);
+                        }
+                        catch (Exception ex)
+                        {
+                            AnsiConsole.MarkupLine($"  [yellow]⚠ Sub-reports partial: {Markup.Escape(ex.Message)}[/]");
+                            cap.Alert(DumpDetective.Output.AlertLevel.Warning,
+                                $"Sub-reports incomplete for {ShortName(path)}: {ex.Message}");
+                        }
+
+                        subReports[i] = cap.GetDoc();
+
+                        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
+                        GC.WaitForPendingFinalizers();
+                    }
+                }
+                finally
+                {
+                    CommandBase.SuppressVerbose = false;
+                }
+            }
+
+            TrendRawSerializer.Save(snapshots, output, subReports);
+            AnsiConsole.MarkupLine($"[dim]→ Raw snapshot data written to:[/] {Markup.Escape(output)}");
+            AnsiConsole.MarkupLine("[dim]Use 'trend-render' to convert to HTML/Markdown/text at any time.[/]");
+            return 0;
+        }
+
         using var sink = IRenderSink.Create(output);
-        RenderTrend(snapshots, sink, ignoreEvents);
+        RenderTrend(snapshots, sink, ignoreEvents, baselineIndex);
 
         // ── Full mode: append per-dump scored summary + embedded sub-reports ──
         if (full)
@@ -236,18 +327,24 @@ internal static class TrendAnalysisCommand
     // ── Renderer ──────────────────────────────────────────────────────────────
 
     internal static void RenderTrend(List<DumpSnapshot> snaps, IRenderSink sink,
-                                     IReadOnlyList<string>? ignoreEventTypes = null)
+                                     IReadOnlyList<string>? ignoreEventTypes = null,
+                                     int baselineIndex = 0)
     {
-        var s0    = snaps[0];
-        var sN    = snaps[^1];
+        // Clamp in case the method is called internally with a stale index
+        baselineIndex = Math.Clamp(baselineIndex, 0, snaps.Count - 1);
+
+        var s0    = snaps[baselineIndex];   // baseline dump (used for trend arrows & comparisons)
+        var sN    = snaps[^1];              // latest dump (always the last)
         bool full = snaps.Any(s => s.IsFullMode);
 
         // Assign D1 … Dn labels used throughout the report
         var labels = snaps.Select((_, i) => $"D{i + 1}").ToArray();
+        string baselineLabel = labels[baselineIndex];
 
+        string baselineNote = baselineIndex == 0 ? "" : $"  |  Baseline: {baselineLabel}";
         sink.Header(
-            "Dump Detective — Trend Analysis Report",
-            $"{snaps.Count} dumps  |  {s0.FileTime:yyyy-MM-dd HH:mm} → {sN.FileTime:yyyy-MM-dd HH:mm}  |  {(full ? "Full" : "Lightweight")} mode");
+            "Dump Detective \u2014 Trend Analysis Report",
+            $"{snaps.Count} dumps  |  {snaps[0].FileTime:yyyy-MM-dd HH:mm} \u2192 {sN.FileTime:yyyy-MM-dd HH:mm}  |  {(full ? "Full" : "Lightweight")} mode{baselineNote}");
 
         // ── 1. Dump Timeline ──────────────────────────────────────────────────
         sink.Section("0. Dump Timeline");
@@ -279,7 +376,7 @@ internal static class TrendAnalysisCommand
             string Cell(DumpSnapshot s, double val, string display, double warnAt, double critAt, bool higherIsBad = true)
                 => $"{Status(val, warnAt, critAt, higherIsBad)} {display}";
 
-            var incidentCols = new[] { "Signal" }.Concat(labels).Append("Trend").ToArray();
+            var incidentCols = new[] { "Signal" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray();
             var incidentRows = new List<string[]>();
 
             void IR(string name, Func<DumpSnapshot, (double val, string display)> proj,
@@ -363,9 +460,11 @@ internal static class TrendAnalysisCommand
                 "✓ good  ⚠ warning  ✗ critical  (thresholds are heuristic)");
 
             // ── Executive summary paragraph ───────────────────────────────────────
-            var span      = sN.FileTime - s0.FileTime;
+            // span = full timeline (first dump → last dump), independent of baseline
+            var span      = sN.FileTime - snaps[0].FileTime;
             var spanStr   = span.TotalHours >= 1
                 ? $"{span.TotalHours:F1} hours" : $"{span.TotalMinutes:F0} minutes";
+            // score change compares baseline → latest
             var scoreChange = sN.HealthScore - s0.HealthScore;
             var scoreDir  = scoreChange > 0 ? $"improved by {scoreChange} points"
                 : scoreChange < 0 ? $"declined by {Math.Abs(scoreChange)} points"
@@ -400,9 +499,11 @@ internal static class TrendAnalysisCommand
                 CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0,    tt.StringWasteWarnMb, tt.StringWasteCritMb);
 
             var sb = new System.Text.StringBuilder();
+            string baselineSuffix = baselineIndex == 0 ? "" : $" (baseline: {baselineLabel})";
             sb.Append($"Analysis covers {snaps.Count} memory dump{(snaps.Count == 1 ? "" : "s")} " +
-                      $"spanning {spanStr} ({s0.FileTime:yyyy-MM-dd HH:mm} → {sN.FileTime:yyyy-MM-dd HH:mm}). ");
-            sb.Append($"The application health score {scoreDir} " +
+                      $"spanning {spanStr} ({snaps[0].FileTime:yyyy-MM-dd HH:mm} → {sN.FileTime:yyyy-MM-dd HH:mm}). ");
+            sb.Append($"Trends compare {labels[^1]} against baseline {baselineLabel}{baselineSuffix}. " +
+                      $"The application health score {scoreDir} " +
                       $"({s0.HealthScore}/100 {ScoreLabel(s0.HealthScore)} → {sN.HealthScore}/100 {ScoreLabel(sN.HealthScore)}). ");
             if (criticals.Count == 0 && warnings.Count == 0)
             {
@@ -484,7 +585,7 @@ internal static class TrendAnalysisCommand
 
         // ── 2. Overall Growth Summary ──────────────────────────────────────────────────
         sink.Section("2. Overall Growth Summary");
-        var growthCols = new[] { "Metric" }.Concat(labels).Append("Trend").ToArray();
+        var growthCols = new[] { "Metric" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray();
         var growthRows = new List<string[]>();
 
         void AddRow(string label, Func<DumpSnapshot, double> sel,
@@ -528,7 +629,7 @@ internal static class TrendAnalysisCommand
 
             // Thread counts
             sink.Table(
-                new[] { "Metric" }.Concat(labels).Append("Trend").ToArray(),
+                new[] { "Metric" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray(),
                 new List<string[]>
                 {
                     MRow("Threads (Total)",         s => s.ThreadCount.ToString("N0"),         Trend(s0.ThreadCount, sN.ThreadCount)),
@@ -547,7 +648,7 @@ internal static class TrendAnalysisCommand
 
             // GC generation breakdown
             sink.Table(
-                new[] { "Generation" }.Concat(labels).Append("Trend").ToArray(),
+                new[] { "Generation" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray(),
                 new List<string[]>
                 {
                     MRow("Gen 0",          s => DumpHelpers.FormatSize(s.Gen0Bytes),       Trend(s0.Gen0Bytes, sN.Gen0Bytes)),

@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core;
+using DumpDetective.Core;
 using DumpDetective.Helpers;
 using DumpDetective.Output;
 using Microsoft.Diagnostics.Runtime;
@@ -16,7 +16,7 @@ internal static class EventAnalysisCommand
           -n, --top <N>          Top N event fields to show (default: 20)
           -e, --exclude <type>   Exclude types containing <type> (repeatable)
           -a, --addresses        Show subscriber object addresses
-          -o, --output <f>       Write report to file (.md / .html / .txt)
+          -o, --output <f>       Write report to file (.html / .md / .txt / .json)
           -h, --help             Show this help
         """;
 

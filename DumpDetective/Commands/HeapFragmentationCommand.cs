@@ -12,7 +12,7 @@ internal static class HeapFragmentationCommand
         Usage: DumpDetective heap-fragmentation <dump-file> [options]
 
         Options:
-          -o, --output <f>   Write report to file (.md / .html / .txt)
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

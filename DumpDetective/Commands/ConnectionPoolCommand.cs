@@ -14,7 +14,7 @@ internal static partial class ConnectionPoolCommand
 
         Options:
           -a, --addresses    Show object addresses per connection (up to 200)
-          -o, --output <f>   Write report to file
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

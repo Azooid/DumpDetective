@@ -3,7 +3,7 @@ using DumpDetective.Commands;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-Environment.SetEnvironmentVariable("DD_DUMP", @"D:\Dump\WCF_dump_final\senerio2_dump\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp");
+//Environment.SetEnvironmentVariable("DD_DUMP", @"D:\dumps\Full_day_03_04_2026_bal_LT\w3wp.exe__BALLOADTEST__PID__2864__Date__04_03_2026__Time_06_08_04PM__459__Manual Dump.dmp");
 
 if (args.Length == 0 || args[0] is "--help" or "-h")
 {
@@ -42,6 +42,8 @@ return args[0] switch
     "module-list"        => ModuleListCommand.Run(commandArgs),
     "analyze"            => AnalyzeCommand.Run(commandArgs),
     "trend-analysis"     => TrendAnalysisCommand.Run(commandArgs),
+    "trend-render" or
+    "render"             => TrendRenderCommand.Run(commandArgs),
     _                    => UnknownCommand(args[0])
 };
 
@@ -79,6 +81,7 @@ static void PrintHelp()
     Console.WriteLine("  module-list        Loaded assemblies with path and size");
     Console.WriteLine("  analyze            Scored health report — mini (default) or full (--full, all sub-reports)");
     Console.WriteLine("  trend-analysis     Trend report across multiple dumps");
+    Console.WriteLine("  trend-render       Re-render or convert any *.json data to HTML/Markdown/text (alias: render)");
     Console.WriteLine();
     Console.WriteLine("Run 'DumpDetective <command> --help' for command-specific help.");
     Console.WriteLine();

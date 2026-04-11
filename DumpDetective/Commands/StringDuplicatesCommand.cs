@@ -16,7 +16,7 @@ internal static class StringDuplicatesCommand
           -c, --min-count <N>     Minimum duplicate count (default: 2)
           -w, --min-waste <bytes> Minimum wasted bytes to include
           -p, --pattern <hint>    Filter by pattern: url|guid|path|number|stackframe
-          -o, --output <file>     Write report to file (.md / .html / .txt)
+          -o, --output <file>     Write report to file (.html / .md / .txt / .json)
           -h, --help              Show this help
         """;
 

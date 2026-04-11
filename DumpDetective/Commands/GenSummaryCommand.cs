@@ -12,7 +12,7 @@ internal static class GenSummaryCommand
         Usage: DumpDetective gen-summary <dump-file> [options]
 
         Options:
-          -o, --output <f>   Write report to file
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

@@ -13,7 +13,7 @@ internal static class WeakRefsCommand
 
         Options:
           -a, --addresses    Show handle addresses
-          -o, --output <f>   Write report to file
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

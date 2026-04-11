@@ -16,7 +16,7 @@ internal static class PinnedObjectsCommand
 
         Options:
           -a, --addresses    Show individual object addresses (up to 100 per type)
-          -o, --output <f>   Write report to file
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

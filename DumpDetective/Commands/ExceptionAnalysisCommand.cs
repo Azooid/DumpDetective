@@ -18,7 +18,7 @@ internal static class ExceptionAnalysisCommand
           -f, --filter <t>   Only types whose name contains <t>
           -a, --addresses    Include object addresses in the detail table
           -s, --stack        Show original throw stack trace per exception type
-          -o, --output <f>   Write report to file (.md / .html / .txt)
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

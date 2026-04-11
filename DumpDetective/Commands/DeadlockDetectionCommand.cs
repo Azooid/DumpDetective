@@ -12,7 +12,7 @@ internal static class DeadlockDetectionCommand
 
         Options:
           --min-threads <N>    Minimum group size to flag (default: 2)
-          -o, --output <file>  Write report to file (.md / .html / .txt)
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
 
         Note:

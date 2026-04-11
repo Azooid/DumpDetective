@@ -15,7 +15,7 @@ internal static class AsyncStacksCommand
           -f, --filter <t>   Only show state machines whose type contains <t>
           -n, --top <N>      Top N methods (default: 50)
           -a, --addresses    Show individual state machine addresses (up to 200)
-          -o, --output <f>   Write report to file (.md / .html / .txt)
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

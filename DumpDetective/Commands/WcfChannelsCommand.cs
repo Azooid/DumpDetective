@@ -12,7 +12,7 @@ internal static class WcfChannelsCommand
 
         Options:
           -a, --addresses    Show object addresses
-          -o, --output <f>   Write report to file
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

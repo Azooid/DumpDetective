@@ -18,7 +18,7 @@ internal static class ObjectInspectCommand
           --address, -x <addr>    Object address in hex (required)
           -d, --depth <N>         Depth to recurse into references (default: 1, max: 5)
           --max-array <N>         Max array elements to display (default: 10)
-          -o, --output <f>        Write report to file
+          -o, --output <f>        Write report to file (.html / .md / .txt / .json)
           -h, --help              Show this help
         """;
 

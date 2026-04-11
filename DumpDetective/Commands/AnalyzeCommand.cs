@@ -29,7 +29,7 @@ internal static class AnalyzeCommand
 
         Options:
           --full               Full combined report (scored summary + all sub-reports)
-          -o, --output <file>  Write report to file (.md / .html / .txt)
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
 
         Examples:

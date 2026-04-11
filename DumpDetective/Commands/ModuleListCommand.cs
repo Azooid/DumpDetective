@@ -13,7 +13,7 @@ internal static class ModuleListCommand
         Options:
           -f, --filter <t>   Only show modules whose name contains <t>
           --app-only         Only show non-system assemblies
-          -o, --output <f>   Write report to file (.md / .html / .txt)
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

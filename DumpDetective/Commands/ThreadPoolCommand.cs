@@ -10,7 +10,7 @@ internal static class ThreadPoolCommand
         Usage: DumpDetective thread-pool <dump-file> [options]
 
         Options:
-          -o, --output <file>  Write report to file (.md / .html / .txt)
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
         """;
 

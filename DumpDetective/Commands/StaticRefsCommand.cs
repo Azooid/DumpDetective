@@ -15,7 +15,7 @@ internal static class StaticRefsCommand
           -f, --filter <t>     Only types/fields whose name contains <t>
           -e, --exclude <t>    Exclude types containing <t> (repeatable)
           -a, --addresses      Show object addresses
-          -o, --output <f>     Write report to file
+          -o, --output <f>     Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
         """;
 

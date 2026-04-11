@@ -14,7 +14,7 @@ internal static class FinalizerQueueCommand
         Options:
           -n, --top <N>      Top N types (default: 30)
           -a, --addresses    Show up to 20 object addresses per type
-          -o, --output <f>   Write report to file
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

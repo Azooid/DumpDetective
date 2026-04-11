@@ -17,7 +17,7 @@ internal static class ThreadAnalysisCommand
           -b, --blocked-only    Show only threads that appear blocked
           --state <s>           Filter by lifecycle state: blocked|running|dead|all (default: all)
           --name <substr>       Filter by thread name (case-insensitive)
-          -o, --output <file>   Write report to file (.md / .html / .txt)
+          -o, --output <file>   Write report to file (.html / .md / .txt / .json)
           -h, --help            Show this help
         """;
 

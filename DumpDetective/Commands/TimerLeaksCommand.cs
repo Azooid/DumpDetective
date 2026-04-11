@@ -13,7 +13,7 @@ internal static class TimerLeaksCommand
 
         Options:
           -a, --addresses    Show individual timer object addresses (up to 200 per type)
-          -o, --output <f>   Write report to file (.md / .html / .txt)
+          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
           -h, --help         Show this help
         """;
 

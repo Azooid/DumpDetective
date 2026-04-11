@@ -18,7 +18,7 @@ internal static class TypeInstancesCommand
           -a, --addresses      Show individual object addresses
           --min-size <bytes>   Only include instances larger than N bytes
           --gen <0|1|2|loh>    Only include instances in the specified generation
-          -o, --output <f>     Write report to file
+          -o, --output <f>     Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
         """;
 

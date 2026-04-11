@@ -26,7 +26,7 @@ internal static class HighRefsCommand
           -n, --top <N>        Top N objects to analyse (default: 30)
           -m, --min-refs <N>   Minimum inbound reference count to include (default: 10)
           -a, --addresses      Show object addresses in the summary table
-          -o, --output <f>     Write report to file (.md / .html / .txt)
+          -o, --output <f>     Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
 
         Examples:

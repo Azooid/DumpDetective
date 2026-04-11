@@ -19,7 +19,7 @@ internal static class GcRootsCommand
           -t, --type <name>       Type name to trace (case-insensitive)  [required]
           -n, --max-results <N>   Max instances to trace (default: 10)
           --no-indirect           Skip 1-hop referrer scan (faster on large dumps)
-          -o, --output <f>        Write report to file
+          -o, --output <f>        Write report to file (.html / .md / .txt / .json)
           -h, --help              Show this help
         """;
 

@@ -1,6 +1,8 @@
 # DumpDetective
 
-A command-line tool for analysing .NET memory dumps (.dmp / .mdmp). Built on **ClrMD 3.x** and **.NET 10**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, or plain text**.
+A command-line tool for analysing .NET memory dumps (.dmp / .mdmp). Built on **ClrMD 3.x** and **.NET 10**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, or JSON**.
+
+Every command supports `--output report.json`, which captures the full structured report. Use `DumpDetective render report.json --output report.html` (or any other format) to convert it at any time without re-opening the dump.
 
 ---
 
@@ -40,8 +42,18 @@ DumpDetective analyze
 # Full report (all 20+ sub-analyses) exported to HTML
 DumpDetective analyze app.dmp --full --output report.html
 
+# Save full report as JSON, convert to HTML later — no dump file needed
+DumpDetective analyze app.dmp --full --output report.json
+DumpDetective render report.json --output report.html
+
 # Trend report across a series of dumps
 DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+
+# Save raw trend data as JSON (includes all per-dump sub-reports when --full)
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
+
+# Re-render the raw JSON at a different baseline or format — no dump files needed
+DumpDetective render snapshots.json --baseline 2 --output report.html
 
 # Or point at a folder — picks up all .dmp files sorted by timestamp
 DumpDetective trend-analysis C:\dumps\ --output trends.html
@@ -68,7 +80,7 @@ DumpDetective analyze <dump-file> [options]
 
 Options:
   --full               Full combined report (scored summary + all 20+ sub-reports)
-  -o, --output <file>  Write report to file (.md / .html / .txt)
+  -o, --output <file>  Write report to file (.html / .md / .txt / .json)
 ```
 
 **What it covers:**
@@ -98,9 +110,12 @@ DumpDetective trend-analysis <directory> [options]
 DumpDetective trend-analysis --list <file.txt> [options]
 
 Options:
-  --full                   Full collection per dump (event leaks, string duplicates)
+  --full                   Full collection per dump (event leaks, string duplicates,
+                           and per-dump sub-reports embedded in .json output)
+  --baseline <n>           1-based index of the dump to use as the trend baseline (default: 1)
   --ignore-event <type>    Exclude publisher types whose name contains <type> (repeatable)
-  -o, --output <f>         Write report to file (.md / .html / .txt)
+  -o, --output <f>         Write report to file (.html / .md / .txt)
+                           .json — saves raw snapshot data (re-render any time with 'render')
 ```
 
 **Report sections:**
@@ -119,9 +134,43 @@ Options:
 **Examples:**
 ```bash
 DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
 DumpDetective trend-analysis C:\dumps\ --full --output report.html
 DumpDetective trend-analysis --list dumps.txt --full --output report.md
 DumpDetective trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
+```
+
+---
+
+### `render` / `trend-render`
+
+Converts any DumpDetective JSON file to HTML, Markdown, plain text, or console output — **no dump file required**.
+
+```
+DumpDetective render <file.json> [options]
+
+Accepted input:
+  report     JSON produced by any single-dump command with --output *.json
+  trend-raw  JSON produced by trend-analysis --output *.json
+
+Options:
+  --baseline <n>         Trend baseline (trend-raw only; default: 1 = first dump)
+  --ignore-event <type>  Filter event types (trend-raw only; repeatable)
+  -o, --output <file>    Output file (.html / .md / .txt / .json)
+                         Omit for console output
+```
+
+**Examples:**
+```bash
+# Convert any saved report to HTML
+DumpDetective render report.json --output report.html
+
+# Re-render a trend at a different baseline
+DumpDetective render snapshots.json --baseline 2 --output report-d2base.html
+
+# Produce Markdown from a previously saved JSON
+DumpDetective render heap-stats.json --output heap-stats.md
 ```
 
 ---
@@ -168,25 +217,31 @@ Specify an output file with `-o` / `--output`:
 |---|---|
 | `.html` | Interactive HTML — sticky sidebar nav, collapsible sections, sortable/filterable tables, styled alert cards |
 | `.md` | Markdown — suitable for wiki pages or GitHub |
-| `.json` | Structured JSON — full report data, convertible to any format later (see below) |
+| `.json` | Structured JSON — full report data, re-renderable to any other format with `render` |
 | `.txt` | Plain text |
 | *(none)* | Console (Spectre.Console with colour) |
 
-### JSON output and offline HTML conversion
+### JSON output and re-rendering
 
-Use `--output report.json` with any command to capture a structured JSON report. The JSON preserves all report data — chapters, sections, tables, key-value pairs, alerts, findings, and details accordions — including the nav level of each chapter so the sidebar hierarchy is reproduced exactly.
+Use `--output report.json` with **any** command to capture a fully structured JSON report. The JSON preserves all report data — chapters, sections, tables, key-value pairs, alerts, findings, and details accordions — including chapter nav levels, polymorphic element types, and (for `trend-analysis --full`) complete per-dump sub-reports.
 
-To convert a saved JSON report to the same interactive HTML that DumpDetective produces natively, run the included Python script (Python 3.8+, no extra packages required):
+There are two JSON formats:
+
+| `format` field | Produced by | Contents |
+|---|---|---|
+| `"report"` | Any single-dump command with `--output *.json` | Full rendered report document |
+| `"trend-raw"` | `trend-analysis --output *.json` | Raw snapshot metrics + optional captured sub-reports |
+
+Both are handled transparently by `DumpDetective render` — it auto-detects the format:
 
 ```bash
-# output path auto-derived: report.json → report.html
-python json_to_html.py report.json
-
-# explicit output path
-python json_to_html.py report.json output.html
+# Any report → any format
+DumpDetective render heap-stats.json    --output heap-stats.html
+DumpDetective render analyze-full.json  --output report.md
+DumpDetective render snapshots.json     --baseline 2 --output report.html
 ```
 
-The script produces a self-contained HTML file identical in structure, styling, and JavaScript to a direct `--output .html` run.
+The `trend-raw` format is especially useful: save once with `--full`, then re-render at any baseline, format, or time without touching the original dump files.
 
 ---
 
@@ -198,26 +253,35 @@ DumpDetective/
 ├── Collectors/
 │   └── DumpCollector.cs        Heap walk — collects snapshot data for all metrics
 ├── Commands/
-│   ├── AnalyzeCommand.cs       Scored health report
+│   ├── AnalyzeCommand.cs       Scored health report (single dump)
 │   ├── TrendAnalysisCommand.cs Multi-dump trend analysis
+│   ├── TrendRenderCommand.cs   Re-render / convert saved JSON (alias: render)
+│   ├── TrendRawSerializer.cs   Save / load raw trend JSON
 │   └── *.cs                    Individual targeted commands
 ├── Core/
 │   ├── CommandBase.cs          Shared argument parsing, execution wrapper
 │   └── DumpContext.cs          ClrMD runtime and heap wrapper
+├── Helpers/
+│   ├── DumpHelpers.cs          Size formatting, type classification
+│   └── ReportDocReplay.cs      Replays a captured ReportDoc through any IRenderSink
 ├── Models/
 │   ├── DumpSnapshot.cs         All collected metrics for one dump
-│   └── Finding.cs              Scored finding (severity, category, headline, advice)
-├── Helpers/
-│   └── DumpHelpers.cs          Size formatting, type classification
+│   ├── Finding.cs              Scored finding (severity, category, headline, advice)
+│   ├── ReportDoc.cs            Serialisable report document model (chapters → sections → elements)
+│   ├── SnapshotData.cs         AOT-serialisable DTO mirror of DumpSnapshot + SubReport
+│   └── ThresholdConfig.cs      Configurable scoring / trend thresholds
+├── Core/
+│   └── ThresholdLoader.cs      Lazy-loads dd-thresholds.json; falls back to defaults
 └── Output/
-    ├── IRenderSink.cs           Format-agnostic output interface
+    ├── IRenderSink.cs           Format-agnostic output interface & factory
+    ├── CaptureSink.cs           Captures all sink calls into a ReportDoc (in-memory)
     ├── HtmlSink.cs              HTML renderer
     ├── MarkdownSink.cs          Markdown renderer
-    ├── JsonSink.cs              JSON renderer (structured, offline-convertible)
+    ├── JsonSink.cs              JSON renderer — delegates to CaptureSink, writes envelope
     ├── TextSink.cs              Plain text renderer
     └── ConsoleSink.cs           Spectre.Console renderer
 
-json_to_html.py                 Converts a .json report back to interactive HTML
+dd-thresholds.json              Override default scoring/trend thresholds (place next to exe)
 ```
 
 ---
