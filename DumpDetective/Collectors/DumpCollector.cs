@@ -653,6 +653,51 @@ public static class DumpCollector
             Add(FindingSeverity.Warning, "Leaks", $"{s.TimerCount:N0} timer objects on heap",
                 advice: "Dispose System.Timers.Timer instances. Check for timer leak pattern.", deduct: t.DeductTimer);
 
+        // Memory leak — Gen2 dominance + high-count type accumulation
+        {
+            double gen2Pct = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+            var leakTypes  = s.TopTypes
+                .Where(tt2 => tt2.Count >= t.LeakTypeMinCount)
+                .OrderByDescending(tt2 => tt2.Count)
+                .Take(3)
+                .ToList();
+
+            if (gen2Pct >= t.Gen2CritPct)
+                Add(FindingSeverity.Critical, "Memory Leak",
+                    $"Gen2 holds {gen2Pct:F0}% of managed heap ({FormatSize(s.Gen2Bytes)})",
+                    detail: leakTypes.Count > 0
+                        ? $"Top accumulating types: {string.Join("; ", leakTypes.Select(tt2 => $"{tt2.Name} ×{tt2.Count:N0}"))}"
+                        : null,
+                    advice: "Run: memory-leak <dump>  for GC root chains to find the retaining object.",
+                    deduct: t.DeductLeakCrit);
+            else if (gen2Pct >= t.Gen2WarnPct)
+                Add(FindingSeverity.Warning, "Memory Leak",
+                    $"Gen2 holds {gen2Pct:F0}% of managed heap ({FormatSize(s.Gen2Bytes)})",
+                    detail: leakTypes.Count > 0
+                        ? $"Top accumulating types: {string.Join("; ", leakTypes.Select(tt2 => $"{tt2.Name} ×{tt2.Count:N0}"))}"
+                        : null,
+                    advice: "Run: memory-leak <dump>  for full Gen2/LOH breakdown and GC root chains.",
+                    deduct: t.DeductLeakWarn);
+            else
+            {
+                // Even if Gen2 is low, a very high-count APPLICATION type is suspicious.
+                // Scan all candidates — skip system types (String, Object[], etc.) since
+                // they are symptoms, not causes.
+                var appType = s.TopTypes
+                    .Where(tt2 => !DumpHelpers.IsSystemType(tt2.Name) &&
+                                  tt2.Count >= t.LeakTypeMinCount * 5)
+                    .OrderByDescending(tt2 => tt2.Count)
+                    .FirstOrDefault();
+
+                if (appType is not null)
+                    Add(FindingSeverity.Warning, "Memory Leak",
+                        $"High instance count: {appType.Name} ×{appType.Count:N0}",
+                        detail: $"Gen2 at {gen2Pct:F0}% — if this count is growing across dumps it indicates a leak.",
+                        advice: "Run: memory-leak <dump>  to trace GC root chains for this type.",
+                        deduct: t.DeductLeakWarn);
+            }
+        }
+
         if (findings.Count == 0)
             findings.Add(new Finding(FindingSeverity.Info, "Summary", "No significant issues detected."));
 

@@ -189,6 +189,8 @@ internal sealed class HtmlSink : IRenderSink
 
     public void Text(string line)  => _w.WriteLine($"<p class=\"body-text\">{H(line)}</p>");
     public void BlankLine()        => _w.WriteLine("<div class=\"spacer\"></div>");
+    public void Reference(string label, string url)
+        => _w.WriteLine($"<p class=\"ref-link\">📖 {H(label)} <a href=\"{H(url)}\" target=\"_blank\" rel=\"noopener noreferrer\">{H(url)}</a></p>");
 
     public void BeginDetails(string title, bool open = false)
     {
@@ -351,6 +353,7 @@ internal sealed class HtmlSink : IRenderSink
 
         /* ── Misc ─────────────────────────────────────────────────────── */
         .body-text{color:#374151;margin:.3rem 0;font-size:13px}
+        .ref-link{color:#6b7280;font-size:12px;margin:.4rem 0 .2rem;font-style:italic}.ref-link a{color:#2563eb;text-decoration:none}.ref-link a:hover{text-decoration:underline}
         .spacer{height:.5rem}
         #back-top{position:fixed;bottom:1.5rem;right:1.5rem;background:#1e3a5f;color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:1.1rem;cursor:pointer;opacity:0;transition:opacity .2s;z-index:100;display:flex;align-items:center;justify-content:center}
         #back-top.vis{opacity:.85}

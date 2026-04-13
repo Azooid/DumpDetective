@@ -54,6 +54,7 @@ internal sealed class JsonSink : IRenderSink
     public void Table(string[] headers, IReadOnlyList<string[]> rows, string? caption = null)    => _capture.Table(headers, rows, caption);
     public void Alert(AlertLevel level, string title, string? detail = null, string? advice = null) => _capture.Alert(level, title, detail, advice);
     public void Text(string line)                                                  => _capture.Text(line);
+    public void Reference(string label, string url)                                => _capture.Reference(label, url);
     public void BlankLine()                                                        { /* not meaningful in JSON */ }
     public void BeginDetails(string title, bool open = false)                      => _capture.BeginDetails(title, open);
     public void EndDetails()                                                       => _capture.EndDetails();

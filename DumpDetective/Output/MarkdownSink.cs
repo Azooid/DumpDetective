@@ -58,6 +58,7 @@ internal sealed class MarkdownSink : IRenderSink
 
     public void Text(string line)  => _w.WriteLine(line);
     public void BlankLine()        => _w.WriteLine();
+    public void Reference(string label, string url) => _w.WriteLine($"> 📖 {E(label)}: [{E(url)}]({url})");
     public void BeginDetails(string title, bool open = false)
     { _w.WriteLine($"### {title}"); _w.WriteLine(); }
     public void EndDetails()       => _w.WriteLine();

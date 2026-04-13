@@ -101,6 +101,8 @@ internal sealed class CaptureSink : IRenderSink
 
     public void Text(string line)
         => CurrentElements().Add(new ReportText { Content = line });
+    public void Reference(string label, string url)
+        => CurrentElements().Add(new ReportText { Content = $"{label}: {url}" });
 
     public void BlankLine() { /* not captured — content-free */ }
 

@@ -106,7 +106,7 @@ internal static class AnalyzeCommand
         // SuppressVerbose suppresses the repeated "Analyzing: <path>" lines and
         // per-pass counters from individual commands. Each command's own Status spinner
         // still runs normally — they are sequential so there's no nesting conflict.
-        const int Total = 22;
+        const int Total = 23;
         var overallSw = Stopwatch.StartNew();
         int step = 0;
 
@@ -141,6 +141,7 @@ internal static class AnalyzeCommand
             Step("WCF Channels",        () => WcfChannelsCommand.Render(ctx, sink));
             Step("Connection Pool",     () => ConnectionPoolCommand.Render(ctx, sink));
             Step("HTTP Requests",       () => HttpRequestsCommand.Render(ctx, sink));
+            Step("Memory Leak Analysis",() => MemoryLeakCommand.Render(ctx, sink, top: 30, minCount: 500, noRootTrace: false, inclSystem: false));
             Step("Module List",         () => ModuleListCommand.Render(ctx, sink));
         }
         finally
@@ -298,7 +299,53 @@ internal static class AnalyzeCommand
             ("App assemblies",    s.AppModuleCount.ToString("N0")),
             ("System/framework",  (s.ModuleCount - s.AppModuleCount).ToString("N0")),
         ]);
-    }
+        // ── Memory Leak Analysis ──────────────────────────────────────────
+        sink.Section("Memory Leak Analysis");
+        {
+            double gen2Pct  = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+            var    strType  = s.TopTypes.FirstOrDefault(t => t.Name == "System.String");
+
+            sink.KeyValues(
+            [
+                ("Gen2 % of heap",   $"{gen2Pct:F1}%  ({FormatSize(s.Gen2Bytes)})"),
+                ("LOH",              FormatSize(s.LohBytes)),
+                ("Total objects",    s.TotalObjectCount.ToString("N0")),
+                ("System.String",    strType is not null
+                                         ? $"{strType.Count:N0}  ({FormatSize(strType.TotalBytes)})"
+                                         : "—"),
+            ]);
+
+            // Top accumulation suspects: high-count or large types
+            var suspects = s.TopTypes
+                .Where(t => t.Count >= 1_000 || t.TotalBytes >= 1_000_000)
+                .OrderByDescending(t => t.Count)
+                .Take(15)
+                .ToList();
+
+            if (suspects.Count > 0)
+                sink.Table(
+                    ["Type", "Count", "Total Size"],
+                    suspects.Select(t =>
+                        new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
+                    "High-count / large types — accumulating types are leak suspects. " +
+                    "Run 'memory-leak <dump>' for full Gen2/LOH breakdown + GC root chains.");
+
+            // Advisory alert based on Gen2 dominance
+            if (gen2Pct > 50)
+                sink.Alert(AlertLevel.Critical,
+                    $"Gen2 holds {gen2Pct:F1}% of managed heap",
+                    detail: "Objects are surviving multiple GC cycles — strong managed memory leak signal.",
+                    advice: "Run: memory-leak <dump>  for full suspect analysis with GC root chains.");
+            else if (gen2Pct > 30)
+                sink.Alert(AlertLevel.Warning,
+                    $"Gen2 holds {gen2Pct:F1}% of managed heap",
+                    detail: "Gen2 is elevated. Monitor for growth across multiple dumps.",
+                    advice: "Run: trend-analysis <d1> <d2> to confirm growth, then memory-leak <dump>.");
+            else
+                sink.Alert(AlertLevel.Info,
+                    $"Gen2 holds {gen2Pct:F1}% of managed heap — within normal range.",
+                    advice: "Run: memory-leak <dump>  for a deeper investigation if growth is suspected.");
+        }    }
 
     static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";
     static string FormatSize(long b) => DumpHelpers.FormatSize(b);

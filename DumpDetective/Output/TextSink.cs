@@ -71,6 +71,7 @@ internal sealed class TextSink : IRenderSink
 
     public void Text(string line)  => _w.WriteLine($"  {line}");
     public void BlankLine()        => _w.WriteLine();
+    public void Reference(string label, string url) => _w.WriteLine($"  📖 {label}: {url}");
     public void BeginDetails(string title, bool open = false)
         => _w.WriteLine($"  ▸ {title}");
     public void EndDetails()       => _w.WriteLine();

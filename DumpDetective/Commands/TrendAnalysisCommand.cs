@@ -456,6 +456,65 @@ internal static class TrendAnalysisCommand
                     s => (s.StringWastedBytes / 1048576.0, DumpHelpers.FormatSize(s.StringWastedBytes)),
                     warnAt: tt.StringWasteWarnMb, critAt: tt.StringWasteCritMb);
 
+            // Memory Leak Suspects — score each dump independently:
+            //   ≥ 1 high-count type not in baseline         = ✓✗ critical
+            //   Gen2 > 50% OR object count grew >50%        = ✓✗ critical
+            //   Gen2 30-50% OR object count grew 10-50%     = ✓⚠ warning
+            //   Otherwise                                   = ✓✓ good
+            // For the trend column we compare baseline vs latest.
+            {
+                // Precompute per-dump leak score (0=good 1=warn 2=crit)
+                // and a short display string
+                var leakSignals = snaps.Select((s, i) =>
+                {
+                    double gen2Pct = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+                    // compare against s0 (baseline) for new-type detection
+                    bool hasNewType = s.TopTypes.Any(t =>
+                        t.Count >= 500 &&
+                        s0.TopTypes.All(b => b.Name != t.Name));
+                    bool explosiveGrowth = s.TopTypes.Any(t =>
+                    {
+                        var bType = s0.TopTypes.FirstOrDefault(b => b.Name == t.Name);
+                        return bType is not null && bType.Count > 0 &&
+                               (t.Count - bType.Count) * 100.0 / bType.Count > 50 &&
+                               t.Count >= 500;
+                    });
+
+                    int score;
+                    string display;
+                    if (gen2Pct > 50 || hasNewType)
+                    {
+                        score   = 2;
+                        display = gen2Pct > 50
+                            ? $"Gen2 {gen2Pct:F0}%"
+                            : $"new type(s) ↑↑";
+                    }
+                    else if (gen2Pct > 30 || explosiveGrowth)
+                    {
+                        score   = 1;
+                        display = gen2Pct > 30 ? $"Gen2 {gen2Pct:F0}%" : "growth ↑↑";
+                    }
+                    else
+                    {
+                        score   = 0;
+                        display = $"Gen2 {gen2Pct:F0}%";
+                    }
+                    string icon = score == 2 ? "✗" : score == 1 ? "⚠" : "✓";
+                    return (score, display: $"{icon} {display}");
+                }).ToArray();
+
+                double leakScoreBaseline = leakSignals[baselineIndex].score;
+                double leakScoreLatest   = leakSignals[^1].score;
+                string leakTrend = leakScoreLatest > leakScoreBaseline ? "↑↑ worsening"
+                                 : leakScoreLatest < leakScoreBaseline ? "↓ improving"
+                                 : leakScoreLatest >= 2 ? "↑↑ persistent"
+                                 : "~";
+
+                incidentRows.Add(["Memory Leak Suspects",
+                    .. leakSignals.Select(x => x.display),
+                    leakTrend]);
+            }
+
             sink.Table(incidentCols, incidentRows,
                 "✓ good  ⚠ warning  ✗ critical  (thresholds are heuristic)");
 
@@ -497,6 +556,23 @@ internal static class TrendAnalysisCommand
             CheckSignal("Event Subscribers", sN.EventSubscriberTotal,             tt.EventWarn,         tt.EventCrit);
             if (snaps.Any(s => s.StringWastedBytes > 0))
                 CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0,    tt.StringWasteWarnMb, tt.StringWasteCritMb);
+
+            // Memory leak signal for executive summary
+            {
+                double gen2PctN = sN.TotalHeapBytes > 0 ? sN.Gen2Bytes * 100.0 / sN.TotalHeapBytes : 0;
+                bool hasNewTypeN = sN.TopTypes.Any(t =>
+                    t.Count >= 500 && s0.TopTypes.All(b => b.Name != t.Name));
+                bool hasExplosiveN = sN.TopTypes.Any(t =>
+                {
+                    var b = s0.TopTypes.FirstOrDefault(x => x.Name == t.Name);
+                    return b is not null && b.Count > 0 &&
+                           (t.Count - b.Count) * 100.0 / b.Count > 50 && t.Count >= 500;
+                });
+                if (gen2PctN > 50 || hasNewTypeN)
+                    criticals.Add("Memory Leak Suspects");
+                else if (gen2PctN > 30 || hasExplosiveN)
+                    warnings.Add("Memory Leak Suspects");
+            }
 
             var sb = new System.Text.StringBuilder();
             string baselineSuffix = baselineIndex == 0 ? "" : $" (baseline: {baselineLabel})";
@@ -1005,6 +1081,136 @@ internal static class TrendAnalysisCommand
                 sink.Table(strCols, strRows, "Top duplicated strings across all dumps");
             }
         }
+
+        // ── 9. Memory Leak Analysis ─────────────────────────────────────────
+        sink.Section("9. Memory Leak Analysis");
+        {
+            var leakCols = new[] { "Metric" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray();
+            var leakRows = new List<string[]>();
+
+            double Gen2Pct(DumpSnapshot s) =>
+                s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+
+            leakRows.Add(["Gen2 % of Heap",
+                .. snaps.Select(s => $"{Gen2Pct(s):F1}%  ({DumpHelpers.FormatSize(s.Gen2Bytes)})"),
+                Trend(Gen2Pct(s0), Gen2Pct(sN))]);
+
+            leakRows.Add(["LOH Size",
+                .. snaps.Select(s => DumpHelpers.FormatSize(s.LohBytes)),
+                Trend(s0.LohBytes, sN.LohBytes)]);
+
+            leakRows.Add(["Total Objects",
+                .. snaps.Select(s => s.TotalObjectCount.ToString("N0")),
+                Trend(s0.TotalObjectCount, sN.TotalObjectCount)]);
+
+            // System.String row — always a canary for object accumulation
+            leakRows.Add(["System.String Count",
+                .. snaps.Select(s =>
+                {
+                    var t = s.TopTypes.FirstOrDefault(x => x.Name == "System.String");
+                    return t is null ? "—" : t.Count.ToString("N0");
+                }),
+                Trend(
+                    s0.TopTypes.FirstOrDefault(x => x.Name == "System.String")?.Count ?? 0,
+                    sN.TopTypes.FirstOrDefault(x => x.Name == "System.String")?.Count ?? 0)]);
+
+            leakRows.Add(["System.String Memory",
+                .. snaps.Select(s =>
+                {
+                    var t = s.TopTypes.FirstOrDefault(x => x.Name == "System.String");
+                    return t is null ? "—" : DumpHelpers.FormatSize(t.TotalBytes);
+                }),
+                Trend(
+                    s0.TopTypes.FirstOrDefault(x => x.Name == "System.String")?.TotalBytes ?? 0,
+                    sN.TopTypes.FirstOrDefault(x => x.Name == "System.String")?.TotalBytes ?? 0)]);
+
+            sink.Table(leakCols, leakRows, "Memory leak key indicators across dumps");
+
+            // Top types by instance count across all dumps — accumulating types = leak suspects
+            var allTypeNames = snaps
+                .SelectMany(s => s.TopTypes.Select(t => t.Name))
+                .Distinct()
+                .ToList();
+
+            var topByCount = allTypeNames
+                .Select(name =>
+                {
+                    var perDump = snaps.Select(s =>
+                    {
+                        var t = s.TopTypes.FirstOrDefault(x => x.Name == name);
+                        return (raw: t?.Count ?? 0L, fmt: t is null ? "—" : t.Count.ToString("N0"));
+                    }).ToArray();
+                    long baseline = perDump[baselineIndex].raw;
+                    long latest   = perDump[^1].raw;
+                    return (
+                        row:  (string[])[name, .. perDump.Select(x => x.fmt), Trend(baseline, latest)],
+                        peak: perDump.Max(x => x.raw));
+                })
+                .OrderByDescending(x => x.peak)
+                .Take(15)
+                .Select(x => x.row)
+                .ToList();
+
+            if (topByCount.Count > 0)
+            {
+                var tCols = new[] { "Type" }.Concat(labels).Append("Trend").ToArray();
+                sink.Table(tCols, topByCount,
+                    "Top 15 types by peak instance count — types growing over time are strong leak suspects. " +
+                    "Run 'memory-leak <dump>' on the latest dump for GC root chains.");
+            }
+
+            // Gen2 dominance advisory + new-type accumulation check
+            double gen2PctLatest = Gen2Pct(sN);
+            double gen2PctBase   = Gen2Pct(s0);
+            double gen2Delta     = gen2PctLatest - gen2PctBase;
+
+            // Detect types that appeared from zero or grew explosively between baseline and latest
+            var newOrExplosive = allTypeNames
+                .Select(name =>
+                {
+                    long baseCount   = s0.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
+                    long latestCount = sN.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
+                    return (name, baseCount, latestCount);
+                })
+                .Where(x => x.latestCount >= 500 &&
+                            (x.baseCount == 0 ||
+                             (x.baseCount > 0 && (x.latestCount - x.baseCount) * 100.0 / x.baseCount > 50)))
+                .OrderByDescending(x => x.latestCount)
+                .Take(5)
+                .ToList();
+
+            bool hasNewTypes = newOrExplosive.Any(x => x.baseCount == 0);
+            bool hasExplosiveGrowth = newOrExplosive.Any(x => x.baseCount > 0);
+
+            if (gen2PctLatest > 50)
+                sink.Alert(AlertLevel.Critical,
+                    $"Gen2 holds {gen2PctLatest:F1}% of heap in latest dump ({labels[^1]})",
+                    detail: "Objects are accumulating across GC generations — strong managed memory leak signal.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify suspect types and GC root chains.");
+            else if (gen2Delta > 10)
+                sink.Alert(AlertLevel.Warning,
+                    $"Gen2 grew from {gen2PctBase:F1}% ({baselineLabel}) to {gen2PctLatest:F1}% ({labels[^1]})",
+                    detail: $"+{gen2Delta:F1} percentage points across the analysis window.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify accumulating types.");
+            else if (hasNewTypes)
+                sink.Alert(AlertLevel.Critical,
+                    $"New high-count types appeared since {baselineLabel} that were absent before",
+                    detail: string.Join("; ",
+                        newOrExplosive.Where(x => x.baseCount == 0)
+                            .Select(x => $"{x.name} (0 → {x.latestCount:N0})")),
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to trace GC root chains for these types.");
+            else if (hasExplosiveGrowth)
+                sink.Alert(AlertLevel.Warning,
+                    $"Types with >50% instance count growth between {baselineLabel} and {labels[^1]}",
+                    detail: string.Join("; ",
+                        newOrExplosive.Where(x => x.baseCount > 0)
+                            .Select(x => $"{x.name} ({x.baseCount:N0} → {x.latestCount:N0})")),
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify the retaining root.");
+            else
+                sink.Alert(AlertLevel.Info,
+                    $"Gen2 at {gen2PctLatest:F1}% in latest dump ({labels[^1]}) — no strong leak signal from generation data alone.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} for deeper analysis including GC root chains.");
+        }
     }
 
     static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";
@@ -1021,7 +1227,17 @@ internal static class TrendAnalysisCommand
 
     static string Trend(double first, double last, bool higherIsBad = true)
     {
-        if (first <= 0) return "~";
+        // New type appeared (was absent in baseline)
+        if (first <= 0)
+        {
+            if (last > 0)
+                return higherIsBad ? "↑↑ new" : "↓ appeared";
+            return "~";
+        }
+        // Type disappeared
+        if (last <= 0)
+            return higherIsBad ? "↓ gone" : "↑ resolved";
+
         double pct   = (last - first) / first * 100;
         string arrow = pct > 50 ? "↑↑" : pct > 10 ? "↑" : pct < -10 ? "↓" : "~";
         if (higherIsBad && pct > 50) arrow += " ↑↑";

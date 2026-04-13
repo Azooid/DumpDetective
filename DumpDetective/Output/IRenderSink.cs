@@ -16,6 +16,8 @@ public interface IRenderSink : IDisposable
     void Alert(AlertLevel level, string title, string? detail = null, string? advice = null);
     void Text(string line);
     void BlankLine();
+    /// <summary>Renders a labelled hyperlink reference (e.g. "Learn more: https://…").</summary>
+    void Reference(string label, string url);
     /// <summary>Begins a collapsible group (accordion). Content follows until <see cref="EndDetails"/>.</summary>
     void BeginDetails(string title, bool open = false);
     void EndDetails();

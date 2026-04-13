@@ -40,6 +40,7 @@ return args[0] switch
     "connection-pool"    => ConnectionPoolCommand.Run(commandArgs),
     "high-refs"          => HighRefsCommand.Run(commandArgs),
     "module-list"        => ModuleListCommand.Run(commandArgs),
+    "memory-leak"        => MemoryLeakCommand.Run(commandArgs),
     "analyze"            => AnalyzeCommand.Run(commandArgs),
     "trend-analysis"     => TrendAnalysisCommand.Run(commandArgs),
     "trend-render" or
@@ -57,6 +58,7 @@ static void PrintHelp()
     Console.WriteLine("Use 'render' to convert any saved JSON to HTML, Markdown, or text at any time.");
     Console.WriteLine();
     Console.WriteLine("Primary commands:");
+    Console.WriteLine("  memory-leak        All-in-one memory leak detector: Gen2/LOH suspects, collections, GC root chains");
     Console.WriteLine("  analyze            Scored health report — mini (default) or --full (all 22 sub-reports)");
     Console.WriteLine("  trend-analysis     Trend report across 2+ dumps; use --full --output *.json to archive");
     Console.WriteLine("  render             Convert any *.json report to HTML/Markdown/text (alias: trend-render)");

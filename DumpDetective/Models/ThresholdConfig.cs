@@ -66,6 +66,11 @@ public sealed class ScoringThresholds
     // Timers
     public int    TimerWarn         { get; set; } = 500;
 
+    // Memory leak (Gen2 dominance)
+    public double Gen2WarnPct       { get; set; } = 40;   // % of total heap
+    public double Gen2CritPct       { get; set; } = 60;
+    public int    LeakTypeMinCount  { get; set; } = 1_000; // min instances for a type to be flagged
+
     // ── Score deductions ──────────────────────────────────────────────────────
     public int    DeductHeapWarn      { get; set; } = 8;
     public int    DeductHeapCrit      { get; set; } = 15;
@@ -89,6 +94,8 @@ public sealed class ScoringThresholds
     public int    DeductDbWarn        { get; set; } = 5;
     public int    DeductDbCrit        { get; set; } = 10;
     public int    DeductTimer         { get; set; } = 5;
+    public int    DeductLeakWarn       { get; set; } = 10;
+    public int    DeductLeakCrit       { get; set; } = 20;
 }
 
 // ── Trend thresholds ──────────────────────────────────────────────────────────

@@ -73,6 +73,7 @@ internal sealed class ConsoleSink : IRenderSink
 
     public void Text(string line)  => AnsiConsole.MarkupLine(Markup.Escape(line));
     public void BlankLine()        => AnsiConsole.WriteLine();
+    public void Reference(string label, string url) => AnsiConsole.MarkupLine($"  [dim]📖 {Markup.Escape(label)}:[/] [link={Markup.Escape(url)}]{Markup.Escape(url)}[/]");
     public void BeginDetails(string title, bool open = false)
         => AnsiConsole.MarkupLine($"[bold]▸ {Markup.Escape(title)}[/]");
     public void EndDetails()       { }

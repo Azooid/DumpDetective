@@ -212,6 +212,10 @@
       "commandName": "Project",
       "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.html"
     },
+    "trend-analysis (to json)": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis \"C:\\Program Files\\DebugDiag\\Logs\\Misc\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.json"
+    },
     "trend-analysis (from list file)": {
       "commandName": "Project",
       "commandLineArgs": "trend-analysis --list dumps.txt --output trend.html"
@@ -227,6 +231,22 @@
     "high-refs (with addresses)": {
       "commandName": "Project",
       "commandLineArgs": "high-refs --top 30 --addresses --output high-refs.html"
+    },
+    "memory-leak": {
+      "commandName": "Project",
+      "commandLineArgs": "memory-leak \"C:\\Program Files\\DebugDiag\\Logs\\Misc\\memory\\after.dmp\" --output memory-leak.html"
+    },
+    "memory-leak (no root trace — fast)": {
+      "commandName": "Project",
+      "commandLineArgs": "memory-leak \"C:\\Program Files\\DebugDiag\\Logs\\Misc\\memory\\after.dmp\" --no-root-trace --output memory-leak.html"
+    },
+    "memory-leak (include system types)": {
+      "commandName": "Project",
+      "commandLineArgs": "memory-leak \"C:\\Program Files\\DebugDiag\\Logs\\Misc\\memory\\after.dmp\" --include-system --top 50 --output memory-leak.html"
+    },
+    "memory-leak (low threshold + system)": {
+      "commandName": "Project",
+      "commandLineArgs": "memory-leak \"C:\\Program Files\\DebugDiag\\Logs\\Misc\\memory\\after.dmp\" --min-count 100 --include-system --top 50 --output memory-leak.html"
     }
   }
 }
