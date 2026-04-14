@@ -7,6 +7,9 @@ using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
+// Traces which GC roots keep a specific type alive. Performs a two-pass scan:
+// (1) enumerate direct roots (stack slots, GC handles, finalizer queue) per instance, and
+// (2) optionally build a 1-hop referrer map by walking every heap object's outbound references.
 internal static class GcRootsCommand
 {
     private const string Help = """
@@ -23,23 +26,36 @@ internal static class GcRootsCommand
           -h, --help              Show this help
         """;
 
+    // Metadata for a single GC root that directly references a target object.
     private sealed record RootInfo(
         ClrRootKind Kind,
         string      KindLabel,
-        ulong       RootAddress,
-        int?        ThreadId);
+        ulong       RootAddress,  // address of the root slot (stack slot, handle slot, etc.)
+        int?        ThreadId);    // managed thread ID for stack roots; null for handle/static roots
+
+    // Collected results of the full two-pass scan.
+    private sealed record ScanResult(
+        List<ClrObject>                                    Targets,      // matched instances (capped at maxResults)
+        bool                                               Capped,       // true when more instances exist beyond maxResults
+        Dictionary<ulong, List<RootInfo>>                  DirectRoots,  // target addr → direct GC roots
+        Dictionary<ulong, List<(ulong Addr, string Type)>> Referrers);   // target addr → 1-hop referrers (empty when --no-indirect)
 
     public static int Run(string[] args)
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        string? typeName = null; int maxResults = 10; bool noIndirect = false;
+        string? typeName = null;
+        int maxResults = 10;
+        bool noIndirect = false;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
         {
-            if ((args[i] is "--type" or "-t") && i + 1 < args.Length)           typeName   = args[++i];
-            else if ((args[i] is "--max-results" or "-n") && i + 1 < args.Length) int.TryParse(args[++i], out maxResults);
-            else if (args[i] == "--no-indirect")                                  noIndirect = true;
+            if ((args[i] is "--type" or "-t") && i + 1 < args.Length)
+                typeName = args[++i];
+            else if ((args[i] is "--max-results" or "-n") && i + 1 < args.Length)
+                int.TryParse(args[++i], out maxResults);
+            else if (args[i] == "--no-indirect")
+                noIndirect = true;
         }
         if (typeName is null) { AnsiConsole.MarkupLine("[bold red]✗[/] --type is required."); return 1; }
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, typeName, maxResults, noIndirect));
@@ -55,6 +71,24 @@ internal static class GcRootsCommand
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap — dump may be incomplete."); return; }
 
+        var scan = ScanGcRoots(ctx, typeName, maxResults, noIndirect);
+
+        sink.Section($"GC Roots: {typeName}");
+        if (scan.Targets.Count == 0) { sink.Alert(AlertLevel.Info, $"No instances of '{typeName}' found on the heap."); return; }
+
+        RenderSummary(sink, scan, noIndirect);
+        RenderRootKindTable(sink, scan);
+        RenderInstanceDetails(sink, ctx, scan, noIndirect);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Drives the two-pass scan inside a spinner and returns the combined results.
+    //  Pass 1 — find up to maxResults target instances on the heap.
+    //  Pass 2 — enumerate GC roots to find direct references; optionally walk every
+    //           heap object for 1-hop referrers (skipped with --no-indirect).
+    static ScanResult ScanGcRoots(DumpContext ctx, string typeName, int maxResults, bool noIndirect)
+    {
         var targets     = new List<ClrObject>();
         var directRoots = new Dictionary<ulong, List<RootInfo>>();
         var referrers   = new Dictionary<ulong, List<(ulong Addr, string Type)>>();
@@ -65,8 +99,8 @@ internal static class GcRootsCommand
             .SpinnerStyle(Style.Parse("blue"))
             .Start($"Tracing roots of '{typeName}'...", status =>
             {
-                // Step 1: find target instances
-                var watch = Stopwatch.StartNew();
+                // Step 1: collect target instances (capped at maxResults)
+                var watch    = Stopwatch.StartNew();
                 long scanned = 0;
                 foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
@@ -86,7 +120,9 @@ internal static class GcRootsCommand
                 if (targets.Count == 0) return;
                 var targetSet = targets.Select(t => t.Address).ToHashSet();
 
-                // Step 2: thread stack-range lookup for stack-root attribution
+                // Step 2: build thread stack-range lookup for stack-root attribution.
+                // Stack roots are attributed to a thread by checking whether the root slot
+                // address falls within that thread's [StackLimit, StackBase] range.
                 var threadStacks = ctx.Runtime.Threads
                     .Where(t => t.IsAlive && t.StackBase != 0 && t.StackLimit != 0)
                     .Select(t => (
@@ -95,7 +131,7 @@ internal static class GcRootsCommand
                         Hi: Math.Max(t.StackBase, t.StackLimit)))
                     .ToList();
 
-                // Step 3: scan all GC roots for direct references to targets
+                // Step 3: scan all GC roots for direct references to the target set
                 status.Status("Enumerating GC roots...");
                 foreach (var root in ctx.Heap.EnumerateRoots())
                 {
@@ -127,7 +163,9 @@ internal static class GcRootsCommand
                     list.Add(ri);
                 }
 
-                // Step 4: 1-hop referrer map (skippable for large dumps)
+                // Step 4: 1-hop referrer map — walk every heap object and record outbound
+                // references that point into the target set. Capped at 50 per target to bound
+                // memory. Skipped entirely with --no-indirect for faster runs on large dumps.
                 if (!noIndirect)
                 {
                     status.Status("Building 1-hop referrer map...");
@@ -153,16 +191,21 @@ internal static class GcRootsCommand
                 }
             });
 
-        // ── Summary ──────────────────────────────────────────────────────────
-        sink.Section($"GC Roots: {typeName}");
-        if (targets.Count == 0) { sink.Alert(AlertLevel.Info, $"No instances of '{typeName}' found on the heap."); return; }
+        return new ScanResult(targets, capped, directRoots, referrers);
+    }
 
-        int rootedCount   = targets.Count(t => directRoots.TryGetValue(t.Address, out var r) && r.Count > 0);
-        int orphanedCount = targets.Count - rootedCount;
-        int totalRefs     = noIndirect ? 0 : referrers.Values.Sum(l => l.Count);
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    // Overview key-values: match count, rooted vs orphaned split, referrer count, and
+    // any cap or orphan advisory alerts.
+    static void RenderSummary(IRenderSink sink, ScanResult scan, bool noIndirect)
+    {
+        int rootedCount   = scan.Targets.Count(t => scan.DirectRoots.TryGetValue(t.Address, out var r) && r.Count > 0);
+        int orphanedCount = scan.Targets.Count - rootedCount;
+        int totalRefs     = noIndirect ? 0 : scan.Referrers.Values.Sum(l => l.Count);
 
         sink.KeyValues([
-            ("Matching instances",    targets.Count.ToString("N0") + (capped ? "  (capped — use -n to increase)" : "")),
+            ("Matching instances",    scan.Targets.Count.ToString("N0") + (scan.Capped ? "  (capped — use -n to increase)" : "")),
             ("Directly GC-rooted",    rootedCount.ToString("N0")),
             ("Orphaned (no GC root)", orphanedCount.ToString("N0")),
             ("1-hop referrers",       noIndirect ? "skipped (--no-indirect)" : totalRefs.ToString("N0")),
@@ -174,34 +217,40 @@ internal static class GcRootsCommand
                 "These objects will be collected on the next GC pass unless resurrected.",
                 "If count is unexpectedly high, check for finalizer-queue resurrection patterns.");
 
-        if (capped)
+        if (scan.Capped)
             sink.Alert(AlertLevel.Warning,
-                $"Results capped at {maxResults} — more instances may exist.",
+                $"Results capped at {scan.Targets.Count} — more instances may exist.",
                 advice: $"Re-run with a higher limit: -n 50");
+    }
 
-        // ── Root kind summary ─────────────────────────────────────────────────
-        var allRoots = directRoots.Values.SelectMany(l => l).ToList();
-        if (allRoots.Count > 0)
-        {
-            var kindRows = allRoots
-                .GroupBy(r => r.KindLabel)
-                .OrderByDescending(g => g.Count())
-                .Select(g => new[] { g.Key, g.Count().ToString("N0") })
-                .ToList();
-            sink.Table(["Root Kind", "Count"], kindRows, "Direct GC roots by kind");
-        }
+    // Aggregate root-kind frequency table: shows how many direct roots of each kind exist
+    // across all matched instances (e.g. "3 Stack, 1 Strong Handle").
+    static void RenderRootKindTable(IRenderSink sink, ScanResult scan)
+    {
+        var allRoots = scan.DirectRoots.Values.SelectMany(l => l).ToList();
+        if (allRoots.Count == 0) return;
 
-        // ── Per-instance root details ─────────────────────────────────────────
+        var kindRows = allRoots
+            .GroupBy(r => r.KindLabel)
+            .OrderByDescending(g => g.Count())
+            .Select(g => new[] { g.Key, g.Count().ToString("N0") })
+            .ToList();
+        sink.Table(["Root Kind", "Count"], kindRows, "Direct GC roots by kind");
+    }
+
+    // Per-instance collapsible panels: direct root slots with thread attribution, and
+    // a referrer-type breakdown from the 1-hop map. Rooted instances are expanded by default.
+    static void RenderInstanceDetails(IRenderSink sink, DumpContext ctx, ScanResult scan, bool noIndirect)
+    {
         sink.Section("Per-Instance Root Details");
-        foreach (var target in targets)
+        foreach (var target in scan.Targets)
         {
-            directRoots.TryGetValue(target.Address, out var roots);
-            referrers.TryGetValue(target.Address, out var refs);
+            scan.DirectRoots.TryGetValue(target.Address, out var roots);
+            scan.Referrers.TryGetValue(target.Address, out var refs);
 
-            string gen = GetGenLabel(ctx, target.Address);
+            string gen   = GetGenLabel(ctx, target.Address);
             string label = $"{target.Type?.Name ?? "?"}  [Gen {gen}]  @ 0x{target.Address:X16}  ({DumpHelpers.FormatSize((long)target.Size)})";
-
-            bool rooted = roots is { Count: > 0 };
+            bool rooted  = roots is { Count: > 0 };
             sink.BeginDetails(label, open: rooted);
 
             if (rooted)
@@ -232,7 +281,12 @@ internal static class GcRootsCommand
             sink.EndDetails();
         }
     }
+    // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Maps an object's heap segment to a human-readable generation label.
+    // LOH / POH / Frozen segments are always a single generation; ephemeral segments are
+    // subdivided into Gen0/1/2 by EphemeralGen. Returns "?" if the address doesn't map to
+    // any known segment (can happen with incomplete dumps).
     private static string GetGenLabel(DumpContext ctx, ulong addr)
     {
         var seg = ctx.Heap.GetSegmentByAddress(addr);
@@ -247,6 +301,9 @@ internal static class GcRootsCommand
         };
     }
 
+    // Determines Gen0/1/2 for an address inside an ephemeral segment by checking the
+    // generation sub-ranges exposed by ClrMD. Falls back to Gen2 if the address doesn't
+    // fall inside Gen0 or Gen1 (e.g., it belongs to the older Gen2 portion of the segment).
     private static string EphemeralGen(ClrSegment seg, ulong addr)
     {
         if (seg.Generation0.Contains(addr)) return "Gen0";

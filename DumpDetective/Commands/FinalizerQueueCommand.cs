@@ -6,6 +6,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Scans the heap's finalizer queue for objects awaiting Finalize(), reports per-type
+// distribution across GC generations, flags critical-finalizer objects and resurrection
+// candidates, and checks whether the finalizer thread itself is blocked.
 internal static class FinalizerQueueCommand
 {
     private const string Help = """
@@ -18,11 +21,14 @@ internal static class FinalizerQueueCommand
           -h, --help         Show this help
         """;
 
+    // Per-type statistics accumulated during the finalizer queue scan.
     private sealed record TypeStats(
-        int Count, long Size,
-        int Gen0, int Gen1, int Gen2, int Loh, int Poh,
-        bool HasDispose, bool IsCritical,
-        List<ulong> Addresses);
+        int Count,         // total instances in the finalizer queue
+        long Size,         // total byte size of those instances
+        int Gen0, int Gen1, int Gen2, int Loh, int Poh,  // per-generation instance counts
+        bool HasDispose,   // true when the type declares a Dispose() method
+        bool IsCritical,   // true when the type derives from CriticalFinalizerObject / SafeHandle
+        List<ulong> Addresses);  // up to 20 sample addresses when --addresses is active
 
     public static int Run(string[] args)
     {
@@ -31,7 +37,8 @@ internal static class FinalizerQueueCommand
         bool showAddr = args.Any(a => a is "--addresses" or "-a");
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
-            if ((args[i] is "--top" or "-n") && i + 1 < args.Length) int.TryParse(args[++i], out top);
+            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)
+                int.TryParse(args[++i], out top);
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, top, showAddr));
     }
 
@@ -45,18 +52,52 @@ internal static class FinalizerQueueCommand
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        // ── Phase 1: finalizer thread status ──────────────────────────────────
+        var (finThread, finFrames) = GetFinalizerThreadInfo(ctx);
+        var stats     = ScanFinalizerQueue(ctx, showAddr);
+        int  total    = stats.Values.Sum(v => v.Count);
+        long totalSize = stats.Values.Sum(v => v.Size);
+        int  critCount = stats.Values.Where(v => v.IsCritical).Sum(v => v.Count);
+        int  gen2Loh  = stats.Values.Sum(v => v.Gen2 + v.Loh);
+
+        sink.Section("Finalizer Queue Summary");
+        if (total == 0) { sink.Text("Finalizer queue is empty — no finalizable objects found."); return; }
+
+        RenderQueueKeyValues(sink, stats, total, totalSize, critCount, gen2Loh);
+        RenderFinalizerThread(sink, finThread, finFrames);
+
+        int resurrectionCandidates = CountResurrectionCandidates(ctx);
+        RenderAdvisories(sink, total, gen2Loh, critCount, resurrectionCandidates);
+
+        var sorted = stats.OrderByDescending(kv => kv.Value.Size).Take(top).ToList();
+        RenderTypeTable(sink, sorted, top, stats.Count);
+
+        if (showAddr)
+            RenderAddresses(sink, sorted);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Finds the dedicated finalizer thread and captures up to 30 of its stack frames.
+    // Returns null for the thread reference when the dump was taken before the finalizer
+    // thread was started (e.g. very early in process lifetime).
+    static (ClrThread? Thread, List<string> Frames) GetFinalizerThreadInfo(DumpContext ctx)
+    {
         var finThread = ctx.Runtime.Threads.FirstOrDefault(t => t.IsFinalizer);
         var finFrames = finThread?.EnumerateStackTrace()
             .Select(f => f.FrameName ?? f.Method?.Signature ?? "")
             .Where(f => f.Length > 0)
             .Take(30)
             .ToList() ?? [];
+        return (finThread, finFrames);
+    }
 
-        // ── Phase 2: scan finalizable objects ─────────────────────────────────
+    // Walks ClrHeap.EnumerateFinalizableObjects() and accumulates per-type TypeStats.
+    // Method-table-keyed caches avoid re-walking the base-type chain for each instance.
+    static Dictionary<string, TypeStats> ScanFinalizerQueue(DumpContext ctx, bool showAddr)
+    {
         var stats        = new Dictionary<string, TypeStats>(StringComparer.Ordinal);
-        var disposeCache = new Dictionary<ulong, bool>();
-        var critCache    = new Dictionary<ulong, bool>();
+        var disposeCache = new Dictionary<ulong, bool>();  // MethodTable → has Dispose()
+        var critCache    = new Dictionary<ulong, bool>();  // MethodTable → is CriticalFinalizer
 
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Reading finalizer queue...", _ =>
         {
@@ -98,28 +139,44 @@ internal static class FinalizerQueueCommand
 
                 stats[typeName] = e with
                 {
-                    Count    = e.Count + 1,
-                    Size     = e.Size + size,
-                    Gen0     = e.Gen0 + (gen == 0 ? 1 : 0),
-                    Gen1     = e.Gen1 + (gen == 1 ? 1 : 0),
-                    Gen2     = e.Gen2 + (gen == 2 ? 1 : 0),
-                    Loh      = e.Loh  + (gen == 3 ? 1 : 0),
-                    Poh      = e.Poh  + (gen == 4 ? 1 : 0),
+                    Count      = e.Count + 1,
+                    Size       = e.Size + size,
+                    Gen0       = e.Gen0 + (gen == 0 ? 1 : 0),
+                    Gen1       = e.Gen1 + (gen == 1 ? 1 : 0),
+                    Gen2       = e.Gen2 + (gen == 2 ? 1 : 0),
+                    Loh        = e.Loh  + (gen == 3 ? 1 : 0),
+                    Poh        = e.Poh  + (gen == 4 ? 1 : 0),
                     HasDispose = e.HasDispose || hasDispose,
                     IsCritical = e.IsCritical || isCritical,
                 };
             }
         });
 
-        int  total       = stats.Values.Sum(v => v.Count);
-        long totalSize   = stats.Values.Sum(v => v.Size);
-        int  critCount   = stats.Values.Where(v => v.IsCritical).Sum(v => v.Count);
-        int  gen2Loh     = stats.Values.Sum(v => v.Gen2 + v.Loh);
+        return stats;
+    }
 
-        // ── Summary ───────────────────────────────────────────────────────────
-        sink.Section("Finalizer Queue Summary");
-        if (total == 0) { sink.Text("Finalizer queue is empty — no finalizable objects found."); return; }
+    // Counts finalizable objects that are also held by a strong or ref-counted GC handle.
+    // Such objects will be "resurrected" — re-queued for finalization — which can cause
+    // unbounded finalizer queue growth when the object re-registers itself in Finalize().
+    static int CountResurrectionCandidates(DumpContext ctx)
+    {
+        var stronglyRooted = ctx.Runtime.EnumerateHandles()
+            .Where(h => h.HandleKind is ClrHandleKind.Strong or ClrHandleKind.RefCounted)
+            .Select(h => h.Object.Address)
+            .ToHashSet();
 
+        return ctx.Heap.EnumerateFinalizableObjects()
+            .Where(o => o.IsValid)
+            .Count(o => stronglyRooted.Contains(o.Address));
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    // Overview key-values: totals and per-category counts.
+    static void RenderQueueKeyValues(
+        IRenderSink sink, Dictionary<string, TypeStats> stats,
+        int total, long totalSize, int critCount, int gen2Loh)
+    {
         sink.KeyValues([
             ("Total in queue",              total.ToString("N0")),
             ("Total size estimate",         DumpHelpers.FormatSize(totalSize)),
@@ -128,48 +185,51 @@ internal static class FinalizerQueueCommand
             ("Critical finalizer objects",  critCount.ToString("N0")),
             ("In Gen2 / LOH (most costly)", gen2Loh.ToString("N0")),
         ]);
+    }
 
-        // ── Finalizer thread status ───────────────────────────────────────────
+    // Finalizer thread state: managed/OS IDs, blocked detection, and the live call stack.
+    // A blocked finalizer thread causes unbounded queue growth and eventual OOM.
+    static void RenderFinalizerThread(IRenderSink sink, ClrThread? finThread, List<string> finFrames)
+    {
         sink.Section("Finalizer Thread");
         if (finThread is null)
         {
             sink.Alert(AlertLevel.Warning, "Finalizer thread not found in this dump.");
+            return;
         }
+
+        bool isBlocked = finFrames.Any(f =>
+            f.Contains("WaitOne",    StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("Monitor",    StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("Sleep",      StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("Join",       StringComparison.OrdinalIgnoreCase));
+
+        sink.KeyValues([
+            ("Managed thread ID", finThread.ManagedThreadId.ToString()),
+            ("OS thread ID",      $"0x{finThread.OSThreadId:X}"),
+            ("State",             isBlocked ? "⚠ BLOCKED" : (finFrames.Count > 0 ? "Running" : "Idle")),
+        ]);
+
+        if (isBlocked)
+            sink.Alert(AlertLevel.Critical,
+                "Finalizer thread appears blocked.",
+                "A blocked finalizer thread causes the queue to grow without bound, leading to OOM.",
+                "Check the call stack below — avoid I/O, locks, or any blocking calls inside Finalize().");
+
+        if (finFrames.Count > 0)
+            sink.Table(["#", "Stack Frame"],
+                finFrames.Select((f, i) => new[] { i.ToString(), f }).ToList(),
+                "Finalizer thread call stack");
         else
-        {
-            bool isBlocked = finFrames.Any(f =>
-                f.Contains("WaitOne",    StringComparison.OrdinalIgnoreCase) ||
-                f.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) ||
-                f.Contains("Monitor",    StringComparison.OrdinalIgnoreCase) ||
-                f.Contains("Sleep",      StringComparison.OrdinalIgnoreCase) ||
-                f.Contains("Join",       StringComparison.OrdinalIgnoreCase));
+            sink.Text("  (no managed frames — finalizer thread is idle or waiting for work)");
+    }
 
-            sink.KeyValues([
-                ("Managed thread ID", finThread.ManagedThreadId.ToString()),
-                ("OS thread ID",      $"0x{finThread.OSThreadId:X}"),
-                ("State",             isBlocked ? "⚠ BLOCKED" : (finFrames.Count > 0 ? "Running" : "Idle")),
-            ]);
-
-            if (isBlocked)
-                sink.Alert(AlertLevel.Critical,
-                    "Finalizer thread appears blocked.",
-                    "A blocked finalizer thread causes the queue to grow without bound, leading to OOM.",
-                    "Check the call stack below — avoid I/O, locks, or any blocking calls inside Finalize().");
-
-            if (finFrames.Count > 0)
-            {
-                var frameRows = finFrames
-                    .Select((f, i) => new[] { i.ToString(), f })
-                    .ToList();
-                sink.Table(["#", "Stack Frame"], frameRows, "Finalizer thread call stack");
-            }
-            else
-            {
-                sink.Text("  (no managed frames — finalizer thread is idle or waiting for work)");
-            }
-        }
-
-        // ── Advisories ────────────────────────────────────────────────────────
+    // Diagnostic advisories: queue-size thresholds, Gen2/LOH pressure, critical finalizers,
+    // and resurrection candidates — ordered from most to least actionable.
+    static void RenderAdvisories(
+        IRenderSink sink, int total, int gen2Loh, int critCount, int resurrectionCandidates)
+    {
         sink.Alert(AlertLevel.Info,
             "All objects in the finalizer queue delay GC collection of their entire retained object graph.",
             advice: "Call Dispose() / use 'using' statements to avoid finalizer pressure. Finalizers run on a single dedicated thread.");
@@ -192,31 +252,20 @@ internal static class FinalizerQueueCommand
                 "These are prioritised by the GC but still block native handle release.",
                 "Dispose() SafeHandles explicitly — do not rely on finalization for unmanaged resources.");
 
-        // ── Resurrection detection ────────────────────────────────────────────
-        var stronglyRooted = ctx.Runtime.EnumerateHandles()
-            .Where(h => h.HandleKind is ClrHandleKind.Strong or ClrHandleKind.RefCounted)
-            .Select(h => h.Object.Address)
-            .ToHashSet();
-
-        var finalizableAddrs = new HashSet<ulong>(
-            ctx.Heap.EnumerateFinalizableObjects()
-                .Where(o => o.IsValid)
-                .Select(o => o.Address));
-
-        int resurrectionCandidates = finalizableAddrs.Count(a => stronglyRooted.Contains(a));
         if (resurrectionCandidates > 0)
             sink.Alert(AlertLevel.Warning,
                 $"{resurrectionCandidates} finalizable object(s) also have strong GC handles — possible resurrection.",
                 "Objects that re-register for finalization in Finalize() create resurrection cycles.",
                 "Avoid resurrecting objects in Finalize(). Prefer the Dispose pattern (IDisposable + GC.SuppressFinalize).");
+    }
 
-        // ── Type table ────────────────────────────────────────────────────────
+    // Main type table: top N types sorted by retained size with gen distribution and flags.
+    static void RenderTypeTable(
+        IRenderSink sink,
+        List<KeyValuePair<string, TypeStats>> sorted,
+        int top, int totalTypes)
+    {
         sink.Section("Types by Queue Size");
-        var sorted = stats
-            .OrderByDescending(kv => kv.Value.Size)
-            .Take(top)
-            .ToList();
-
         var rows = sorted.Select(kv =>
         {
             var v = kv.Value;
@@ -237,27 +286,27 @@ internal static class FinalizerQueueCommand
         sink.Table(
             ["Type", "Count", "Total Size", "Avg Size", "Gen Distribution", "IDisposable", "Critical"],
             rows,
-            $"Top {rows.Count} types by size — ⚠N = N objects in Gen2/LOH");
+            $"Top {rows.Count} of {totalTypes} types by size — ⚠N = N objects in Gen2/LOH");
+    }
 
-        // ── Per-type address listing ──────────────────────────────────────────
-        if (showAddr)
+    // Per-type collapsible address panels (--addresses): up to 20 sample addresses per type
+    // for follow-up inspection with WinDbg !dumpobj / !gcroot.
+    static void RenderAddresses(IRenderSink sink, List<KeyValuePair<string, TypeStats>> sorted)
+    {
+        sink.Section("Object Addresses by Type");
+        foreach (var (typeName, v) in sorted.Where(kv => kv.Value.Addresses.Count > 0))
         {
-            sink.Section("Object Addresses by Type");
-            foreach (var (typeName, v) in sorted.Where(kv => kv.Value.Addresses.Count > 0))
-            {
-                sink.BeginDetails($"{typeName}  —  {v.Count:N0} total  (showing {v.Addresses.Count})", open: false);
-                var addrRows = v.Addresses
-                    .Select(a => new[] { $"0x{a:X16}" })
-                    .ToList();
-                sink.Table(["Address"], addrRows);
-                sink.EndDetails();
-            }
+            sink.BeginDetails($"{typeName}  —  {v.Count:N0} total  (showing {v.Addresses.Count})", open: false);
+            sink.Table(["Address"], v.Addresses.Select(a => new[] { $"0x{a:X16}" }).ToList());
+            sink.EndDetails();
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    // Returns 0=Gen0, 1=Gen1, 2=Gen2, 3=LOH, 4=POH, -1=unknown
+    // Maps a heap object's address to its GC generation via its containing segment.
+    // Returns 0=Gen0, 1=Gen1, 2=Gen2, 3=LOH, 4=POH, -1=unknown.
+    // Ephemeral segments are sub-divided by the generation range boundaries reported by ClrMD.
     static int GetGen(ClrHeap heap, ulong addr)
     {
         var seg = heap.GetSegmentByAddress(addr);

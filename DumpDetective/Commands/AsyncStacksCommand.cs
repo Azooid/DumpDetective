@@ -6,6 +6,8 @@ using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
+// Scans a heap dump for compiler-generated async state-machine objects (IAsyncStateMachine
+// implementations) and reports their distribution by method name and suspension state.
 internal static class AsyncStacksCommand
 {
     private const string Help = """
@@ -19,17 +21,25 @@ internal static class AsyncStacksCommand
           -h, --help         Show this help
         """;
 
+    // One heap-resident async state-machine instance discovered during the heap walk.
+    private readonly record struct StateMachineEntry(string Method, string State, ulong Addr);
+
     public static int Run(string[] args)
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        int top = 50; string? filter = null; bool showAddr = false;
+        int top = 50;
+        string? filter = null;
+        bool showAddr = false;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
         {
-            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)         int.TryParse(args[++i], out top);
-            else if ((args[i] is "--filter" or "-f") && i + 1 < args.Length) filter = args[++i];
-            else if (args[i] is "--addresses" or "-a")                        showAddr = true;
+            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)
+                int.TryParse(args[++i], out top);
+            else if ((args[i] is "--filter" or "-f") && i + 1 < args.Length)
+                filter = args[++i];
+            else if (args[i] is "--addresses" or "-a")
+                showAddr = true;
         }
 
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, top, filter, showAddr));
@@ -45,45 +55,76 @@ internal static class AsyncStacksCommand
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        // (method, stateLabel) → count
-        var counts   = new Dictionary<(string Method, string State), int>(EqualityComparer<(string, string)>.Default);
-        var addrList = new List<(string Method, string State, ulong Addr)>();
+        var entries = ScanStateMachines(ctx, filter);
+        var counts  = BuildCounts(entries);
+        int total   = counts.Values.Sum();
 
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning async state machines...", statusCtx =>
-        {
-            var watch  = Stopwatch.StartNew();
-            long scanned = 0;
+        RenderSummary(sink, counts, total);
 
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+        if (total == 0) { sink.Text("No suspended async state machines found."); return; }
+
+        RenderAlerts(sink, counts, total);
+        RenderTopTable(sink, counts, total, top);
+        RenderStateBreakdown(sink, counts, total);
+
+        if (showAddr && entries.Count > 0)
+            RenderAddresses(sink, entries);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Walks every heap object, identifies compiler-generated async state-machine types by their
+    // name pattern (contains ">d__" or ">D__"), and records the method name and suspension state.
+    static List<StateMachineEntry> ScanStateMachines(DumpContext ctx, string? filter)
+    {
+        var entries = new List<StateMachineEntry>();
+
+        AnsiConsole.Status()
+            .Spinner(Spinner.Known.Dots)
+            .Start("Scanning async state machines...", statusCtx =>
             {
-                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                var name = obj.Type.Name ?? string.Empty;
-                if (!name.Contains(">d__", StringComparison.Ordinal) &&
-                    !name.Contains(">D__", StringComparison.Ordinal)) continue;
+                var watch    = Stopwatch.StartNew();
+                long scanned = 0;
 
-                var method = ExtractMethod(name);
-                if (filter != null && !method.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
-
-                // Read <>1__state: -2=initial, -1=completed/faulted, >=0=suspended at await N
-                string stateLabel = ReadStateLabel(obj);
-
-                var key = (method, stateLabel);
-                counts.TryGetValue(key, out int c);
-                counts[key] = c + 1;
-
-                if (showAddr) addrList.Add((method, stateLabel, obj.Address));
-
-                scanned++;
-                if (watch.Elapsed.TotalSeconds >= 1)
+                foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
-                    statusCtx.Status($"Scanning async state machines — {scanned:N0} found...");
-                    watch.Restart();
+                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    var name = obj.Type.Name ?? string.Empty;
+                    // Compiler-generated state machine types embed the async method name
+                    // between angle-brackets followed by d__ or D__ (C# vs VB naming).
+                    if (!name.Contains(">d__", StringComparison.Ordinal) &&
+                        !name.Contains(">D__", StringComparison.Ordinal)) continue;
+
+                    var method = ExtractMethod(name);
+                    if (filter != null && !method.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
+
+                    // Read <>1__state: -2=initial, -1=completed/faulted, >=0=suspended at await N
+                    string stateLabel = ReadStateLabel(obj);
+                    entries.Add(new StateMachineEntry(method, stateLabel, obj.Address));
+
+                    scanned++;
+                    if (watch.Elapsed.TotalSeconds >= 1)
+                    {
+                        statusCtx.Status($"Scanning async state machines — {scanned:N0} found...");
+                        watch.Restart();
+                    }
                 }
-            }
-        });
+            });
 
-        int total = counts.Values.Sum();
+        return entries;
+    }
 
+    // Aggregates individual entries into a (Method, State) → count dictionary.
+    static Dictionary<(string Method, string State), int> BuildCounts(List<StateMachineEntry> entries) =>
+        entries
+            .GroupBy(e => (e.Method, e.State))
+            .ToDictionary(g => g.Key, g => g.Count());
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    // Top-level key-value summary: totals broken down by lifecycle state.
+    static void RenderSummary(IRenderSink sink, Dictionary<(string Method, string State), int> counts, int total)
+    {
         sink.Section("Summary");
         sink.KeyValues([
             ("Total state machines",    total.ToString("N0")),
@@ -92,17 +133,23 @@ internal static class AsyncStacksCommand
             ("Running",                 counts.Where(kv => kv.Key.State == "Running").Sum(kv => kv.Value).ToString("N0")),
             ("Completed / Faulted",     counts.Where(kv => kv.Key.State == "Completed").Sum(kv => kv.Value).ToString("N0")),
         ]);
+    }
 
-        if (total == 0) { sink.Text("No suspended async state machines found."); return; }
-
+    // Emits a critical or warning alert when suspended counts exceed actionable thresholds.
+    static void RenderAlerts(IRenderSink sink, Dictionary<(string Method, string State), int> counts, int total)
+    {
         int suspendedTotal = counts.Where(kv => kv.Key.State == "Awaiting").Sum(kv => kv.Value);
         if (suspendedTotal > 1000)
             sink.Alert(AlertLevel.Critical, $"{suspendedTotal:N0} async state machines suspended (awaiting).",
                 advice: "Investigate task backlog — check thread-pool saturation with thread-pool command.");
         else if (suspendedTotal > 100)
             sink.Alert(AlertLevel.Warning, $"{suspendedTotal:N0} async state machines suspended.");
+    }
 
-        // Group by method + state
+    // Top-N table: one row per unique (method, state) pair, sorted by count descending,
+    // with a heuristic I/O-category hint for suspended instances.
+    static void RenderTopTable(IRenderSink sink, Dictionary<(string Method, string State), int> counts, int total, int top)
+    {
         var rows = counts
             .OrderByDescending(kv => kv.Value)
             .Take(top)
@@ -119,30 +166,37 @@ internal static class AsyncStacksCommand
         sink.Section($"Top {rows.Count} State Machines by Method + State");
         sink.Table(["Method", "State", "Count", "%", "Await Hint"], rows,
             $"Top {rows.Count} of {counts.Count} unique (method, state) combinations");
+    }
 
-        // State breakdown sub-summary
+    // State-bucket breakdown: percentage share of each lifecycle state across all instances.
+    static void RenderStateBreakdown(IRenderSink sink, Dictionary<(string Method, string State), int> counts, int total)
+    {
         var stateBreakdown = counts
             .GroupBy(kv => kv.Key.State)
             .Select(g => new[] { g.Key, g.Sum(kv => kv.Value).ToString("N0"), $"{g.Sum(kv => kv.Value) * 100.0 / Math.Max(1, total):F1}%" })
             .OrderByDescending(r => int.Parse(r[1].Replace(",", "")))
             .ToList();
         sink.Table(["State", "Count", "%"], stateBreakdown, "State distribution");
+    }
 
-        if (showAddr && addrList.Count > 0)
-        {
-            sink.Section("Individual State Machine Addresses");
-            var addrRows = addrList
-                .Where(a => a.State == "Awaiting")   // prioritise suspended ones
-                .Take(200)
-                .Select(a => new[] { a.Method, a.State, $"0x{a.Addr:X16}" })
-                .ToList();
-            sink.Table(["Method", "State", "Address"], addrRows,
-                $"Showing up to 200 suspended instances (use WinDbg !dumpobj <addr> to inspect)");
-        }
+    // Section (--addresses): raw object addresses for use with WinDbg !dumpobj / !gcroot.
+    // Shows up to 200 suspended instances, prioritised over completed/initial ones.
+    static void RenderAddresses(IRenderSink sink, List<StateMachineEntry> entries)
+    {
+        sink.Section("Individual State Machine Addresses");
+        var addrRows = entries
+            .Where(a => a.State == "Awaiting")   // prioritise suspended ones
+            .Take(200)
+            .Select(a => new[] { a.Method, a.State, $"0x{a.Addr:X16}" })
+            .ToList();
+        sink.Table(["Method", "State", "Address"], addrRows,
+            $"Showing up to 200 suspended instances (use WinDbg !dumpobj <addr> to inspect)");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Reads the <>1__state field to determine the state machine's lifecycle position.
+    // -2 = not yet started (Initial), -1 = ran to completion or faulted, >=0 = suspended at await N.
     static string ReadStateLabel(in Microsoft.Diagnostics.Runtime.ClrObject obj)
     {
         try
@@ -161,6 +215,8 @@ internal static class AsyncStacksCommand
         catch { return "Unknown"; }
     }
 
+    // Extracts the human-readable async method name from a compiler-generated state-machine type name.
+    // e.g. "MyApp.Service+<FetchDataAsync>d__5"  →  "MyApp.Service .FetchDataAsync"
     static string ExtractMethod(string typeName)
     {
         int lt = typeName.LastIndexOf('<');
@@ -169,6 +225,8 @@ internal static class AsyncStacksCommand
         return $"{typeName[..lt].TrimEnd('+')} .{typeName[(lt + 1)..gt]}";
     }
 
+    // Heuristically classifies the likely I/O category of an awaited operation from the method name.
+    // Used to populate the "Await Hint" column in the top-N table without inspecting the IL.
     static string ClassifyAwait(string method)
     {
         if (method.Contains("Http",     StringComparison.OrdinalIgnoreCase) ||

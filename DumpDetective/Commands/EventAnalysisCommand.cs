@@ -7,6 +7,8 @@ using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
+// Scans a heap dump for event handler leaks: delegate fields with live subscribers that
+// are held alive by static publishers or long-lived roots and therefore never collected.
 internal static class EventAnalysisCommand
 {
     private const string Help = """
@@ -25,19 +27,45 @@ internal static class EventAnalysisCommand
         string TargetType, ulong TargetAddr, ulong DelAddr, ulong Size, bool IsStaticRooted,
         string MethodName, bool IsLambda);
 
+    // One delegate field on one publisher instance, together with its resolved subscribers.
+    private readonly record struct LeakEntry(
+        string PublisherType,
+        ulong PublisherAddr,
+        string FieldName,
+        string DelegateType,
+        bool IsStaticPublisher,   // true when the publisher object is itself held by a static root
+        List<SubDetail> Subs);
+
+    // Aggregated stats for a (PublisherType, FieldName) pair across all instances.
+    private readonly record struct EventGroup(
+        string PublisherType,
+        string FieldName,
+        int Instances,            // number of distinct publisher objects carrying this field
+        int Subscribers,          // total live subscriber count across all instances
+        ulong RetainedBytes,
+        bool IsStaticPublisher,   // true when any instance is statically rooted
+        bool HasStaticSubs,       // true when any subscriber is itself statically rooted
+        List<SubDetail> AllSubs,
+        int LambdaCount,          // number of subscribers that are compiler-generated closures
+        int DuplicateCount);      // number of (addr, method) pairs registered more than once
+
     public static int Run(string[] args)
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        int top = 20; bool showAddr = false;
+        int top = 20;
+        bool showAddr = false;
         var excludes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var (dumpPath, output) = CommandBase.ParseCommon(args);
 
         for (int i = 0; i < args.Length; i++)
         {
-            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)          int.TryParse(args[++i], out top);
-            else if (args[i] is "--addresses" or "-a")                         showAddr = true;
-            else if ((args[i] is "--exclude" or "-e") && i + 1 < args.Length) excludes.Add(args[++i]);
+            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)
+                int.TryParse(args[++i], out top);
+            else if (args[i] is "--addresses" or "-a")
+                showAddr = true;
+            else if ((args[i] is "--exclude" or "-e") && i + 1 < args.Length)
+                excludes.Add(args[++i]);
         }
 
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, excludes, showAddr, top));
@@ -54,8 +82,35 @@ internal static class EventAnalysisCommand
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        // Build static-root address set by reading all static object fields across all modules.
-        // ClrMD 3.x doesn't expose a StaticVariable root kind, so we enumerate types directly.
+        var staticRoots = BuildStaticRoots(ctx);
+        var leaks       = ScanLeaks(ctx, staticRoots, excludes);
+        var groups      = BuildGroups(leaks);
+
+        sink.Section("1. Event Handler Leaks");
+
+        if (groups.Count == 0)
+        {
+            sink.Alert(AlertLevel.Info, "No event handler leaks found.");
+            return;
+        }
+
+        RenderSummaryTable(sink, groups, leaks, top);
+        RenderBreakdown(sink, groups, top);
+        RenderMethodStats(sink, groups, top);
+
+        if (showAddr && leaks.Count > 0)
+            RenderAddresses(sink, leaks);
+
+        RenderFooter(sink, groups, leaks.Count);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    static HashSet<ulong> BuildStaticRoots(DumpContext ctx)
+    {
+        // Build a set of object addresses that are reachable from static fields.
+        // ClrMD 3.x doesn't expose a StaticVariable root kind, so we enumerate types directly
+        // across every module in every AppDomain and read each static object-reference field.
         var staticRoots = new HashSet<ulong>();
         foreach (var appDomain in ctx.Runtime.AppDomains)
         {
@@ -79,19 +134,19 @@ internal static class EventAnalysisCommand
                 }
             }
         }
+        return staticRoots;
+    }
 
-        var leaks = new List<(
-            string          PublisherType,
-            ulong           PublisherAddr,
-            string          FieldName,
-            string          DelegateType,
-            bool            IsStaticPublisher,
-            List<SubDetail> Subs)>();
+    // Walks every heap object, finds delegate fields that look like event subscriptions,
+    // and resolves each delegate's subscriber list into LeakEntry records.
+    static List<LeakEntry> ScanLeaks(DumpContext ctx, HashSet<ulong> staticRoots, HashSet<string>? excludes)
+    {
+        var leaks = new List<LeakEntry>();
 
         AnsiConsole.Status()
             .Spinner(Spinner.Known.Dots)
             .SpinnerStyle(Style.Parse("blue"))
-            .Start("Scanning for event leaks...", ctx2 =>
+            .Start("Scanning for event leaks...", statusCtx =>
             {
                 var watch    = Stopwatch.StartNew();
                 long visited = 0;
@@ -132,8 +187,8 @@ internal static class EventAnalysisCommand
                                 subs = [..subs.Where(s => excludes.All(
                                     e => !s.TargetType.Contains(e, StringComparison.OrdinalIgnoreCase)))];
                             if (subs.Count == 0) continue;
-                            leaks.Add((typeName, obj.Address, field.Name ?? "<?>",
-                                       field.Type.Name ?? "?", isStaticPub, subs));
+                            leaks.Add(new LeakEntry(typeName, obj.Address, field.Name ?? "<?>",
+                                                    field.Type.Name ?? "?", isStaticPub, subs));
                         }
                         catch { }
                     }
@@ -141,14 +196,19 @@ internal static class EventAnalysisCommand
                     visited++;
                     if (watch.Elapsed.TotalSeconds >= 1)
                     {
-                        ctx2.Status($"Scanning for event leaks — {visited:N0} objects scanned, {leaks.Count} leak(s) found");
+                        statusCtx.Status($"Scanning for event leaks — {visited:N0} objects scanned, {leaks.Count} leak(s) found");
                         watch.Restart();
                     }
                 }
             });
 
-        // Aggregate by (PublisherType, FieldName)
-        var groups = leaks
+        return leaks;
+    }
+
+    // Aggregates individual LeakEntry records into per-(PublisherType, FieldName) EventGroups,
+    // computing totals, duplicate counts and severity flags.
+    static List<EventGroup> BuildGroups(List<LeakEntry> leaks) =>
+        leaks
             .GroupBy(l => (l.PublisherType, l.FieldName))
             .Select(g =>
             {
@@ -159,35 +219,36 @@ internal static class EventAnalysisCommand
                 int   lambdas  = allSubs.Count(s => s.IsLambda);
                 int   dupes    = g.Sum(l =>
                 {
+                    // Count (TargetAddr, MethodName) pairs that appear more than once in the same
+                    // publisher instance — a sign that += was called without a matching -=.
                     var seen = new HashSet<(ulong, string)>();
                     return l.Subs.Count(s => !seen.Add((s.TargetAddr, s.MethodName)));
                 });
-                return (g.Key.PublisherType, g.Key.FieldName,
-                        Instances:         g.Count(),
-                        Subscribers:       allSubs.Count,
-                        RetainedBytes:     retained,
-                        IsStaticPublisher: isStatic,
-                        HasStaticSubs:     hasSR,
-                        AllSubs:           allSubs,
-                        LambdaCount:       lambdas,
-                        DuplicateCount:    dupes);
+                return new EventGroup(
+                    PublisherType:     g.Key.PublisherType,
+                    FieldName:         g.Key.FieldName,
+                    Instances:         g.Count(),
+                    Subscribers:       allSubs.Count,
+                    RetainedBytes:     retained,
+                    IsStaticPublisher: isStatic,
+                    HasStaticSubs:     hasSR,
+                    AllSubs:           allSubs,
+                    LambdaCount:       lambdas,
+                    DuplicateCount:    dupes);
             })
             .OrderByDescending(g => g.IsStaticPublisher)
             .ThenByDescending(g => g.Subscribers)
             .ToList();
 
-        // ── 1. Summary table ──────────────────────────────────────────────────
-        sink.Section("1. Event Handler Leaks");
+    // ── Rendering ─────────────────────────────────────────────────────────────
 
-        if (groups.Count == 0)
-        {
-            sink.Alert(AlertLevel.Info, "No event handler leaks found.");
-            return;
-        }
+    // Maps severity based on whether the publisher or any subscriber is statically rooted.
+    static string Severity(bool isStatic, bool hasSR) =>
+        isStatic ? "⚡ CRITICAL" : hasSR ? "⚠ WARNING" : "—";
 
-        static string Severity(bool isStatic, bool hasSR) =>
-            isStatic ? "⚡ CRITICAL" : hasSR ? "⚠ WARNING" : "—";
-
+    // Section 1: one row per unique (PublisherType, FieldName) pair.
+    static void RenderSummaryTable(IRenderSink sink, List<EventGroup> groups, List<LeakEntry> leaks, int top)
+    {
         var summaryRows = groups.Take(top).Select(g => new[]
         {
             g.PublisherType, g.FieldName,
@@ -196,11 +257,16 @@ internal static class EventAnalysisCommand
             DumpHelpers.FormatSize((long)g.RetainedBytes),
             Severity(g.IsStaticPublisher, g.HasStaticSubs),
         }).ToList();
+
         sink.Table(
             ["Publisher Type", "Event Field", "Instances", "Subscribers", "Retained", "Severity"],
             summaryRows,
             $"{groups.Count} unique event field(s) across {leaks.Count} publisher instance(s)");
+    }
 
+    // Section 2: per-event collapsible panel with subscriber-type breakdown and fix advice.
+    static void RenderBreakdown(IRenderSink sink, List<EventGroup> groups, int top)
+    {
         // ── 2. Subscriber type breakdown + fix advice ─────────────────────────
         sink.Section("2. Subscriber Breakdown");
         foreach (var g in groups.Take(top))
@@ -210,6 +276,7 @@ internal static class EventAnalysisCommand
                 $"{g.PublisherType}.{g.FieldName}  " +
                 $"({g.Subscribers:N0} subscribers  |  {DumpHelpers.FormatSize((long)g.RetainedBytes)} retained  |  {sev})",
                 open: g.IsStaticPublisher);
+
             var bySubType = g.AllSubs
                 .GroupBy(s => (s.TargetType, s.MethodName))
                 .Select(tg => (
@@ -247,9 +314,14 @@ internal static class EventAnalysisCommand
                 sink.Alert(AlertLevel.Warning,
                     $"Long-lived subscribers on '{g.FieldName}' are kept alive by static roots.",
                     advice: $"publisher.{g.FieldName} -= OnHandler;  // call in subscriber's Dispose()");
+
             sink.EndDetails();
         }
+    }
 
+    // Section 3: method-level roll-up showing which handler methods have the most subscriptions.
+    static void RenderMethodStats(IRenderSink sink, List<EventGroup> groups, int top)
+    {
         // ── 3. Top subscribed methods ─────────────────────────────────────────
         sink.Section("3. Top Subscribed Methods");
         var methodStats = groups
@@ -263,6 +335,7 @@ internal static class EventAnalysisCommand
             .OrderByDescending(m => m.Count)
             .Take(top)
             .ToList();
+
         sink.Table(
             ["Subscribed Method", "Total Subscriptions", "Retained", "Lambda?"],
             methodStats.Select(m => new[]
@@ -272,24 +345,30 @@ internal static class EventAnalysisCommand
                 m.IsLambda ? "λ yes" : "—",
             }).ToList(),
             "Methods sorted by subscription count across all events");
+    }
 
+    // Section 4 (--addresses): raw publisher/subscriber address pairs for use with !do / !gcroot.
+    static void RenderAddresses(IRenderSink sink, List<LeakEntry> leaks)
+    {
         // ── 4. Address detail (--addresses) ───────────────────────────────────
-        if (showAddr && leaks.Count > 0)
-        {
-            sink.Section("4. Subscriber Addresses");
-            var detailRows = leaks.SelectMany(l =>
-                l.Subs.Select(s => new[]
-                {
-                    l.PublisherType, $"0x{l.PublisherAddr:X16}", l.FieldName,
-                    s.TargetType, $"0x{s.TargetAddr:X16}",
-                    s.IsStaticRooted ? "⚠ static" : "—",
-                })
-            ).Take(200).ToList();
-            sink.Table(
-                ["Publisher Type", "Publisher Addr", "Field", "Subscriber Type", "Subscriber Addr", "Static?"],
-                detailRows);
-        }
+        sink.Section("4. Subscriber Addresses");
+        var detailRows = leaks.SelectMany(l =>
+            l.Subs.Select(s => new[]
+            {
+                l.PublisherType, $"0x{l.PublisherAddr:X16}", l.FieldName,
+                s.TargetType, $"0x{s.TargetAddr:X16}",
+                s.IsStaticRooted ? "⚠ static" : "—",
+            })
+        ).Take(200).ToList();
 
+        sink.Table(
+            ["Publisher Type", "Publisher Addr", "Field", "Subscriber Type", "Subscriber Addr", "Static?"],
+            detailRows);
+    }
+
+    // Emits the overall severity alert and key-value summary at the bottom of the report.
+    static void RenderFooter(IRenderSink sink, List<EventGroup> groups, int publisherInstanceCount)
+    {
         int   totalSubs     = groups.Sum(g => g.Subscribers);
         ulong totalRetained = (ulong)groups.Sum(g => (long)g.RetainedBytes);
         int   criticalCount = groups.Count(g => g.IsStaticPublisher);
@@ -308,7 +387,7 @@ internal static class EventAnalysisCommand
         int totalDupes   = groups.Sum(g => g.DuplicateCount);
         sink.KeyValues([
             ("Unique event fields",      groups.Count.ToString("N0")),
-            ("Publisher instances",      leaks.Count.ToString("N0")),
+            ("Publisher instances",      publisherInstanceCount.ToString("N0")),
             ("Total subscribers",        totalSubs.ToString("N0")),
             ("Lambda/closure subs",      totalLambdas.ToString("N0")),
             ("Duplicate subscriptions",  totalDupes.ToString("N0")),
@@ -317,6 +396,10 @@ internal static class EventAnalysisCommand
         ]);
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Expands a multicast delegate's _invocationList array into individual SubDetail records.
+    // Falls back to treating the delegate itself as a single-subscriber delegate when the list is absent.
     static List<SubDetail> CollectSubscribers(ClrObject del, HashSet<ulong> staticRoots, ClrRuntime runtime)
     {
         var result = new List<SubDetail>();
@@ -344,6 +427,8 @@ internal static class EventAnalysisCommand
         return result;
     }
 
+    // Reads _target and _methodPtr from a single delegate object and builds a SubDetail.
+    // Returns null for system-type targets (e.g. internal runtime callbacks) that aren't leaks.
     static SubDetail? TryGetSub(ClrObject del, HashSet<ulong> staticRoots, ClrRuntime runtime)
     {
         var target = del.ReadObjectField("_target");
@@ -357,6 +442,7 @@ internal static class EventAnalysisCommand
                              method, isLambda);
     }
 
+    // Resolves the target method name from a delegate's _methodPtr via the JIT method table.
     static string ResolveMethodName(ClrObject del, ClrRuntime runtime)
     {
         try
@@ -371,11 +457,13 @@ internal static class EventAnalysisCommand
         catch { return "?"; }
     }
 
+    // Detects compiler-generated closure/display-class types produced by lambda expressions.
     static bool IsLambdaType(string typeName) =>
         typeName.Contains("<>c",             StringComparison.Ordinal) ||
         typeName.Contains("+<>",             StringComparison.Ordinal) ||
         typeName.Contains("__DisplayClass",  StringComparison.Ordinal);
 
+    // Walks the base-type chain to determine whether a ClrType derives from MulticastDelegate.
     static bool IsDelegate(ClrType type)
     {
         for (var t = type.BaseType; t is not null; t = t.BaseType)
