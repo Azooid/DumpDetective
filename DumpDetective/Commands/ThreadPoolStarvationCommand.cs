@@ -126,6 +126,26 @@ internal static class ThreadPoolStarvationCommand
     private sealed record TpThreadEvent(DateTime Ts, uint Active, uint Retired);
     private sealed record TpAdjustment(DateTime Ts, uint NewCount, int Reason, double AverageThroughput);
 
+    private sealed record ParsedTrace(
+        string TraceInfo,
+        int TotalEvents,
+        List<WaitEventData> WaitEvents,
+        Dictionary<string, int> EventNames,
+        List<TpThreadEvent> TpThreadEvents,
+        List<TpAdjustment> TpAdjustments);
+
+    private sealed record KeywordFlags(
+        bool HasClrProvider,
+        bool HasSampleProfiler,
+        bool HasThreadPoolEvts,
+        bool HasGcEvts,
+        bool HasJitEvts,
+        List<TpAdjustment> StarvationAdj,
+        uint TpMinActive,
+        uint TpMaxActive,
+        uint TpFinalActive,
+        bool TpWasGrowing);
+
     // ── Entry point ──────────────────────────────────────────────────────────
 
     public static int Run(string[] args)
@@ -172,7 +192,7 @@ internal static class ThreadPoolStarvationCommand
         }
     }
 
-    // ── Render ───────────────────────────────────────────────────────────────
+    // ── Render (thin orchestrator) ────────────────────────────────────────────
 
     internal static void Render(string netracePath, IRenderSink sink, int top = 10)
     {
@@ -184,24 +204,65 @@ internal static class ThreadPoolStarvationCommand
             "Dump Detective — ThreadPool Starvation Analysis",
             $"{Path.GetFileName(netracePath)}  |  {File.GetLastWriteTime(netracePath):yyyy-MM-dd HH:mm:ss}");
 
-        // ── Parse nettrace ───────────────────────────────────────────────────
-        var waitEvents  = new List<WaitEventData>();
-        string? traceInfo   = null;
-        int     totalEvents = 0;
-        // Diagnostic: all event provider/name combos seen in the trace — helps
-        // the user understand why events might not be found.
-        var diagnosticEventNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-        // ThreadPool activity data collected even when WaitHandleWait is absent.
+        var trace         = ParseNettrace(netracePath);
+        var tpEvents      = trace.WaitEvents.Where(e =>  IsThreadPoolThread(e.Frames)).ToList();
+        var nonTpEvents   = trace.WaitEvents.Where(e => !IsThreadPoolThread(e.Frames)).ToList();
+        int stacksPresent = trace.WaitEvents.Count(e => e.Frames.Count > 0);
+        var flags         = InferKeywordFlags(trace);
+
+        RenderSummary(sink, netracePath, trace, tpEvents.Count, nonTpEvents.Count, stacksPresent);
+        RenderKeywords(sink, flags, trace.WaitEvents.Count);
+        RenderThreadPoolActivity(sink, trace, flags);
+
+        if (trace.WaitEvents.Count == 0)
+        {
+            RenderNoEventsSection(sink, trace, flags);
+            RenderDiagnosticEventNames(sink, trace.EventNames, openByDefault: true);
+            return;
+        }
+
+        RenderDiagnosticEventNames(sink, trace.EventNames, openByDefault: false);
+
+        if (stacksPresent == 0)
+            sink.Alert(AlertLevel.Warning,
+                "WaitHandleWait events found but no stack traces present.",
+                detail: "Stack capture requires --clreventlevel verbose AND a runtime that supports stacks for WaitHandleWait.",
+                advice: "Re-collect with: dotnet trace collect -n <Process> --clrevents waithandle --clreventlevel verbose");
+
+        RenderWaitSourceBreakdown(sink, trace.WaitEvents);
+        RenderDiagnosis(sink, tpEvents);
+
+        if (tpEvents.Count > 0 && stacksPresent > 0)
+            RenderStackPatterns(sink,
+                $"Top {Math.Min(top, tpEvents.Count)} Blocking Stack Patterns (ThreadPool Threads)",
+                tpEvents, top, openFirst: true);
+
+        if (nonTpEvents.Count > 0 && stacksPresent > 0)
+            RenderStackPatterns(sink,
+                "Top 5 Blocking Patterns (Non-ThreadPool Threads, informational)",
+                nonTpEvents, 5, openFirst: false);
+
+        sink.Reference(
+            "Debug ThreadPool starvation — Microsoft Docs",
+            "https://learn.microsoft.com/dotnet/core/diagnostics/debug-threadpool-starvation");
+    }
+
+    // ── Parse ─────────────────────────────────────────────────────────────────
+
+    private static ParsedTrace ParseNettrace(string netracePath)
+    {
+        var waitEvents     = new List<WaitEventData>();
+        var eventNames     = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
         var tpThreadEvents = new List<TpThreadEvent>();
         var tpAdjustments  = new List<TpAdjustment>();
+        string traceInfo   = "N/A";
+        int    totalEvents = 0;
 
         CommandBase.TimedStatus("Parsing nettrace events…", _ =>
         {
-            // ── Pass 1: EventPipeEventSource — fast diagnostic pass ──────────
-            // Used for: event counting, CLR keyword inference, ThreadPool data.
-            // EventPipeEventSource is NOT used for WaitHandleWait stacks because
-            // evt.CallStack() returns null — stacks in EventPipe format require
-            // TraceLog (etlx) resolution (same path PerfView uses). See Pass 2.
+            // Pass 1 — EventPipeEventSource: fast event counting + ThreadPool data.
+            // Not used for WaitHandleWait stacks — evt.CallStack() always returns null
+            // in EventPipe format. Stack resolution requires TraceLog (etlx). See Pass 2.
             using (var epSource = new EventPipeEventSource(netracePath))
             {
                 DateTime firstTs = DateTime.MaxValue;
@@ -213,88 +274,32 @@ internal static class ThreadPoolStarvationCommand
                     if (evt.TimeStamp < firstTs) firstTs = evt.TimeStamp;
                     if (evt.TimeStamp > lastTs)  lastTs  = evt.TimeStamp;
 
-                    // Resolve provider GUID to a human-readable name if TraceEvent
-                    // delivers it raw (EventPipeEventSource without manifest rundown).
-                    string providerDisplay = evt.ProviderName;
-                    if (providerDisplay.StartsWith("Provider(", StringComparison.Ordinal))
-                    {
-                        // Extract the GUID between "Provider(" and ")"
-                        var guidStart = "Provider(".Length;
-                        var guidEnd   = providerDisplay.IndexOf(')', guidStart);
-                        if (guidEnd > guidStart)
-                        {
-                            var guidStr = providerDisplay.Substring(guidStart, guidEnd - guidStart);
-                            if (WellKnownProviderGuids.TryGetValue(guidStr, out var resolvedName))
-                                providerDisplay = resolvedName;
-                        }
-                    }
-
-                    // Decode CLR event name from our static lookup when TraceEvent
-                    // leaves it as Task(guid)(id=N) or EventID(N).
+                    string providerDisplay = ResolveProviderName(evt.ProviderName);
                     string evtName = evt.EventName;
-                    if ((evtName.StartsWith("Task(", StringComparison.Ordinal) ||
+                    if ((evtName.StartsWith("Task(",    StringComparison.Ordinal) ||
                          evtName.StartsWith("EventID(", StringComparison.Ordinal)) &&
                         providerDisplay.IndexOf("DotNETRuntime", StringComparison.OrdinalIgnoreCase) >= 0 &&
                         ClrEventIdNames.TryGetValue((int)evt.ID, out var knownName))
                         evtName = knownName;
 
-                    var nameKey = $"{providerDisplay}/{evtName}(id={(int)evt.ID})";
-                    diagnosticEventNames.TryGetValue(nameKey, out int nc);
-                    diagnosticEventNames[nameKey] = nc + 1;
+                    var key = $"{providerDisplay}/{evtName}(id={(int)evt.ID})";
+                    eventNames.TryGetValue(key, out int nc);
+                    eventNames[key] = nc + 1;
 
-                    // ThreadPool thread-count and hill-climbing events.
                     if (providerDisplay.IndexOf("DotNETRuntime", StringComparison.OrdinalIgnoreCase) >= 0)
-                    {
-                        int eid = (int)evt.ID;
-                        if (eid is 54 or 55) // ThreadPoolWorkerThreadStart / Stop
-                        {
-                            try
-                            {
-                                var active  = evt.PayloadByName("ActiveWorkerThreadCount");
-                                var retired = evt.PayloadByName("RetiredWorkerThreadCount");
-                                if (active is not null)
-                                    tpThreadEvents.Add(new TpThreadEvent(
-                                        evt.TimeStamp,
-                                        Convert.ToUInt32(active),
-                                        retired is not null ? Convert.ToUInt32(retired) : 0u));
-                            }
-                            catch { }
-                        }
-                        else if (eid == 58) // ThreadPoolWorkerThreadAdjustmentAdjustment
-                        {
-                            try
-                            {
-                                var newCount   = evt.PayloadByName("NewWorkerThreadCount");
-                                var reason     = evt.PayloadByName("Reason");
-                                var throughput = evt.PayloadByName("AverageThroughput");
-                                if (newCount is not null)
-                                    tpAdjustments.Add(new TpAdjustment(
-                                        evt.TimeStamp,
-                                        Convert.ToUInt32(newCount),
-                                        Convert.ToInt32(reason ?? 0),
-                                        throughput is not null ? Convert.ToDouble(throughput) : 0.0));
-                            }
-                            catch { }
-                        }
-                    }
+                        ProcessThreadPoolEvent(evt, (int)evt.ID, tpThreadEvents, tpAdjustments);
                 };
 
                 epSource.Process();
-
                 var duration = lastTs > firstTs ? lastTs - firstTs : TimeSpan.Zero;
                 traceInfo = $"Duration: {duration:g}  |  Total events: {totalEvents:N0}";
             }
 
-            // ── Pass 2: TraceLog (etlx) — WaitHandleWait events WITH stacks ──
-            // TraceLog.CreateFromEventPipeDataFile converts the nettrace to etlx
-            // format, resolving all stack frames. This is the same mechanism
-            // PerfView uses, and the only way to get evt.CallStack() to work.
-            // The etlx file is cached beside the nettrace for reuse on repeat runs.
-            //
-            // WaitHandleWaitStart (EventID 301) is not in TraceEvent's static CLR
-            // manifest, so it falls through ClrTraceEventParser to
-            // DynamicTraceEventParser — which fires once per physical event with
-            // fully resolved payload (WaitSource) and attached call stack.
+            // Pass 2 — TraceLog (etlx): WaitHandleWait events WITH resolved stacks.
+            // TraceLog.CreateFromEventPipeDataFile converts nettrace → etlx, enabling
+            // evt.CallStack() to return real frames — the same mechanism PerfView uses.
+            // WaitHandleWaitStart (EventID 301) is not in TraceEvent's static CLR manifest,
+            // so it is only visible through DynamicTraceEventParser, never ClrTraceEventParser.
             try
             {
                 string etlxPath = Path.ChangeExtension(netracePath, ".etlx");
@@ -302,9 +307,9 @@ internal static class ThreadPoolStarvationCommand
                     TraceLog.CreateFromEventPipeDataFile(netracePath, etlxPath);
 
                 using var traceLog = new TraceLog(etlxPath);
-                var tlSource = traceLog.Events.GetSource();
-
+                var tlSource  = traceLog.Events.GetSource();
                 var dynParser = new Microsoft.Diagnostics.Tracing.Parsers.DynamicTraceEventParser(tlSource);
+
                 dynParser.All += evt =>
                 {
                     if (!IsWaitHandleWaitStart(evt)) return;
@@ -318,232 +323,257 @@ internal static class ThreadPoolStarvationCommand
             }
             catch (Exception ex)
             {
-                // etlx conversion failed — fall back to event count without stacks
-                // (already counted in Pass 1 diagnostic; just record events with empty frames)
                 AnsiConsole.MarkupLine($"[yellow]⚠ Stack resolution via TraceLog failed ({Markup.Escape(ex.Message)}); stacks unavailable.[/]");
-                foreach (var nameKey in diagnosticEventNames.Keys
+                foreach (var key in eventNames.Keys
                     .Where(k => k.IndexOf("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase) >= 0))
                 {
-                    diagnosticEventNames.TryGetValue(nameKey, out int rawCount);
+                    eventNames.TryGetValue(key, out int rawCount);
                     for (int i = 0; i < rawCount; i++)
                         waitEvents.Add(new WaitEventData(0, 0, []));
                 }
             }
         });
 
-        // No deduplication: Pass 2 (TraceLog + DynamicParser) fires exactly once
-        // per physical WaitHandleWaitStart event — no double-counting.
+        return new ParsedTrace(traceInfo, totalEvents, waitEvents, eventNames, tpThreadEvents, tpAdjustments);
+    }
 
-        // ── Summary ──────────────────────────────────────────────────────────
-        var tpEvents      = waitEvents.Where(e => IsThreadPoolThread(e.Frames)).ToList();
-        var nonTpEvents   = waitEvents.Where(e => !IsThreadPoolThread(e.Frames)).ToList();
-        int stacksPresent = waitEvents.Count(e => e.Frames.Count > 0);
+    private static void ProcessThreadPoolEvent(
+        TraceEvent evt, int eid,
+        List<TpThreadEvent> tpThreadEvents, List<TpAdjustment> tpAdjustments)
+    {
+        if (eid is 54 or 55) // ThreadPoolWorkerThreadStart / Stop
+        {
+            try
+            {
+                var active  = evt.PayloadByName("ActiveWorkerThreadCount");
+                var retired = evt.PayloadByName("RetiredWorkerThreadCount");
+                if (active is not null)
+                    tpThreadEvents.Add(new TpThreadEvent(
+                        evt.TimeStamp,
+                        Convert.ToUInt32(active),
+                        retired is not null ? Convert.ToUInt32(retired) : 0u));
+            }
+            catch { }
+        }
+        else if (eid == 58) // ThreadPoolWorkerThreadAdjustmentAdjustment
+        {
+            try
+            {
+                var newCount   = evt.PayloadByName("NewWorkerThreadCount");
+                var reason     = evt.PayloadByName("Reason");
+                var throughput = evt.PayloadByName("AverageThroughput");
+                if (newCount is not null)
+                    tpAdjustments.Add(new TpAdjustment(
+                        evt.TimeStamp,
+                        Convert.ToUInt32(newCount),
+                        Convert.ToInt32(reason ?? 0),
+                        throughput is not null ? Convert.ToDouble(throughput) : 0.0));
+            }
+            catch { }
+        }
+    }
 
-        // ── Keyword / provider inference ─────────────────────────────────────
-        bool hasClrProvider    = diagnosticEventNames.Keys.Any(k => k.IndexOf("DotNETRuntime",  StringComparison.OrdinalIgnoreCase) >= 0
-                               || k.IndexOf("e13c0d23",       StringComparison.OrdinalIgnoreCase) >= 0);
-        bool hasSampleProfiler = diagnosticEventNames.Keys.Any(k => k.IndexOf("SampleProfiler", StringComparison.OrdinalIgnoreCase) >= 0
-                               || k.IndexOf("8e9f5090",       StringComparison.OrdinalIgnoreCase) >= 0);
-        bool hasThreadPoolEvts = tpThreadEvents.Count > 0 || tpAdjustments.Count > 0 ||
-                                 diagnosticEventNames.Keys.Any(k => k.IndexOf("ThreadPool",       StringComparison.OrdinalIgnoreCase) >= 0);
-        bool hasGcEvts         = diagnosticEventNames.Keys.Any(k => k.IndexOf("/GC",              StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                                                     k.IndexOf("/GCHeap",          StringComparison.OrdinalIgnoreCase) >= 0);
-        bool hasJitEvts        = diagnosticEventNames.Keys.Any(k => k.IndexOf("MethodLoad",       StringComparison.OrdinalIgnoreCase) >= 0 ||
-                                                                     k.IndexOf("/Method",          StringComparison.OrdinalIgnoreCase) >= 0);
-        // Hill-climbing: Reason=6 means the CLR scheduler itself labeled the adjustment as "Starvation"
-        var starvationAdj      = tpAdjustments.Where(a => a.Reason == 6).ToList();
+    // ── Keyword inference ─────────────────────────────────────────────────────
 
-        // Thread count stats from ThreadPoolWorkerThreadStart/Stop events
-        uint tpMinActive   = tpThreadEvents.Count > 0 ? tpThreadEvents.Min(e => e.Active)  : 0;
-        uint tpMaxActive   = tpThreadEvents.Count > 0 ? tpThreadEvents.Max(e => e.Active)  : 0;
-        uint tpFinalActive = tpThreadEvents.Count > 0 ? tpThreadEvents.Last().Active        : 0;
-        bool tpWasGrowing  = tpThreadEvents.Count >= 2 && tpMaxActive > tpMinActive;
+    private static KeywordFlags InferKeywordFlags(ParsedTrace trace)
+    {
+        var names = trace.EventNames;
 
+        bool hasClrProvider    = names.Keys.Any(k =>
+            k.IndexOf("DotNETRuntime", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            k.IndexOf("e13c0d23",     StringComparison.OrdinalIgnoreCase) >= 0);
+        bool hasSampleProfiler = names.Keys.Any(k =>
+            k.IndexOf("SampleProfiler", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            k.IndexOf("8e9f5090",       StringComparison.OrdinalIgnoreCase) >= 0);
+        bool hasThreadPoolEvts = trace.TpThreadEvents.Count > 0 || trace.TpAdjustments.Count > 0 ||
+                                 names.Keys.Any(k => k.IndexOf("ThreadPool", StringComparison.OrdinalIgnoreCase) >= 0);
+        bool hasGcEvts  = names.Keys.Any(k =>
+            k.IndexOf("/GC",     StringComparison.OrdinalIgnoreCase) >= 0 ||
+            k.IndexOf("/GCHeap", StringComparison.OrdinalIgnoreCase) >= 0);
+        bool hasJitEvts = names.Keys.Any(k =>
+            k.IndexOf("MethodLoad", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            k.IndexOf("/Method",    StringComparison.OrdinalIgnoreCase) >= 0);
+
+        var  starvationAdj = trace.TpAdjustments.Where(a => a.Reason == 6).ToList();
+        uint tpMin   = trace.TpThreadEvents.Count > 0 ? trace.TpThreadEvents.Min(e => e.Active) : 0;
+        uint tpMax   = trace.TpThreadEvents.Count > 0 ? trace.TpThreadEvents.Max(e => e.Active) : 0;
+        uint tpFinal = trace.TpThreadEvents.Count > 0 ? trace.TpThreadEvents.Last().Active       : 0;
+
+        return new KeywordFlags(
+            HasClrProvider:    hasClrProvider,
+            HasSampleProfiler: hasSampleProfiler,
+            HasThreadPoolEvts: hasThreadPoolEvts,
+            HasGcEvts:         hasGcEvts,
+            HasJitEvts:        hasJitEvts,
+            StarvationAdj:     starvationAdj,
+            TpMinActive:       tpMin,
+            TpMaxActive:       tpMax,
+            TpFinalActive:     tpFinal,
+            TpWasGrowing:      trace.TpThreadEvents.Count >= 2 && tpMax > tpMin);
+    }
+
+    // ── Section renderers ─────────────────────────────────────────────────────
+
+    private static void RenderSummary(
+        IRenderSink sink, string netracePath, ParsedTrace trace,
+        int tpCount, int nonTpCount, int stacksPresent)
+    {
         sink.Section("Trace Summary");
         sink.KeyValues([
-            ("Trace file",                      Path.GetFileName(netracePath)),
-            ("Trace info",                      traceInfo ?? "N/A"),
-            ("WaitHandleWait events (Start)",   waitEvents.Count.ToString("N0")),
-            ("  On ThreadPool threads",         tpEvents.Count.ToString("N0")),
-            ("  On non-ThreadPool threads",     nonTpEvents.Count.ToString("N0")),
-            ("Events with stack traces",        $"{stacksPresent:N0} / {waitEvents.Count:N0}"),
+            ("Trace file",                    Path.GetFileName(netracePath)),
+            ("Trace info",                    trace.TraceInfo),
+            ("WaitHandleWait events (Start)", trace.WaitEvents.Count.ToString("N0")),
+            ("  On ThreadPool threads",       tpCount.ToString("N0")),
+            ("  On non-ThreadPool threads",   nonTpCount.ToString("N0")),
+            ("Events with stack traces",      $"{stacksPresent:N0} / {trace.WaitEvents.Count:N0}"),
         ]);
+    }
 
-        // ── Detected CLR keywords & providers ────────────────────────────────
+    private static void RenderKeywords(IRenderSink sink, KeywordFlags f, int waitCount)
+    {
         sink.Section("Detected CLR Keywords & Providers");
-        var kwRows = new List<string[]>();
-        kwRows.Add(new[] { "Microsoft-Windows-DotNETRuntime", hasClrProvider    ? "✓ Present" : "✗ Absent",
-            hasClrProvider    ? "CLR runtime events found"                                    : "No CLR provider events — check process name" });
-        kwRows.Add(new[] { "ThreadPool (0x10000)",            hasThreadPoolEvts ? "✓ Active"  : "✗ Not seen",
-            hasThreadPoolEvts ? "Thread-count adjustment events observed"                     : "No thread-count events — keyword may be inactive" });
-        kwRows.Add(new[] { "WaitHandle (0x40000000000)",      waitEvents.Count > 0 ? "✓ Active" : "✗ Not seen",
-            waitEvents.Count > 0 ? "WaitHandleWait events present"                            : "WaitHandleWait keyword absent or no blocking during trace (.NET 9+ required)" });
-        if (hasGcEvts)
-            kwRows.Add(new[] { "GC (0x1)",  "✓ Active",  "GC events present" });
-        if (hasJitEvts)
-            kwRows.Add(new[] { "JIT (0x10)", "✓ Active", "JIT/method-load events present" });
-        if (hasSampleProfiler)
-            kwRows.Add(new[] { "CPU sampling (SampleProfiler)", "✓ Present", "Sampling provider enabled (not harmful, but not needed here)" });
-        sink.Table(["Keyword / Provider", "Status", "Notes"], kwRows,
+        var rows = new List<string[]>();
+        rows.Add(new[] { "Microsoft-Windows-DotNETRuntime",
+            f.HasClrProvider    ? "✓ Present" : "✗ Absent",
+            f.HasClrProvider    ? "CLR runtime events found" : "No CLR provider events — check process name" });
+        rows.Add(new[] { "ThreadPool (0x10000)",
+            f.HasThreadPoolEvts ? "✓ Active"  : "✗ Not seen",
+            f.HasThreadPoolEvts ? "Thread-count adjustment events observed" : "No thread-count events — keyword may be inactive" });
+        rows.Add(new[] { "WaitHandle (0x40000000000)",
+            waitCount > 0 ? "✓ Active" : "✗ Not seen",
+            waitCount > 0 ? "WaitHandleWait events present" : "WaitHandleWait keyword absent or no blocking during trace (.NET 9+ required)" });
+        if (f.HasGcEvts)         rows.Add(new[] { "GC (0x1)",                     "✓ Active",  "GC events present" });
+        if (f.HasJitEvts)        rows.Add(new[] { "JIT (0x10)",                    "✓ Active",  "JIT/method-load events present" });
+        if (f.HasSampleProfiler) rows.Add(new[] { "CPU sampling (SampleProfiler)", "✓ Present", "Sampling provider enabled (not harmful, but not needed here)" });
+        sink.Table(["Keyword / Provider", "Status", "Notes"], rows,
             "Inferred from event types present in the trace · WaitHandle keyword requires: --clrevents waithandle --clreventlevel verbose");
+    }
 
-        // ── ThreadPool activity (shown whenever hill-climbing data is available) ──
-        if (hasThreadPoolEvts)
+    private static void RenderThreadPoolActivity(IRenderSink sink, ParsedTrace trace, KeywordFlags f)
+    {
+        if (!f.HasThreadPoolEvts) return;
+
+        sink.Section("ThreadPool Activity");
+
+        if (trace.TpThreadEvents.Count >= 2)
         {
-            sink.Section("ThreadPool Activity");
+            sink.KeyValues([
+                ("Thread count — min (observed)",     f.TpMinActive.ToString()),
+                ("Thread count — max (observed)",     f.TpMaxActive.ToString()),
+                ("Thread count — final (observed)",   f.TpFinalActive.ToString()),
+                ("Thread count growing during trace", f.TpWasGrowing
+                    ? $"⚠ YES — grew {f.TpMinActive} → {f.TpMaxActive}" : "No (stable)"),
+                ("Hill-climb Starvation adjustments", f.StarvationAdj.Count > 0
+                    ? $"⚠ {f.StarvationAdj.Count} adjustment(s) with Reason=Starvation" : "None detected"),
+            ]);
 
-            if (tpThreadEvents.Count >= 2)
-            {
-                sink.KeyValues([
-                    ("Thread count — min (observed)",    tpMinActive.ToString()),
-                    ("Thread count — max (observed)",    tpMaxActive.ToString()),
-                    ("Thread count — final (observed)",  tpFinalActive.ToString()),
-                    ("Thread count growing during trace", tpWasGrowing ? $"⚠ YES — grew {tpMinActive} → {tpMaxActive}" : "No (stable)"),
-                    ("Hill-climb Starvation adjustments", starvationAdj.Count > 0
-                        ? $"⚠ {starvationAdj.Count} adjustment(s) with Reason=Starvation"
-                        : "None detected"),
-                ]);
-
-                if (tpWasGrowing && waitEvents.Count == 0)
-                    sink.Alert(AlertLevel.Warning,
-                        $"ThreadPool thread count grew {tpMinActive} → {tpMaxActive} during the trace.",
-                        detail: "A steadily rising thread count is a classic starvation indicator even without WaitHandleWait events. " +
-                                "The runtime adds threads because existing ones are blocked and not returning to the pool.",
-                        advice: "Re-collect while load is running to capture blocking stacks:\n" +
-                                "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
-
-            if (starvationAdj.Count > 0)
-            {
-                sink.Alert(AlertLevel.Critical,
-                    $"Hill-climbing algorithm flagged Starvation in {starvationAdj.Count} adjustment(s).",
-                    detail: "The CLR ThreadPool's hill-climbing controller labeled these adjustments as \"Starvation\". " +
-                            "This is a direct built-in signal that threads were blocking and the pool couldn't keep up with demand.",
-                    advice: "Capture the blocking stacks:\n" +
+            if (f.TpWasGrowing && trace.WaitEvents.Count == 0)
+                sink.Alert(AlertLevel.Warning,
+                    $"ThreadPool thread count grew {f.TpMinActive} → {f.TpMaxActive} during the trace.",
+                    detail: "A steadily rising thread count is a classic starvation indicator even without WaitHandleWait events. " +
+                            "The runtime adds threads because existing ones are blocked and not returning to the pool.",
+                    advice: "Re-collect while load is running to capture blocking stacks:\n" +
                             "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-
-                var adjRows = starvationAdj
-                    .OrderBy(a => a.Ts)
-                    .Select(a => new[] { a.Ts.ToString("HH:mm:ss.fff"), a.NewCount.ToString(), GetAdjustmentReasonName(a.Reason), $"{a.AverageThroughput:F2} req/s" })
-                    .ToList();
-                sink.Table(["Time", "New Thread Count", "Reason", "Avg Throughput"], adjRows,
-                    "Starvation adjustments — CLR added threads because existing ones were blocked");
-            }
-
-            if (tpAdjustments.Count > 0)
-            {
-                var allAdjRows = tpAdjustments
-                    .OrderBy(a => a.Ts)
-                    .Select(a => new[] { a.Ts.ToString("HH:mm:ss.fff"), a.NewCount.ToString(), GetAdjustmentReasonName(a.Reason), $"{a.AverageThroughput:F2} req/s" })
-                    .ToList();
-                sink.BeginDetails($"All {tpAdjustments.Count} hill-climbing adjustments", open: starvationAdj.Count > 0);
-                sink.Table(["Time", "New Thread Count", "Reason", "Avg Throughput"], allAdjRows,
-                    "Reason=Starvation(6) means the CLR scheduler identified threads were being blocked");
-                sink.EndDetails();
-            }
         }
 
-        // ── Early-out if no WaitHandleWait events ────────────────────────────
-        if (waitEvents.Count == 0)
+        if (f.StarvationAdj.Count > 0)
         {
-            if (hasSampleProfiler && !hasClrProvider)
-            {
-                sink.Alert(AlertLevel.Critical,
-                    "Wrong trace provider — this is a CPU sampling trace, not a wait-events trace.",
-                    detail: "The trace was collected with Microsoft-DotNETCore-SampleProfiler which only records CPU samples. " +
-                            "WaitHandleWait events require the Microsoft-Windows-DotNETRuntime CLR provider with the 'waithandle' keyword.",
-                    advice:
-                        "Re-collect while Bombardier (or your load tool) is running:\n" +
+            sink.Alert(AlertLevel.Critical,
+                $"Hill-climbing algorithm flagged Starvation in {f.StarvationAdj.Count} adjustment(s).",
+                detail: "The CLR ThreadPool's hill-climbing controller labeled these adjustments as \"Starvation\". " +
+                        "This is a direct built-in signal that threads were blocking and the pool couldn't keep up with demand.",
+                advice: "Capture the blocking stacks:\n" +
                         "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
-            else if (!hasClrProvider && totalEvents > 0)
-            {
-                sink.Alert(AlertLevel.Critical,
-                    "No Microsoft-Windows-DotNETRuntime (CLR) events in this trace.",
-                    detail: $"Found {totalEvents:N0} events, but none from the CLR runtime provider. " +
-                            "WaitHandleWait events are emitted by the CLR provider.",
-                    advice:
-                        "Re-collect with the correct provider keywords:\n" +
+
+            var adjRows = f.StarvationAdj
+                .OrderBy(a => a.Ts)
+                .Select(a => new[] { a.Ts.ToString("HH:mm:ss.fff"), a.NewCount.ToString(), GetAdjustmentReasonName(a.Reason), $"{a.AverageThroughput:F2} req/s" })
+                .ToList();
+            sink.Table(["Time", "New Thread Count", "Reason", "Avg Throughput"], adjRows,
+                "Starvation adjustments — CLR added threads because existing ones were blocked");
+        }
+
+        if (trace.TpAdjustments.Count > 0)
+        {
+            var allAdjRows = trace.TpAdjustments
+                .OrderBy(a => a.Ts)
+                .Select(a => new[] { a.Ts.ToString("HH:mm:ss.fff"), a.NewCount.ToString(), GetAdjustmentReasonName(a.Reason), $"{a.AverageThroughput:F2} req/s" })
+                .ToList();
+            sink.BeginDetails($"All {trace.TpAdjustments.Count} hill-climbing adjustments", open: f.StarvationAdj.Count > 0);
+            sink.Table(["Time", "New Thread Count", "Reason", "Avg Throughput"], allAdjRows,
+                "Reason=Starvation(6) means the CLR scheduler identified threads were being blocked");
+            sink.EndDetails();
+        }
+    }
+
+    private static void RenderNoEventsSection(IRenderSink sink, ParsedTrace trace, KeywordFlags f)
+    {
+        if (f.HasSampleProfiler && !f.HasClrProvider)
+            sink.Alert(AlertLevel.Critical,
+                "Wrong trace provider — this is a CPU sampling trace, not a wait-events trace.",
+                detail: "The trace was collected with Microsoft-DotNETCore-SampleProfiler which only records CPU samples. " +
+                        "WaitHandleWait events require the Microsoft-Windows-DotNETRuntime CLR provider with the 'waithandle' keyword.",
+                advice: "Re-collect while Bombardier (or your load tool) is running:\n" +
+                        "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
+        else if (!f.HasClrProvider && trace.TotalEvents > 0)
+            sink.Alert(AlertLevel.Critical,
+                "No Microsoft-Windows-DotNETRuntime (CLR) events in this trace.",
+                detail: $"Found {trace.TotalEvents:N0} events, but none from the CLR runtime provider. " +
+                        "WaitHandleWait events are emitted by the CLR provider.",
+                advice: "Re-collect with the correct provider keywords:\n" +
                         "  dotnet trace collect -n <YourProcess> --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
-            else if (hasClrProvider && starvationAdj.Count > 0)
-            {
-                sink.Alert(AlertLevel.Critical,
-                    $"Starvation detected via hill-climbing ({starvationAdj.Count} adjustment(s)) but no WaitHandleWait stacks captured.",
-                    detail: "The CLR's own scheduler flagged this as starvation. WaitHandleWait events were either not enabled or " +
-                            "the blocking happened before collection started.",
-                    advice: "Ensure load is running FIRST, then start the trace immediately:\n" +
-                            "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
-            else if (hasClrProvider && tpWasGrowing)
-            {
-                sink.Alert(AlertLevel.Warning,
-                    $"Thread count grew ({tpMinActive} → {tpMaxActive}) but no WaitHandleWait events captured.",
-                    detail:
-                        "Likely reasons:\n" +
+        else if (f.HasClrProvider && f.StarvationAdj.Count > 0)
+            sink.Alert(AlertLevel.Critical,
+                $"Starvation detected via hill-climbing ({f.StarvationAdj.Count} adjustment(s)) but no WaitHandleWait stacks captured.",
+                detail: "The CLR's own scheduler flagged this as starvation. WaitHandleWait events were either not enabled or " +
+                        "the blocking happened before collection started.",
+                advice: "Ensure load is running FIRST, then start the trace immediately:\n" +
+                        "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
+        else if (f.HasClrProvider && f.TpWasGrowing)
+            sink.Alert(AlertLevel.Warning,
+                $"Thread count grew ({f.TpMinActive} → {f.TpMaxActive}) but no WaitHandleWait events captured.",
+                detail: "Likely reasons:\n" +
                         "  1. 'waithandle' keyword was not included — re-collect with --clrevents waithandle.\n" +
                         "  2. Runtime is older than .NET 9 — WaitHandleWait (EventID 301) requires .NET 9+.",
-                    advice: "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
-            else if (hasClrProvider)
-            {
-                sink.Alert(AlertLevel.Warning,
-                    "CLR events present but no WaitHandleWait events and no starvation signals detected.",
-                    detail:
-                        "Possible reasons:\n" +
+                advice: "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
+        else if (f.HasClrProvider)
+            sink.Alert(AlertLevel.Warning,
+                "CLR events present but no WaitHandleWait events and no starvation signals detected.",
+                detail: "Possible reasons:\n" +
                         "  1. App was not under load — WaitHandleWait only fires when threads block.\n" +
                         "  2. Runtime is older than .NET 9 — WaitHandleWait (EventID 301) added in .NET 9.\n" +
                         "  3. 'waithandle' keyword was not included in --clrevents.",
-                    advice: "Ensure Bombardier is running BEFORE starting the trace:\n" +
-                            "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
-            else
-            {
-                sink.Alert(AlertLevel.Warning, "No events found in this trace at all.",
-                    detail: "The file may be empty, corrupt, or not a valid .nettrace.",
-                    advice: "Re-collect with: dotnet trace collect -n <Process> --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
-            }
+                advice: "Ensure Bombardier is running BEFORE starting the trace:\n" +
+                        "  dotnet trace collect -n DiagnosticScenarios --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
+        else
+            sink.Alert(AlertLevel.Warning, "No events found in this trace at all.",
+                detail: "The file may be empty, corrupt, or not a valid .nettrace.",
+                advice: "Re-collect with: dotnet trace collect -n <Process> --clrevents waithandle --clreventlevel verbose --duration 00:00:30");
+    }
 
-            RenderDiagnosticEventNames(sink, diagnosticEventNames, openByDefault: true);
-            return;
-        }
-
-        // Events found — show diagnostic table collapsed at the bottom
-        RenderDiagnosticEventNames(sink, diagnosticEventNames, openByDefault: false);
-
-        // ── Stacks-missing hint ──────────────────────────────────────────────
-        if (stacksPresent == 0)
-        {
-            sink.Alert(AlertLevel.Warning,
-                "WaitHandleWait events found but no stack traces present.",
-                detail: "Stack capture requires --clreventlevel verbose AND a runtime that supports stacks for WaitHandleWait.",
-                advice: "Re-collect with: dotnet trace collect -n <Process> --clrevents waithandle --clreventlevel verbose");
-        }
-
-        // ── WaitSource breakdown ─────────────────────────────────────────────
+    private static void RenderWaitSourceBreakdown(IRenderSink sink, List<WaitEventData> waitEvents)
+    {
         sink.Section("WaitHandleWait Events by Source");
-
-        var sourceGroups = waitEvents
+        int total = waitEvents.Count;
+        var rows = waitEvents
             .GroupBy(e => GetWaitSourceName(e.WaitSource))
             .OrderByDescending(g => g.Count())
+            .Select(g => new[]
+            {
+                g.Key,
+                g.Count().ToString("N0"),
+                $"{g.Count() * 100.0 / total:F1}%",
+                g.Count(e => IsThreadPoolThread(e.Frames)).ToString("N0"),
+                g.Count(e => IsSyncOverAsync(e.Frames)).ToString("N0"),
+            })
             .ToList();
-        int grandTotal = waitEvents.Count;
-
-        var sourceRows = sourceGroups.Select(g => new[]
-        {
-            g.Key,
-            g.Count().ToString("N0"),
-            $"{g.Count() * 100.0 / grandTotal:F1}%",
-            g.Count(e => IsThreadPoolThread(e.Frames)).ToString("N0"),
-            g.Count(e => IsSyncOverAsync(e.Frames)).ToString("N0"),
-        }).ToList();
-
         sink.Table(
-            ["WaitSource", "Count", "% of Total", "On ThreadPool", "Sync-over-Async"],
-            sourceRows,
+            ["WaitSource", "Count", "% of Total", "On ThreadPool", "Sync-over-Async"], rows,
             "MonitorWait = Task.Result / Task.Wait() / .GetAwaiter().GetResult() / lock · Unknown = other primitives");
+    }
 
-        // ── Diagnosis ────────────────────────────────────────────────────────
+    private static void RenderDiagnosis(IRenderSink sink, List<WaitEventData> tpEvents)
+    {
         sink.Section("Diagnosis");
 
         if (tpEvents.Count == 0)
@@ -553,106 +583,63 @@ internal static class ThreadPoolStarvationCommand
                         "This does not indicate ThreadPool starvation.",
                 advice: "If you see slow response times, check whether enough threads are created " +
                         "before load increases (dotnet-counters: dotnet.thread_pool.thread.count).");
+            return;
         }
-        else
+
+        int syncOverAsync = tpEvents.Count(IsSyncOverAsync);
+        sink.Alert(
+            tpEvents.Count >= 10 ? AlertLevel.Critical : AlertLevel.Warning,
+            $"ThreadPool starvation likely — {tpEvents.Count} blocking wait(s) on ThreadPool threads.",
+            detail: $"{syncOverAsync} of these appear to be sync-over-async patterns " +
+                    "(Task.Result / Task.Wait / .GetAwaiter().GetResult()). " +
+                    "Each blocked ThreadPool thread prevents it from processing queued work items, " +
+                    "causing the runtime to spin up additional threads to compensate.",
+            advice: "Replace sync-over-async calls with proper async/await throughout the call chain. " +
+                    "Look for .Result, .Wait(), or .GetAwaiter().GetResult() in non-async methods.");
+    }
+
+    private static void RenderStackPatterns(
+        IRenderSink sink, string sectionTitle,
+        List<WaitEventData> events, int maxPatterns, bool openFirst)
+    {
+        sink.Section(sectionTitle);
+        int rank = 0;
+        foreach (var group in events
+            .GroupBy(e => GetStackSignature(e.Frames))
+            .OrderByDescending(g => g.Count())
+            .Take(maxPatterns))
         {
-            int syncOverAsyncCount = tpEvents.Count(IsSyncOverAsync);
-            AlertLevel level = tpEvents.Count >= 10 ? AlertLevel.Critical : AlertLevel.Warning;
+            rank++;
+            var    sample   = group.First();
+            bool   isSoa    = IsSyncOverAsync(sample);
+            string topFrame = GetTopAppFrame(sample.Frames);
+            string title    = $"#{rank} — {group.Count()} event(s) — WaitSource: {GetWaitSourceName(sample.WaitSource)}" +
+                              (isSoa           ? " [sync-over-async]" : "") +
+                              (topFrame.Length > 0 ? $" — {topFrame}" : "");
 
-            sink.Alert(level,
-                $"ThreadPool starvation likely — {tpEvents.Count} blocking wait(s) on ThreadPool threads.",
-                detail: $"{syncOverAsyncCount} of these appear to be sync-over-async patterns " +
-                        $"(Task.Result / Task.Wait / .GetAwaiter().GetResult()). " +
-                        "Each blocked ThreadPool thread prevents it from processing queued work items, " +
-                        "causing the runtime to spin up additional threads to compensate.",
-                advice: "Replace sync-over-async calls with proper async/await throughout the call chain. " +
-                        "Look for .Result, .Wait(), or .GetAwaiter().GetResult() in non-async methods.");
+            sink.BeginDetails(title, open: openFirst && rank == 1);
+            if (sample.Frames.Count > 0)
+                sink.Table(["#", "Frame"],
+                    sample.Frames.Select((f, i) => new[] { i.ToString(), f }).ToList(),
+                    $"Representative stack for {group.Count()} event(s) on thread {sample.ThreadId}");
+            else
+                sink.Alert(AlertLevel.Info, "Stack trace not captured for this event.",
+                    advice: "Re-collect with --clreventlevel verbose");
+            sink.EndDetails();
         }
-
-        // ── Top blocking stack patterns on ThreadPool threads ────────────────
-        if (tpEvents.Count > 0 && stacksPresent > 0)
-        {
-            int showTop = Math.Min(top, tpEvents.Count);
-            sink.Section($"Top {showTop} Blocking Stack Patterns (ThreadPool Threads)");
-
-            var stackGroups = tpEvents
-                .GroupBy(e => GetStackSignature(e.Frames))
-                .OrderByDescending(g => g.Count())
-                .Take(showTop)
-                .ToList();
-
-            int rank = 0;
-            foreach (var group in stackGroups)
-            {
-                rank++;
-                var sample = group.First();
-                string topAppFrame = GetTopAppFrame(sample.Frames);
-                string waitName    = GetWaitSourceName(sample.WaitSource);
-                bool isSoa         = IsSyncOverAsync(sample);
-
-                string title = $"#{rank} — {group.Count()} event(s) — WaitSource: {waitName}" +
-                               (isSoa ? " [sync-over-async]" : "") +
-                               (topAppFrame.Length > 0 ? $" — {topAppFrame}" : "");
-
-                sink.BeginDetails(title, open: rank == 1);
-
-                if (sample.Frames.Count > 0)
-                {
-                    var frameRows = sample.Frames
-                        .Select((f, i) => new[] { i.ToString(), f })
-                        .ToList();
-                    sink.Table(["#", "Frame"], frameRows,
-                        $"Representative stack for {group.Count()} event(s) on thread {sample.ThreadId}");
-                }
-                else
-                {
-                    sink.Alert(AlertLevel.Info, "Stack trace not captured for this event.",
-                        advice: "Re-collect with --clreventlevel verbose");
-                }
-
-                sink.EndDetails();
-            }
-        }
-
-        // ── Non-ThreadPool stacks (informational) ────────────────────────────
-        if (nonTpEvents.Count > 0 && stacksPresent > 0)
-        {
-            int showNonTp = Math.Min(5, nonTpEvents.Count);
-            sink.Section($"Top {showNonTp} Blocking Patterns (Non-ThreadPool Threads, informational)");
-
-            var nonTpGroups = nonTpEvents
-                .GroupBy(e => GetStackSignature(e.Frames))
-                .OrderByDescending(g => g.Count())
-                .Take(showNonTp)
-                .ToList();
-
-            int rank = 0;
-            foreach (var group in nonTpGroups)
-            {
-                rank++;
-                var sample = group.First();
-                sink.BeginDetails(
-                    $"#{rank} — {group.Count()} event(s) — WaitSource: {GetWaitSourceName(sample.WaitSource)} — {GetTopAppFrame(sample.Frames)}",
-                    open: false);
-
-                if (sample.Frames.Count > 0)
-                {
-                    var frameRows = sample.Frames
-                        .Select((f, i) => new[] { i.ToString(), f })
-                        .ToList();
-                    sink.Table(["#", "Frame"], frameRows);
-                }
-                sink.EndDetails();
-            }
-        }
-
-        // ── Reference ────────────────────────────────────────────────────────
-        sink.Reference(
-            "Debug ThreadPool starvation — Microsoft Docs",
-            "https://learn.microsoft.com/dotnet/core/diagnostics/debug-threadpool-starvation");
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private static string ResolveProviderName(string rawName)
+    {
+        if (!rawName.StartsWith("Provider(", StringComparison.Ordinal)) return rawName;
+        int start = "Provider(".Length;
+        int end   = rawName.IndexOf(')', start);
+        if (end <= start) return rawName;
+        var guid = rawName.Substring(start, end - start);
+        return WellKnownProviderGuids.TryGetValue(guid, out var resolved) ? resolved : rawName;
+    }
 
     private static int ReadWaitSource(Microsoft.Diagnostics.Tracing.TraceEvent evt)
     {
