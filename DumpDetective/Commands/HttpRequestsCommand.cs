@@ -5,6 +5,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Scans the heap for HttpRequestMessage, HttpResponseMessage, HttpClient, and
+// related System.Net types. Detects HttpClient instance leaks, groups in-flight
+// requests by host, and shows response status code distribution.
 internal static class HttpRequestsCommand
 {
     private const string Help = """
@@ -38,15 +41,50 @@ internal static class HttpRequestsCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, bool showAddr = false)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
-
         sink.Header(
             "Dump Detective — HTTP Objects",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        var found = new List<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)>();
+        var found = ScanHttpObjects(ctx);
 
+        sink.Section("Summary");
+        if (found.Count == 0) { sink.Text("No HTTP objects found."); return; }
+
+        var summary = found
+            .GroupBy(f => f.Type)
+            .OrderByDescending(g => g.Count())
+            .Select(g => new[] { g.Key, g.Count().ToString("N0"), DumpHelpers.FormatSize(g.Sum(f => f.Size)) })
+            .ToList();
+        sink.Table(["Type", "Count", "Size"], summary);
+        sink.KeyValues([("Total HTTP objects", found.Count.ToString("N0"))]);
+
+        int clientCount = found.Count(f =>
+            f.Type is "System.Net.Http.HttpClient" or
+                      "System.Net.Http.HttpClientHandler" or
+                      "System.Net.Http.SocketsHttpHandler");
+        RenderClientLeakAlert(sink, clientCount);
+
+        var requests = found.Where(f =>
+            f.Type is "System.Net.Http.HttpRequestMessage" or "System.Net.HttpWebRequest").ToList();
+        if (requests.Count > 0) RenderRequestDetails(sink, requests);
+
+        var responses = found.Where(f =>
+            f.Type == "System.Net.Http.HttpResponseMessage" && f.StatusCode > 0).ToList();
+        if (responses.Count > 0) RenderResponseCodes(sink, responses);
+
+        if (showAddr) RenderAddresses(sink, found);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Walks the heap collecting all objects whose type names are in HttpTypeSet.
+    // For HttpRequestMessage reads method + URI; for HttpResponseMessage reads status code.
+    static List<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)>
+        ScanHttpObjects(DumpContext ctx)
+    {
+        var found = new List<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)>();
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning HTTP objects...", _ =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
@@ -59,20 +97,16 @@ internal static class HttpRequestsCommand
                 string method     = "";
                 string uri        = "";
                 int    statusCode = 0;
-
                 try
                 {
-                    // HttpRequestMessage: _requestUri (Uri) → _string, _method → _method string
                     if (name == "System.Net.Http.HttpRequestMessage")
                     {
                         uri    = ReadUri(obj);
                         method = ReadHttpMethod(obj);
                     }
-                    // HttpResponseMessage: _statusCode int
                     else if (name == "System.Net.Http.HttpResponseMessage")
                     {
                         try { statusCode = obj.ReadField<int>("_statusCode"); } catch { }
-                        // also try to get the request URI from _requestMessage
                         try
                         {
                             var req = obj.ReadObjectField("_requestMessage");
@@ -82,33 +116,17 @@ internal static class HttpRequestsCommand
                     }
                 }
                 catch { }
-
                 found.Add((name, obj.Address, size, method, uri, statusCode));
             }
         });
+        return found;
+    }
 
-        sink.Section("Summary");
-        if (found.Count == 0) { sink.Text("No HTTP objects found."); return; }
+    // ── Rendering ─────────────────────────────────────────────────────────────
 
-        var summary = found
-            .GroupBy(f => f.Type)
-            .OrderByDescending(g => g.Count())
-            .Select(g => new[]
-            {
-                g.Key,
-                g.Count().ToString("N0"),
-                DumpHelpers.FormatSize(g.Sum(f => f.Size)),
-            })
-            .ToList();
-        sink.Table(["Type", "Count", "Size"], summary);
-        sink.KeyValues([("Total HTTP objects", found.Count.ToString("N0"))]);
-
-        // ── HttpClient leak alert ─────────────────────────────────────────────
-        int clientCount = found.Count(f =>
-            f.Type is "System.Net.Http.HttpClient" or
-                      "System.Net.Http.HttpClientHandler" or
-                      "System.Net.Http.SocketsHttpHandler");
-
+    // Alert when more than one HttpClient/Handler instance is found — indicates a leak.
+    static void RenderClientLeakAlert(IRenderSink sink, int clientCount)
+    {
         if (clientCount > 1)
             sink.Alert(AlertLevel.Critical,
                 $"{clientCount} HttpClient/Handler instance(s) found on heap — likely leak.",
@@ -116,77 +134,77 @@ internal static class HttpRequestsCommand
                         "Creating per-request instances exhausts socket resources and causes DNS refresh failures.");
         else if (clientCount == 1)
             sink.Alert(AlertLevel.Info, "1 HttpClient/Handler instance found — verify it is a singleton.");
+    }
 
-        // ── Request details ───────────────────────────────────────────────────
-        var requests = found.Where(f =>
-            f.Type is "System.Net.Http.HttpRequestMessage" or "System.Net.HttpWebRequest").ToList();
+    // HTTP method counts + per-request URI table + scheme://host grouping.
+    static void RenderRequestDetails(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)> requests)
+    {
+        sink.Section("In-Flight Requests");
+        var methodGroups = requests
+            .Where(r => r.Method.Length > 0)
+            .GroupBy(r => r.Method)
+            .Select(g => new[] { g.Key, g.Count().ToString("N0") })
+            .ToList();
+        if (methodGroups.Count > 0)
+            sink.Table(["HTTP Method", "Count"], methodGroups);
 
-        if (requests.Count > 0)
-        {
-            sink.Section("In-Flight Requests");
-            var methodGroups = requests
-                .Where(r => r.Method.Length > 0)
-                .GroupBy(r => r.Method)
-                .Select(g => new[] { g.Key, g.Count().ToString("N0") })
-                .ToList();
-            if (methodGroups.Count > 0)
-                sink.Table(["HTTP Method", "Count"], methodGroups);
-
-            var reqRows = requests
-                .Where(r => r.Uri.Length > 0)
-                .Take(50)
-                .Select(r => new[]
-                {
-                    r.Method.Length > 0 ? r.Method : "?",
-                    r.Uri,
-                    DumpHelpers.FormatSize(r.Size),
-                })
-                .ToList();
-            if (reqRows.Count > 0)
-                sink.Table(["Method", "URI", "Size"], reqRows, $"First {reqRows.Count} requests with URI");
-
-            // ── URL scheme+host prefix grouping ───────────────────────────────
-            var prefixGroups = requests
-                .Where(r => r.Uri.Length > 0)
-                .GroupBy(r => ExtractHostPrefix(r.Uri))
-                .Where(g => g.Key.Length > 0)
-                .OrderByDescending(g => g.Count())
-                .Take(20)
-                .Select(g => new[] { g.Key, g.Count().ToString("N0"), DumpHelpers.FormatSize(g.Sum(r => r.Size)) })
-                .ToList();
-            if (prefixGroups.Count > 0)
-                sink.Table(["Host (scheme://host)", "Request Count", "Total Size"], prefixGroups,
-                    "Grouped by destination host — identifies chattiest endpoints");
-        }
-
-        // ── Response status code distribution ─────────────────────────────────
-        var responses = found.Where(f =>
-            f.Type == "System.Net.Http.HttpResponseMessage" && f.StatusCode > 0).ToList();
-        if (responses.Count > 0)
-        {
-            sink.Section("Response Status Codes");
-            var codeRows = responses
-                .GroupBy(r => r.StatusCode)
-                .OrderByDescending(g => g.Count())
-                .Select(g => new[] { g.Key.ToString(), HttpStatusLabel(g.Key), g.Count().ToString("N0") })
-                .ToList();
-            sink.Table(["Status Code", "Meaning", "Count"], codeRows);
-        }
-
-        if (showAddr)
-        {
-            sink.Section("Object Addresses");
-            var addrRows = found.Take(200).Select(f => new[]
+        var reqRows = requests
+            .Where(r => r.Uri.Length > 0)
+            .Take(50)
+            .Select(r => new[]
             {
-                $"0x{f.Addr:X16}", f.Type, f.Method.Length > 0 ? f.Method : "—",
-                f.Uri.Length > 0 ? f.Uri : "—", DumpHelpers.FormatSize(f.Size),
-            }).ToList();
-            sink.Table(["Address", "Type", "Method", "URI", "Size"], addrRows);
-        }
+                r.Method.Length > 0 ? r.Method : "?",
+                r.Uri,
+                DumpHelpers.FormatSize(r.Size),
+            })
+            .ToList();
+        if (reqRows.Count > 0)
+            sink.Table(["Method", "URI", "Size"], reqRows, $"First {reqRows.Count} requests with URI");
+
+        var prefixGroups = requests
+            .Where(r => r.Uri.Length > 0)
+            .GroupBy(r => ExtractHostPrefix(r.Uri))
+            .Where(g => g.Key.Length > 0)
+            .OrderByDescending(g => g.Count())
+            .Take(20)
+            .Select(g => new[] { g.Key, g.Count().ToString("N0"), DumpHelpers.FormatSize(g.Sum(r => r.Size)) })
+            .ToList();
+        if (prefixGroups.Count > 0)
+            sink.Table(["Host (scheme://host)", "Request Count", "Total Size"], prefixGroups,
+                "Grouped by destination host — identifies chattiest endpoints");
+    }
+
+    // Response status code frequency table.
+    static void RenderResponseCodes(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)> responses)
+    {
+        sink.Section("Response Status Codes");
+        var codeRows = responses
+            .GroupBy(r => r.StatusCode)
+            .OrderByDescending(g => g.Count())
+            .Select(g => new[] { g.Key.ToString(), HttpStatusLabel(g.Key), g.Count().ToString("N0") })
+            .ToList();
+        sink.Table(["Status Code", "Meaning", "Count"], codeRows);
+    }
+
+    // Raw address table for all found objects (capped at 200 rows).
+    static void RenderAddresses(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)> found)
+    {
+        sink.Section("Object Addresses");
+        var addrRows = found.Take(200).Select(f => new[]
+        {
+            $"0x{f.Addr:X16}", f.Type, f.Method.Length > 0 ? f.Method : "—",
+            f.Uri.Length > 0 ? f.Uri : "—", DumpHelpers.FormatSize(f.Size),
+        }).ToList();
+        sink.Table(["Address", "Type", "Method", "URI", "Size"], addrRows);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Reads the URI string from an HttpRequestMessage by navigating the _requestUri Uri object's
+    // backing field (_string) or falling through to the _info._moreInfo._absoluteUri string.
     static string ReadUri(Microsoft.Diagnostics.Runtime.ClrObject obj)
     {
         // _requestUri is a System.Uri object — its string is in _string
@@ -215,6 +233,7 @@ internal static class HttpRequestsCommand
         return "";
     }
 
+    // Reads the HTTP method string from the HttpMethod value object stored in _method.
     static string ReadHttpMethod(Microsoft.Diagnostics.Runtime.ClrObject obj)
     {
         // HttpMethod is an object with _method string field
@@ -228,6 +247,7 @@ internal static class HttpRequestsCommand
         return "";
     }
 
+    // Maps a numeric HTTP status code to a short human-readable label.
     static string HttpStatusLabel(int code) => code switch
     {
         200 => "OK", 201 => "Created", 204 => "No Content",
@@ -245,6 +265,7 @@ internal static class HttpRequestsCommand
         _                => "",
     };
 
+    // Extracts the scheme + host prefix (e.g. "https://api.example.com") for grouping.
     static string ExtractHostPrefix(string uri)
     {
         try

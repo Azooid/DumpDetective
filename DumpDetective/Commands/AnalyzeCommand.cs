@@ -10,6 +10,9 @@ using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
+// Scored health report for a single dump. Mini mode: lightweight summary across
+// memory, threads, exceptions, async, leaks, handles, WCF, and connections.
+// Full mode: scored summary plus all individual command reports embedded as chapters.
 internal static class AnalyzeCommand
 {
     private const string Help = """

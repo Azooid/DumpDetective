@@ -68,7 +68,9 @@ internal static class HighRefsCommand
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        int top = 30, minRefs = 10; bool showAddr = false;
+        int top = 30;
+        int minRefs = 10;
+        bool showAddr = false;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
 
         for (int i = 0; i < args.Length; i++)
@@ -96,11 +98,44 @@ internal static class HighRefsCommand
             return;
         }
 
-        // ── Pass 1: count inbound references for every reachable object ───────
-        //
-        // We enumerate every object and follow its outgoing references.  For
-        // each referenced address we increment a counter.  After this pass we
-        // know how many objects point *at* each address.
+        var (inboundCounts, totalRefs, totalObjs) = BuildInboundCounts(ctx);
+
+        // ── Identify top candidates ───────────────────────────────────────────
+        var topAddrs = inboundCounts
+            .Where(kv => kv.Value >= minRefs)
+            .OrderByDescending(kv => kv.Value)
+            .Take(top)
+            .Select(kv => kv.Key)
+            .ToHashSet();
+
+        if (topAddrs.Count == 0)
+        {
+            sink.Section("Summary");
+            sink.Alert(AlertLevel.Info, $"No objects with ≥ {minRefs} inbound references found.");
+            sink.KeyValues([
+                ("Objects scanned",          totalObjs.ToString("N0")),
+                ("Total references traced",  totalRefs.ToString("N0")),
+                ("Distinct referenced addrs",inboundCounts.Count.ToString("N0")),
+            ]);
+            return;
+        }
+
+        var referencingTypes = BuildReferencingTypes(ctx, topAddrs);
+        var candidates        = MaterializeCandidates(ctx.Heap, topAddrs, inboundCounts, referencingTypes);
+
+        RenderSummaryAndAlerts(sink, candidates, totalObjs, totalRefs, inboundCounts, minRefs);
+        RenderMainTable(sink, candidates, showAddr, minRefs);
+        RenderDetailAccordions(sink, candidates);
+        RenderHubDistribution(sink, candidates);
+        RenderGenDistribution(sink, candidates, inboundCounts);
+        RenderRefHistogram(sink, inboundCounts);
+    }
+
+    // Pass 1: enumerate every reachable object and count how many objects point at each address.
+    // Returns (inboundCounts dict, total ref edges traversed, total objects scanned).
+    static (Dictionary<ulong, int> InboundCounts, long TotalRefs, long TotalObjs)
+        BuildInboundCounts(DumpContext ctx)
+    {
         var inboundCounts = new Dictionary<ulong, int>(capacity: 65536);
         long totalRefs = 0, totalObjs = 0;
 
@@ -131,30 +166,14 @@ internal static class HighRefsCommand
         if (!CommandBase.SuppressVerbose)
             AnsiConsole.MarkupLine($"[dim]  Pass 1 complete ({sw1.Elapsed.TotalSeconds:F1}s — {totalObjs:N0} objects, {totalRefs:N0} references)[/]");
 
-        // ── Identify top candidates ───────────────────────────────────────────
-        var topAddrs = inboundCounts
-            .Where(kv => kv.Value >= minRefs)
-            .OrderByDescending(kv => kv.Value)
-            .Take(top)
-            .Select(kv => kv.Key)
-            .ToHashSet();
+        return (inboundCounts, totalRefs, totalObjs);
+    }
 
-        if (topAddrs.Count == 0)
-        {
-            sink.Section("Summary");
-            sink.Alert(AlertLevel.Info, $"No objects with ≥ {minRefs} inbound references found.");
-            sink.KeyValues([
-                ("Objects scanned",          totalObjs.ToString("N0")),
-                ("Total references traced",  totalRefs.ToString("N0")),
-                ("Distinct referenced addrs",inboundCounts.Count.ToString("N0")),
-            ]);
-            return;
-        }
-
-        // ── Pass 2: profile which types point at the top candidates ───────────
-        //
-        // We pre-populate the per-candidate dictionaries so we can use
-        // CollectionsMarshal for lock-free inline increments.
+    // Pass 2: for each top-candidate address profile which source types are pointing at it.
+    // Pre-populates per-candidate type maps so inline increments via CollectionsMarshal are safe.
+    static Dictionary<ulong, Dictionary<string, int>> BuildReferencingTypes(
+        DumpContext ctx, HashSet<ulong> topAddrs)
+    {
         var referencingTypes = new Dictionary<ulong, Dictionary<string, int>>(topAddrs.Count);
         foreach (var a in topAddrs)
             referencingTypes[a] = new Dictionary<string, int>(32, StringComparer.Ordinal);
@@ -189,18 +208,29 @@ internal static class HighRefsCommand
         if (!CommandBase.SuppressVerbose)
             AnsiConsole.MarkupLine($"[dim]  Pass 2 complete ({sw2.Elapsed.TotalSeconds:F1}s)[/]");
 
-        // ── Materialise candidate metadata ────────────────────────────────────
+        return referencingTypes;
+    }
+
+    // Resolves each top-candidate address into a CandidateInfo record by reading type metadata,
+    // computing retained size, mapping the generation, and picking the top-5 referencing types.
+    // Returns the list sorted by inbound ref count descending.
+    static List<(ulong Addr, CandidateInfo Info)> MaterializeCandidates(
+        ClrHeap heap,
+        HashSet<ulong> topAddrs,
+        Dictionary<ulong, int> inboundCounts,
+        Dictionary<ulong, Dictionary<string, int>> referencingTypes)
+    {
         var candidates = new List<(ulong Addr, CandidateInfo Info)>(topAddrs.Count);
         foreach (var addr in topAddrs)
         {
-            var obj = ctx.Heap.GetObject(addr);
+            var obj = heap.GetObject(addr);
             if (!obj.IsValid) continue;
 
             string typeName     = obj.Type?.Name ?? "<unknown>";
             long   ownSize      = (long)obj.Size;
-            long   retainedSize = ComputeRetained(ctx.Heap, obj);
+            long   retainedSize = ComputeRetained(heap, obj);
 
-            var seg = ctx.Heap.GetSegmentByAddress(addr);
+            var seg = heap.GetSegmentByAddress(addr);
             string gen = seg?.Kind switch
             {
                 GCSegmentKind.Generation0 => "Gen0",
@@ -227,8 +257,14 @@ internal static class HighRefsCommand
         }
 
         candidates.Sort((a, b) => b.Info.InboundRefs.CompareTo(a.Info.InboundRefs));
+        return candidates;
+    }
 
-        // ── Summary ───────────────────────────────────────────────────────────
+    // Renders the key-value summary block and all threshold-based alerts.
+    static void RenderSummaryAndAlerts(IRenderSink sink,
+        List<(ulong Addr, CandidateInfo Info)> candidates,
+        long totalObjs, long totalRefs, Dictionary<ulong, int> inboundCounts, int minRefs)
+    {
         sink.Section("Summary");
         int  maxRefs      = candidates.Count > 0 ? candidates[0].Info.InboundRefs : 0;
         long totalHotSize = candidates.Sum(c => c.Info.RetainedSize);
@@ -246,7 +282,6 @@ internal static class HighRefsCommand
             ("Total retained size (est.)",  DumpHelpers.FormatSize(totalHotSize)),
         ]);
 
-        // ── Alerts ────────────────────────────────────────────────────────────
         if (maxRefs >= 10_000)
             sink.Alert(AlertLevel.Critical,
                 $"Peak inbound reference count is {maxRefs:N0} — extreme shared-state detected.",
@@ -270,8 +305,12 @@ internal static class HighRefsCommand
                 $"{cacheLike} hot object(s) appear to be caches or collections (Dictionary / List / ConcurrentDictionary).",
                 "Shared mutable collections can grow without bound if no eviction policy is enforced.",
                 "Verify that size limits, expiry policies, or bounded queues are in place.");
+    }
 
-        // ── Main summary table ─────────────────────────────────────────────────
+    // Renders the main sorted table of highly-referenced objects.
+    static void RenderMainTable(IRenderSink sink,
+        List<(ulong Addr, CandidateInfo Info)> candidates, bool showAddr, int minRefs)
+    {
         sink.Section($"Top {candidates.Count} Highly-Referenced Objects");
         var tableRows = candidates.Select(c =>
         {
@@ -296,8 +335,12 @@ internal static class HighRefsCommand
             : new[] { "Type", "Inbound Refs", "Distinct Ref Types", "Top Source Type", "Gen", "Own Size", "Retained† Size" };
         sink.Table(headers, tableRows,
             $"Sorted by inbound reference count  |  min-refs = {minRefs}  |  † Retained = own + direct children");
+    }
 
-        // ── Per-object detail accordions ──────────────────────────────────────
+    // Renders per-object collapsible detail accordions (object metadata + top referencing types).
+    static void RenderDetailAccordions(IRenderSink sink,
+        List<(ulong Addr, CandidateInfo Info)> candidates)
+    {
         sink.Section("Object Detail");
 
         foreach (var (addr, info) in candidates)
@@ -362,8 +405,12 @@ internal static class HighRefsCommand
 
             sink.EndDetails();
         }
+    }
 
-        // ── Hub type distribution ─────────────────────────────────────────────
+    // Renders the hot-type distribution: candidates grouped by simplified type name.
+    static void RenderHubDistribution(IRenderSink sink,
+        List<(ulong Addr, CandidateInfo Info)> candidates)
+    {
         sink.Section("Hub Type Distribution");
         var hubTypes = candidates
             .GroupBy(c => SimplifiedTypeName(c.Info.Type))
@@ -382,8 +429,12 @@ internal static class HighRefsCommand
                 ["Type Pattern", "Category", "Hot Instances", "Sum Inbound Refs", "Max Inbound Refs", "Retained Size (est.)"],
                 hubTypes,
                 "Hot types grouped by simplified name — reveals structural retention patterns");
+    }
 
-        // ── Generation distribution ───────────────────────────────────────────
+    // Renders the generation distribution + GC write-barrier advisory.
+    static void RenderGenDistribution(IRenderSink sink,
+        List<(ulong Addr, CandidateInfo Info)> candidates, Dictionary<ulong, int> inboundCounts)
+    {
         sink.Section("Generation Distribution");
         var genDist = candidates
             .GroupBy(c => c.Info.Gen)
@@ -409,8 +460,11 @@ internal static class HighRefsCommand
                 "References from Gen0/Gen1 objects to these Gen2/LOH objects require GC write barriers and increase " +
                 "card-table pressure. Every minor GC must scan these remembered-set entries.",
                 "Minimise the number of short-lived objects that hold references to these long-lived hubs.");
+    }
 
-        // ── Inbound ref distribution histogram ───────────────────────────────
+    // Renders the inbound-reference count distribution histogram across all objects.
+    static void RenderRefHistogram(IRenderSink sink, Dictionary<ulong, int> inboundCounts)
+    {
         sink.Section("Reference Count Distribution");
         var buckets = new (string Label, int Lo, int Hi)[]
         {
@@ -435,8 +489,7 @@ internal static class HighRefsCommand
                 "Distribution of all objects by their inbound reference count (all objects ≥ 10)");
     }
 
-    // ── Static helpers ────────────────────────────────────────────────────────
-
+    // Determines Gen0/1/2 for an address inside an ephemeral segment.
     static string EphemeralGen(ClrSegment seg, ulong addr)
     {
         if (seg.Generation0.Contains(addr)) return "Gen0";
@@ -445,6 +498,7 @@ internal static class HighRefsCommand
         return "Gen";
     }
 
+    // Numeric sort key for generation labels: Gen0 < Gen1 < Gen2 < LOH < POH < Frozen.
     static int GenOrder(string gen) => gen switch
     {
         "Gen0" => 0, "Gen1" => 1, "Gen2" => 2,
@@ -452,6 +506,7 @@ internal static class HighRefsCommand
         _      => 9,
     };
 
+    // Returns true when the type name suggests a cache, dictionary, or generic collection.
     static bool IsCacheLike(string type) =>
         type.Contains("Dictionary",         StringComparison.OrdinalIgnoreCase) ||
         type.Contains("ConcurrentDictionary", StringComparison.OrdinalIgnoreCase) ||
@@ -461,6 +516,7 @@ internal static class HighRefsCommand
         type.Contains("HashSet",            StringComparison.OrdinalIgnoreCase) ||
         type.Contains("Queue",              StringComparison.OrdinalIgnoreCase);
 
+    // Maps a CLR type name to a high-level category label used in advisories and the hub table.
     static string Categorize(string type)
     {
         if (type == "System.String" || type.StartsWith("System.String[", StringComparison.Ordinal))
@@ -494,6 +550,7 @@ internal static class HighRefsCommand
         return "Object";
     }
 
+    // Returns the simple unqualified class name without namespace or generic arities.
     static string ShortTypeName(string type)
     {
         // Pop everything after '<' or '`'
@@ -505,7 +562,7 @@ internal static class HighRefsCommand
         return dot >= 0 ? trimmed[(dot + 1)..] : trimmed;
     }
 
-    // Like ShortTypeName but preserves the namespace prefix for grouping in the hub table
+    // Like ShortTypeName but retains the full namespace prefix so hub-table grouping is per qualified base type.
     static string SimplifiedTypeName(string type)
     {
         int bt = type.IndexOf('`');

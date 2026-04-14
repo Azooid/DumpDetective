@@ -6,6 +6,8 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Measures per-segment GC heap fragmentation. Combines pinned-handle counts, live/free
+// byte measurements, and a free-hole size distribution to surface compaction bottlenecks.
 internal static class HeapFragmentationCommand
 {
     private const string Help = """
@@ -26,14 +28,32 @@ internal static class HeapFragmentationCommand
     internal static void Render(DumpContext ctx, IRenderSink sink)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
-
         sink.Header(
             "Dump Detective — Heap Fragmentation",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        // Build per-segment data keyed by address
+        var allSegs = ScanFragmentation(ctx);
+        long totalCommitted = allSegs.Sum(s => s.CommittedBytes);
+        long totalFree      = allSegs.Sum(s => s.FreeBytes);
+        double totalFrag    = totalCommitted > 0 ? totalFree * 100.0 / totalCommitted : 0;
+
+        RenderOverall(sink, allSegs, totalCommitted, totalFree, totalFrag);
+        RenderSegmentTable(sink, allSegs);
+        RenderSegmentAlerts(sink, allSegs);
+        RenderFreeDistribution(sink, ctx);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Three-pass scan:
+    //  1. Build SegInfo records from the segments collection.
+    //  2. Increment PinnedCount for each pinned handle whose object falls in the segment.
+    //  3. Walk the heap (inside a spinner) to accumulate LiveBytes and FreeBytes per segment.
+    static List<SegInfo> ScanFragmentation(DumpContext ctx)
+    {
+        // Pass 1: build segment index
         var segData = new Dictionary<ulong, SegInfo>();
         foreach (var seg in ctx.Heap.Segments)
         {
@@ -43,7 +63,7 @@ internal static class HeapFragmentationCommand
                 (long)seg.CommittedMemory.Length);
         }
 
-        // Count pinned handles per segment
+        // Pass 2: count pinned handles per segment
         foreach (var h in ctx.Runtime.EnumerateHandles())
         {
             if (h.HandleKind != ClrHandleKind.Pinned || h.Object == 0) continue;
@@ -55,7 +75,7 @@ internal static class HeapFragmentationCommand
             }
         }
 
-        // Walk heap to measure live vs. free bytes per segment
+        // Pass 3: walk heap to split live vs. free bytes per segment
         var freeType = ctx.Heap.FreeType;
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Measuring fragmentation...", _ =>
         {
@@ -66,21 +86,23 @@ internal static class HeapFragmentationCommand
                 if (seg is null || !segData.ContainsKey(seg.Address)) continue;
                 var info = segData[seg.Address];
                 long size = (long)obj.Size;
-                if (obj.Type == freeType) info.FreeBytes  += size;
-                else                      info.LiveBytes  += size;
+                if (obj.Type == freeType) info.FreeBytes += size;
+                else                      info.LiveBytes += size;
                 segData[seg.Address] = info;
             }
         });
 
-        var allSegs = segData.Values
+        return segData.Values
             .Where(s => s.CommittedBytes > 0)
             .OrderByDescending(s => s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0)
             .ToList();
+    }
 
-        long totalCommitted = allSegs.Sum(s => s.CommittedBytes);
-        long totalFree      = allSegs.Sum(s => s.FreeBytes);
-        double totalFrag    = totalCommitted > 0 ? totalFree * 100.0 / totalCommitted : 0;
+    // ── Rendering ─────────────────────────────────────────────────────────────
 
+    // Overall fragmentation key-values + threshold alerts.
+    static void RenderOverall(IRenderSink sink, List<SegInfo> allSegs, long totalCommitted, long totalFree, double totalFrag)
+    {
         sink.Section("Overall Fragmentation");
         sink.KeyValues([
             ("Total committed",    DumpHelpers.FormatSize(totalCommitted)),
@@ -95,9 +117,13 @@ internal static class HeapFragmentationCommand
                 advice: "Reduce GCHandle.Alloc(Pinned) usage. Use MemoryPool<T> / ArrayPool<T> for I/O buffers. Enable Server GC for large workloads.");
         else if (totalFrag >= 20)
             sink.Alert(AlertLevel.Warning, $"Heap fragmentation elevated: {totalFrag:F1}%");
+    }
 
-        // Per-segment table
-        var rows = allSegs.Select(s => {
+    // Per-segment fragmentation table (one row per segment, sorted by frag % descending).
+    static void RenderSegmentTable(IRenderSink sink, List<SegInfo> allSegs)
+    {
+        var rows = allSegs.Select(s =>
+        {
             double frag = s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0;
             return new[]
             {
@@ -113,8 +139,11 @@ internal static class HeapFragmentationCommand
         sink.Table(
             ["Segment Addr", "Kind", "Committed", "Live", "Free", "Frag %", "Pinned"],
             rows, $"{allSegs.Count} segment(s)");
+    }
 
-        // Per-segment alerts for hotspot segments
+    // Per-segment hotspot alerts for segments whose frag % is ≥ 50%.
+    static void RenderSegmentAlerts(IRenderSink sink, List<SegInfo> allSegs)
+    {
         foreach (var s in allSegs)
         {
             if (s.CommittedBytes <= 0) continue;
@@ -126,59 +155,61 @@ internal static class HeapFragmentationCommand
                         ? "Pinned objects prevent compaction. Minimise GCHandle.Alloc(Pinned) lifetime."
                         : "High free-to-committed ratio. Consider GC.Collect(2, GCCollectionMode.Aggressive) if this is a background issue.");
         }
+    }
 
-        // Free-object distribution — top types by free-space consumption
+    // Walks free objects and buckets them by size to show distribution of memory holes.
+    // Large (≥ 64 KB) holes are the most useful signal: they block reuse of LOH-style allocated arrays.
+    static void RenderFreeDistribution(IRenderSink sink, DumpContext ctx)
+    {
         sink.Section("Free Object (Holes) Distribution");
+        var freeType = ctx.Heap.FreeType;
         var freeObjStats = new Dictionary<int, (long Count, long Size)>();
         foreach (var obj in ctx.Heap.EnumerateObjects())
         {
             if (!obj.IsValid || obj.Type != freeType) continue;
             long sz = (long)obj.Size;
-            // Bucket by size order of magnitude
             int bucket = sz switch
             {
-                < 128        => 0,
-                < 1024       => 1,
-                < 4096       => 2,
-                < 65536      => 3,
-                < 1048576    => 4,
-                _            => 5,
+                < 128     => 0,
+                < 1024    => 1,
+                < 4096    => 2,
+                < 65536   => 3,
+                < 1048576 => 4,
+                _         => 5,
             };
             if (!freeObjStats.TryGetValue(bucket, out var bv)) bv = (0, 0);
             freeObjStats[bucket] = (bv.Count + 1, bv.Size + sz);
         }
-        if (freeObjStats.Count > 0)
-        {
-            var freeRows = freeObjStats
-                .OrderBy(kv => kv.Key)
-                .Select(kv =>
+        if (freeObjStats.Count == 0) return;
+
+        var freeRows = freeObjStats
+            .OrderBy(kv => kv.Key)
+            .Select(kv =>
+            {
+                string range = kv.Key switch
                 {
-                    string range = kv.Key switch
-                    {
-                        0 => "< 128 B",
-                        1 => "128 B – 1 KB",
-                        2 => "1 KB – 4 KB",
-                        3 => "4 KB – 64 KB",
-                        4 => "64 KB – 1 MB",
-                        _ => "≥ 1 MB",
-                    };
-                    return new[] { range, kv.Value.Count.ToString("N0"), DumpHelpers.FormatSize(kv.Value.Size) };
-                })
-                .ToList();
-            int largeFreeCount = freeObjStats
-                .Where(kv => kv.Key >= 4)
-                .Sum(kv => (int)kv.Value.Count);
-            sink.Table(["Free Hole Size", "Count", "Total Size"], freeRows,
-                "Smaller/more-numerous holes = harder to compact");
-            if (largeFreeCount > 10)
-                sink.Alert(AlertLevel.Warning,
-                    $"{largeFreeCount} free holes ≥ 64 KB — large gaps can be re-used by LOH allocations.",
-                    "Large free holes often indicate recently freed large arrays or strings.");
-        }
+                    0 => "< 128 B",
+                    1 => "128 B – 1 KB",
+                    2 => "1 KB – 4 KB",
+                    3 => "4 KB – 64 KB",
+                    4 => "64 KB – 1 MB",
+                    _ => "≥ 1 MB",
+                };
+                return new[] { range, kv.Value.Count.ToString("N0"), DumpHelpers.FormatSize(kv.Value.Size) };
+            })
+            .ToList();
+        int largeFreeCount = freeObjStats.Where(kv => kv.Key >= 4).Sum(kv => (int)kv.Value.Count);
+        sink.Table(["Free Hole Size", "Count", "Total Size"], freeRows,
+            "Smaller/more-numerous holes = harder to compact");
+        if (largeFreeCount > 10)
+            sink.Alert(AlertLevel.Warning,
+                $"{largeFreeCount} free holes ≥ 64 KB — large gaps can be re-used by LOH allocations.",
+                "Large free holes often indicate recently freed large arrays or strings.");
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Mutable struct for per-segment data accumulated across the three scan passes.
     private struct SegInfo(string kind, ulong address, long committed)
     {
         public string Kind           = kind;

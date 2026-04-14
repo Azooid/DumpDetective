@@ -5,6 +5,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Scans the heap for System.ServiceModel.* objects. Groups by type, extracts
+// communication state, endpoint addresses, binding types, and fault reasons.
+// Alerts on faulted channels.
 internal static class WcfChannelsCommand
 {
     private const string Help = """
@@ -27,13 +30,30 @@ internal static class WcfChannelsCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, bool showAddr = false)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
-
         sink.Header(
             "Dump Detective — WCF Channels",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
+        var objects = ScanWcfObjects(ctx);
+
+        sink.Section("Summary");
+        if (objects.Count == 0) { sink.Text("No WCF objects found."); return; }
+
+        RenderSummaryTable(sink, objects);
+        RenderEndpoints(sink, objects);
+        RenderFaultReasons(sink, objects);
+        if (showAddr) RenderAddresses(sink, objects);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Walks the heap for System.ServiceModel.* objects and extracts communication state,
+    // endpoint address, binding type, and fault reason for each.
+    static List<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)>
+        ScanWcfObjects(DumpContext ctx)
+    {
         var objects = new List<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)>();
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning WCF objects...", _ =>
         {
@@ -47,23 +67,23 @@ internal static class WcfChannelsCommand
                 string endpoint    = ReadEndpointAddress(obj);
                 string binding     = ReadBindingType(obj);
                 string faultReason = ReadFaultReason(obj, state);
-
                 objects.Add((name, obj.Address, state, endpoint, binding, faultReason));
             }
         });
+        return objects;
+    }
 
-        sink.Section("Summary");
-        if (objects.Count == 0) { sink.Text("No WCF objects found."); return; }
+    // ── Rendering ─────────────────────────────────────────────────────────────
 
-        var grouped = objects
-            .GroupBy(o => o.Type)
-            .OrderByDescending(g => g.Count())
-            .ToList();
-
-        // Summary table
-        var summaryRows = grouped.Select(g => {
-            int faulted  = g.Count(o => o.State == "Faulted");
-            int opened   = g.Count(o => o.State == "Opened");
+    // Type-level summary table (count, opened, faulted, binding) + faulted-channel alert.
+    static void RenderSummaryTable(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)> objects)
+    {
+        var grouped = objects.GroupBy(o => o.Type).OrderByDescending(g => g.Count()).ToList();
+        var summaryRows = grouped.Select(g =>
+        {
+            int faulted = g.Count(o => o.State == "Faulted");
+            int opened  = g.Count(o => o.State == "Opened");
             string bindings = string.Join(", ",
                 g.Select(o => o.Binding).Where(b => b.Length > 0).Distinct().Take(3));
             return new[]
@@ -87,8 +107,12 @@ internal static class WcfChannelsCommand
             ("Total WCF objects", objects.Count.ToString("N0")),
             ("Faulted",           faultedTotal.ToString("N0")),
         ]);
+    }
 
-        // Endpoint breakdown (if any)
+    // Distinct endpoint address table (up to 20 rows) with per-endpoint faulted count.
+    static void RenderEndpoints(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)> objects)
+    {
         var endpoints = objects
             .Where(o => o.Endpoint.Length > 0)
             .GroupBy(o => o.Endpoint)
@@ -98,8 +122,12 @@ internal static class WcfChannelsCommand
             .ToList();
         if (endpoints.Count > 0)
             sink.Table(["Endpoint Address", "Count", "Faulted"], endpoints, "Distinct endpoint addresses");
+    }
 
-        // Fault reasons
+    // Fault reason frequency table.
+    static void RenderFaultReasons(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)> objects)
+    {
         var faultGroups = objects
             .Where(o => o.FaultReason.Length > 0)
             .GroupBy(o => o.FaultReason)
@@ -107,19 +135,22 @@ internal static class WcfChannelsCommand
             .ToList();
         if (faultGroups.Count > 0)
             sink.Table(["Fault Reason", "Count"], faultGroups);
+    }
 
-        if (showAddr)
+    // Raw address table (capped at 200 rows).
+    static void RenderAddresses(IRenderSink sink,
+        IReadOnlyList<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)> objects)
+    {
+        var addrRows = objects.Take(200).Select(o => new[]
         {
-            var addrRows = objects.Take(200).Select(o => new[]
-            {
-                $"0x{o.Addr:X16}", o.Type, o.State, o.Binding, o.Endpoint, o.FaultReason,
-            }).ToList();
-            sink.Table(["Address", "Type", "State", "Binding", "Endpoint", "Fault Reason"], addrRows);
-        }
+            $"0x{o.Addr:X16}", o.Type, o.State, o.Binding, o.Endpoint, o.FaultReason,
+        }).ToList();
+        sink.Table(["Address", "Type", "State", "Binding", "Endpoint", "Fault Reason"], addrRows);
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Reads the CommunicationState integer from common backing field names.
     static string ReadCommunicationState(Microsoft.Diagnostics.Runtime.ClrObject obj)
     {
         int s = -1;
@@ -135,6 +166,7 @@ internal static class WcfChannelsCommand
         };
     }
 
+    // Walks common field chains to find the endpoint URI string.
     static string ReadEndpointAddress(Microsoft.Diagnostics.Runtime.ClrObject obj)
     {
         // Try common field paths for endpoint URI
@@ -162,6 +194,8 @@ internal static class WcfChannelsCommand
         return "";
     }
 
+    // Returns empty string for non-faulted objects; otherwise reads the fault reason
+    // from common backing fields or from the closed-exception message.
     static string ReadFaultReason(Microsoft.Diagnostics.Runtime.ClrObject obj, string state)
     {
         if (state != "Faulted") return "";
@@ -187,6 +221,7 @@ internal static class WcfChannelsCommand
         return "";
     }
 
+    // Reads the binding type name from common field names, stripping the namespace prefix.
     static string ReadBindingType(Microsoft.Diagnostics.Runtime.ClrObject obj)
     {
         // Try reading a binding object from common field names

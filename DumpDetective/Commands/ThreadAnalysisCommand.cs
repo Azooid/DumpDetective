@@ -7,6 +7,8 @@ using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
+// Analyzes managed threads: total counts, lifecycle categories, blocked-thread
+// detection, per-thread exceptions, and optional collapsible stack-frame panels.
 internal static class ThreadAnalysisCommand
 {
     private const string Help = """
@@ -25,15 +27,21 @@ internal static class ThreadAnalysisCommand
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        bool showStacks = false, blockedOnly = false;
-        string? nameFilter = null, stateFilter = null;
+        bool showStacks = false;
+        bool blockedOnly = false;
+        string? nameFilter = null;
+        string? stateFilter = null;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
         {
-            if (args[i] is "--stacks"       or "-s") showStacks  = true;
-            else if (args[i] is "--blocked-only" or "-b") blockedOnly = true;
-            else if (args[i] == "--name"  && i + 1 < args.Length) nameFilter  = args[++i];
-            else if (args[i] == "--state" && i + 1 < args.Length) stateFilter = args[++i].ToLowerInvariant();
+            if (args[i] is "--stacks" or "-s")
+                showStacks = true;
+            else if (args[i] is "--blocked-only" or "-b")
+                blockedOnly = true;
+            else if (args[i] == "--name" && i + 1 < args.Length)
+                nameFilter = args[++i];
+            else if (args[i] == "--state" && i + 1 < args.Length)
+                stateFilter = args[++i].ToLowerInvariant();
         }
 
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, showStacks, blockedOnly, nameFilter, stateFilter));
@@ -49,9 +57,7 @@ internal static class ThreadAnalysisCommand
             "Dump Detective — Thread Analysis",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
-        var threads = ctx.Runtime.Threads.ToList();
-
-        // Build ManagedThreadId → thread name by scanning managed Thread objects on heap
+        var threads     = ctx.Runtime.Threads.ToList();
         var threadNames = BuildThreadNameMap(ctx);
 
         var toShow = threads.AsEnumerable();
@@ -68,6 +74,30 @@ internal static class ThreadAnalysisCommand
 
         int blockedCount = threads.Count(IsLikelyBlocked);
 
+        RenderSummary(sink, threads, blockedCount, threadNames);
+
+        if (toShowList.Count == 0) { sink.Text("No threads match the filter."); return; }
+
+        string sectionTitle = stateFilter is not null and not "all"
+            ? $"Threads — state={stateFilter} ({toShowList.Count})"
+            : blockedOnly
+                ? $"Blocked Threads ({toShowList.Count})"
+                : nameFilter is not null
+                    ? $"Filtered Threads ({toShowList.Count})"
+                    : $"All Threads ({toShowList.Count})";
+
+        if (!showStacks)
+            RenderThreadTable(sink, toShowList, threadNames, sectionTitle);
+        else
+            RenderThreadCards(sink, toShowList, threadNames, sectionTitle);
+
+        RenderExceptionDetails(sink, toShowList);
+    }
+
+    // Renders the thread count summary KVs, category breakdown table, and blocking alerts.
+    static void RenderSummary(IRenderSink sink,
+        List<ClrThread> threads, int blockedCount, Dictionary<int, string> threadNames)
+    {
         sink.Section("Thread Summary");
         sink.KeyValues(
         [
@@ -79,7 +109,6 @@ internal static class ThreadAnalysisCommand
             ("Named threads",   threadNames.Count.ToString("N0")),
         ]);
 
-        // Thread category breakdown
         var categories = threads
             .GroupBy(t => ClassifyThread(t, threadNames))
             .OrderByDescending(g => g.Count())
@@ -93,99 +122,96 @@ internal static class ThreadAnalysisCommand
                 advice: "Check for deadlocks — run deadlock-detection for wait-chain analysis.");
         else if (blockedCount > 0)
             sink.Alert(AlertLevel.Warning, $"{blockedCount} thread(s) appear blocked on synchronization primitives.");
+    }
 
-        if (toShowList.Count == 0) { sink.Text("No threads match the filter."); return; }
-
-        string sectionTitle = stateFilter is not null and not "all"
-            ? $"Threads — state={stateFilter} ({toShowList.Count})"
-            : blockedOnly
-                ? $"Blocked Threads ({toShowList.Count})"
-                : nameFilter is not null
-                    ? $"Filtered Threads ({toShowList.Count})"
-                    : $"All Threads ({toShowList.Count})";
-
-        if (!showStacks)
+    // Renders a compact per-thread table row (no stack frames).
+    static void RenderThreadTable(IRenderSink sink,
+        List<ClrThread> threads, Dictionary<int, string> threadNames, string sectionTitle)
+    {
+        sink.Section(sectionTitle);
+        var rows = new List<string[]>();
+        foreach (var t in threads)
         {
-            sink.Section(sectionTitle);
-            var rows = new List<string[]>();
-            foreach (var t in toShowList)
-            {
-                threadNames.TryGetValue(t.ManagedThreadId, out string? threadName);
-                string ex       = FormatException(t.CurrentException);
-                string lockInfo = GetLockInfo(t);
-                string category = ClassifyThread(t, threadNames);
-                rows.Add([
-                    $"{t.ManagedThreadId}",
-                    $"{t.OSThreadId}",
-                    threadName ?? "",
-                    category,
-                    t.GCMode.ToString(),
-                    ex,
-                    lockInfo,
-                ]);
-            }
-            sink.Table(["Mgd ID", "OS ID", "Thread Name", "Category", "GC Mode", "Exception", "Waiting On"], rows);
+            threadNames.TryGetValue(t.ManagedThreadId, out string? threadName);
+            string ex       = FormatException(t.CurrentException);
+            string lockInfo = GetLockInfo(t);
+            string category = ClassifyThread(t, threadNames);
+            rows.Add([
+                $"{t.ManagedThreadId}",
+                $"{t.OSThreadId}",
+                threadName ?? "",
+                category,
+                t.GCMode.ToString(),
+                ex,
+                lockInfo,
+            ]);
         }
-        else
+        sink.Table(["Mgd ID", "OS ID", "Thread Name", "Category", "GC Mode", "Exception", "Waiting On"], rows);
+    }
+
+    // Renders collapsible per-thread cards with top-10 stack frames each.
+    static void RenderThreadCards(IRenderSink sink,
+        List<ClrThread> threads, Dictionary<int, string> threadNames, string sectionTitle)
+    {
+        sink.Section(sectionTitle);
+        foreach (var t in threads)
         {
-            sink.Section(sectionTitle);
-            foreach (var t in toShowList)
+            threadNames.TryGetValue(t.ManagedThreadId, out string? threadName);
+            string ex       = FormatException(t.CurrentException);
+            string lockInfo = GetLockInfo(t);
+            bool   blocked  = IsLikelyBlocked(t);
+            string category = ClassifyThread(t, threadNames);
+
+            string detailTitle =
+                $"Thread {t.ManagedThreadId}" +
+                (threadName is not null ? $" [{threadName}]" : "") +
+                $"  OS:{t.OSThreadId}  [{category}]" +
+                (blocked         ? "  ⚠ BLOCKED"       : "") +
+                (ex.Length > 0   ? $"  ex:{ex}"        : "") +
+                (lockInfo.Length > 0 ? $"  {lockInfo}" : "");
+
+            sink.BeginDetails(detailTitle, open: blocked || t.CurrentException is not null);
+
+            var frames = t.EnumerateStackTrace().Take(10).ToList();
+            if (frames.Count == 0)
             {
-                threadNames.TryGetValue(t.ManagedThreadId, out string? threadName);
-                string ex       = FormatException(t.CurrentException);
-                string lockInfo = GetLockInfo(t);
-                bool   blocked  = IsLikelyBlocked(t);
-                string category = ClassifyThread(t, threadNames);
-
-                string detailTitle =
-                    $"Thread {t.ManagedThreadId}" +
-                    (threadName is not null ? $" [{threadName}]" : "") +
-                    $"  OS:{t.OSThreadId}  [{category}]" +
-                    (blocked   ? "  ⚠ BLOCKED"       : "") +
-                    (ex.Length > 0   ? $"  ex:{ex}"  : "") +
-                    (lockInfo.Length > 0 ? $"  {lockInfo}" : "");
-
-                sink.BeginDetails(detailTitle, open: blocked || t.CurrentException is not null);
-
-                var frames = t.EnumerateStackTrace().Take(10).ToList();
-                if (frames.Count == 0)
-                {
-                    sink.Text("  (no managed frames)");
-                }
-                else
-                {
-                    var frameRows = frames
-                        .Select((f, i) => new[]
-                        {
-                            i.ToString(),
-                            f.FrameName ?? f.Method?.Signature ?? f.ToString() ?? "<unknown>",
-                        })
-                        .ToList();
-                    sink.Table(["#", "Frame"], frameRows);
-                }
-
-                sink.EndDetails();
+                sink.Text("  (no managed frames)");
             }
-        }
+            else
+            {
+                var frameRows = frames
+                    .Select((f, i) => new[]
+                    {
+                        i.ToString(),
+                        f.FrameName ?? f.Method?.Signature ?? f.ToString() ?? "<unknown>",
+                    })
+                    .ToList();
+                sink.Table(["#", "Frame"], frameRows);
+            }
 
-        // Exception details section for threads carrying exceptions
-        var excThreads = toShowList.Where(t => t.CurrentException is not null).ToList();
-        if (excThreads.Count > 0)
+            sink.EndDetails();
+        }
+    }
+
+    // Renders exception-detail table for any thread carrying a current exception.
+    static void RenderExceptionDetails(IRenderSink sink, List<ClrThread> threads)
+    {
+        var excThreads = threads.Where(t => t.CurrentException is not null).ToList();
+        if (excThreads.Count == 0) return;
+
+        sink.Section("Exception Details");
+        var exRows = new List<string[]>();
+        foreach (var t in excThreads)
         {
-            sink.Section("Exception Details");
-            var exRows = new List<string[]>();
-            foreach (var t in excThreads)
-            {
-                var ex = t.CurrentException!;
-                exRows.Add([
-                    $"{t.ManagedThreadId}",
-                    ex.Type?.Name ?? "?",
-                    TruncateMessage(ex.Message ?? ""),
-                    ex.Inner?.Type?.Name ?? "",
-                ]);
-            }
-            sink.Table(["Mgd ID", "Exception Type", "Message", "Inner Exception"], exRows);
+            var ex = t.CurrentException!;
+            exRows.Add([
+                $"{t.ManagedThreadId}",
+                ex.Type?.Name ?? "?",
+                TruncateMessage(ex.Message ?? ""),
+                ex.Inner?.Type?.Name ?? "",
+            ]);
         }
+        sink.Table(["Mgd ID", "Exception Type", "Message", "Inner Exception"], exRows);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -246,6 +272,7 @@ internal static class ThreadAnalysisCommand
         return map;
     }
 
+    // Formats a ClrException as "TypeName: Message → InnerType" truncated to 110 chars.
     static string FormatException(ClrException? ex)
     {
         if (ex is null) return "";
@@ -256,8 +283,10 @@ internal static class ThreadAnalysisCommand
         return result.Length > 110 ? result[..107] + "…" : result;
     }
 
+    // Truncates a string to 120 chars with an ellipsis suffix.
     static string TruncateMessage(string s) => s.Length > 120 ? s[..117] + "…" : s;
 
+    // Returns the first blocking frame's method signature, or empty if none found.
     static string GetLockInfo(ClrThread t)
     {
         // ClrMD 3.x does not expose BlockingObjects — derive from top blocking frame
@@ -272,12 +301,14 @@ internal static class ThreadAnalysisCommand
         catch { return ""; }
     }
 
+    // Returns true for method names that indicate thread-blocking primitives.
     static bool IsBlockingFrame(string methodName) =>
         methodName is "WaitOne" or "Wait" or "Enter" or "TryEnter" or "Join"
                    or "Acquire" or "WaitAsync" or "GetResult" or "WaitAll" or "WaitAny"
         || methodName.Contains("Wait",  StringComparison.OrdinalIgnoreCase)
         || methodName.Contains("Sleep", StringComparison.OrdinalIgnoreCase);
 
+    // Returns true when the top-10 stack frames contain at least one blocking method.
     internal static bool IsLikelyBlocked(ClrThread t)
     {
         return t.EnumerateStackTrace().Take(10).Any(f =>

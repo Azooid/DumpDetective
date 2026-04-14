@@ -6,6 +6,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Enumerates System.Threading.Timer, System.Timers.Timer, and related types.
+// Resolves callbacks to method names, buckets timers by period range, and alerts
+// on high-count or high-frequency timer accumulation.
 internal static class TimerLeaksCommand
 {
     private const string Help = """
@@ -41,30 +44,13 @@ internal static class TimerLeaksCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, bool showAddr = false)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
-
         sink.Header(
             "Dump Detective — Timer Leak Analysis",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        // ── Phase 1: collect timer objects ────────────────────────────────────
-        var timers = new List<TimerInfo>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning timer objects...", _ =>
-        {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
-            {
-                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                if (!TimerTypeSet.Contains(obj.Type.Name ?? string.Empty)) continue;
-
-                var (cb, module) = ResolveCallback(obj, ctx.Runtime);
-                timers.Add(new TimerInfo(
-                    obj.Type.Name!, obj.Address, (long)obj.Size,
-                    cb, module,
-                    ReadTimerLong(obj, "_dueTime"),
-                    ReadTimerLong(obj, "_period")));
-            }
-        });
+        var timers = ScanTimers(ctx);
 
         sink.Section("Summary");
         if (timers.Count == 0) { sink.Text("No timer objects found."); return; }
@@ -81,7 +67,40 @@ internal static class TimerLeaksCommand
         else if (timers.Count > 100)
             sink.Alert(AlertLevel.Warning, $"{timers.Count:N0} timer objects detected.");
 
-        // ── Callback summary table by type ────────────────────────────────────
+        RenderTypeGroups(sink, timers, showAddr);
+        RenderPeriodDistribution(sink, timers);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Walks the heap for objects whose type is in TimerTypeSet, resolves the callback
+    // delegate to a method name, and reads _dueTime / _period fields.
+    static List<TimerInfo> ScanTimers(DumpContext ctx)
+    {
+        var timers = new List<TimerInfo>();
+        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning timer objects...", _ =>
+        {
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                if (!TimerTypeSet.Contains(obj.Type.Name ?? string.Empty)) continue;
+                var (cb, module) = ResolveCallback(obj, ctx.Runtime);
+                timers.Add(new TimerInfo(
+                    obj.Type.Name!, obj.Address, (long)obj.Size,
+                    cb, module,
+                    ReadTimerLong(obj, "_dueTime"),
+                    ReadTimerLong(obj, "_period")));
+            }
+        });
+        return timers;
+    }
+
+    // ── Rendering ─────────────────────────────────────────────────────────────
+
+    // Collapsible accordion per timer type showing callback breakdown.
+    // Optionally adds a per-address table (capped at 200 rows per group).
+    static void RenderTypeGroups(IRenderSink sink, List<TimerInfo> timers, bool showAddr)
+    {
         foreach (var g in timers.GroupBy(t => t.Type).OrderByDescending(g => g.Count()))
         {
             long grpSize = g.Sum(t => t.Size);
@@ -112,11 +131,13 @@ internal static class TimerLeaksCommand
                 }).ToList();
                 sink.Table(["Address", "Callback", "Period", "Due In", "Size"], addrRows);
             }
-
             sink.EndDetails();
         }
+    }
 
-        // ── Period frequency buckets ──────────────────────────────────────────
+    // Period bucket frequency table + high-frequency timer alert.
+    static void RenderPeriodDistribution(IRenderSink sink, List<TimerInfo> timers)
+    {
         sink.Section("Timer Period Distribution");
         var periodBuckets = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var t in timers)
@@ -150,6 +171,8 @@ internal static class TimerLeaksCommand
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Resolves the callback delegate on a timer object to a human-readable method name
+    // by reading _methodPtr via ClrRuntime.GetMethodByInstructionPointer.
     static (string Callback, string Module) ResolveCallback(ClrObject obj, ClrRuntime runtime)
     {
         try
@@ -168,6 +191,8 @@ internal static class TimerLeaksCommand
         catch { return ("", ""); }
     }
 
+    // Reads a due-time or period field as long first, then falls back to int.
+    // Returns -1 (infinite/not-set sentinel) on field-not-found.
     static long ReadTimerLong(ClrObject obj, string fieldName)
     {
         try { return obj.ReadField<long>(fieldName); } catch { }
@@ -175,6 +200,7 @@ internal static class TimerLeaksCommand
         return -1;
     }
 
+    // Formats a millisecond interval as ∞ / "0 ms" / seconds / minutes.
     static string FormatInterval(long ms) => ms switch
     {
         -1       => "∞",
@@ -184,6 +210,7 @@ internal static class TimerLeaksCommand
         _        => $"{ms / 60_000.0:F1} min",
     };
 
+    // Numeric sort key for the period bucket strings so the table reads in ascending order.
     static int PeriodBucketSortKey(string b) => b switch
     {
         "Infinite (one-shot)"       => 0,
