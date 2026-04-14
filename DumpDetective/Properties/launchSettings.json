@@ -247,6 +247,14 @@
     "memory-leak (low threshold + system)": {
       "commandName": "Project",
       "commandLineArgs": "memory-leak \"C:\\Program Files\\DebugDiag\\Logs\\Misc\\memory\\after.dmp\" --min-count 100 --include-system --top 50 --output memory-leak.html"
+    },
+    "threadpool-starvation": {
+      "commandName": "Project",
+      "commandLineArgs": "threadpool-starvation \"D:\\dumps\\threadpool-starvation\\sample1.nettrace\" --output threadpool-starvation.html"
+    },
+    "threadpool-starvation (top 20 patterns)": {
+      "commandName": "Project",
+      "commandLineArgs": "threadpool-starvation \"D:\\dumps\\threadpool-starvation\\sample1.nettrace\" --top 20 --output threadpool-starvation.html"
     }
   }
 }

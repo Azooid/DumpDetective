@@ -40,11 +40,12 @@ return args[0] switch
     "connection-pool"    => ConnectionPoolCommand.Run(commandArgs),
     "high-refs"          => HighRefsCommand.Run(commandArgs),
     "module-list"        => ModuleListCommand.Run(commandArgs),
-    "memory-leak"        => MemoryLeakCommand.Run(commandArgs),
-    "analyze"            => AnalyzeCommand.Run(commandArgs),
-    "trend-analysis"     => TrendAnalysisCommand.Run(commandArgs),
+    "memory-leak"             => MemoryLeakCommand.Run(commandArgs),
+    "analyze"                 => AnalyzeCommand.Run(commandArgs),
+    "trend-analysis"          => TrendAnalysisCommand.Run(commandArgs),
+    "threadpool-starvation"   => ThreadPoolStarvationCommand.Run(commandArgs),
     "trend-render" or
-    "render"             => TrendRenderCommand.Run(commandArgs),
+    "render"                  => TrendRenderCommand.Run(commandArgs),
     _                    => UnknownCommand(args[0])
 };
 
@@ -82,6 +83,9 @@ static void PrintHelp()
     Console.WriteLine("  heap-fragmentation Segment free space and fragmentation percentage");
     Console.WriteLine("  async-stacks       Suspended async state machines at await points");
     Console.WriteLine("  thread-pool        ThreadPool state and queued work items");
+    Console.WriteLine();
+    Console.WriteLine(".nettrace commands (dotnet-trace):");
+    Console.WriteLine("  threadpool-starvation  Analyze a .nettrace for WaitHandleWait events — diagnose sync-over-async starvation");
     Console.WriteLine("  object-inspect     All field values of an object by address");
     Console.WriteLine("  type-instances     All instances of a given type");
     Console.WriteLine("  weak-refs          WeakReference handles — alive vs collected");
