@@ -33,10 +33,12 @@ public static class DumpCollector
     // ── Public API ────────────────────────────────────────────────────────────
 
     /// <summary>Full collection (string dups + event leaks) using an existing <see cref="DumpContext"/>.</summary>
-    public static DumpSnapshot CollectFull(DumpContext ctx)        => CollectFromContext(ctx, full: true);
+    public static DumpSnapshot CollectFull(DumpContext ctx, Action<string>? progress = null)
+        => CollectFromContext(ctx, full: true, progress);
 
     /// <summary>Lightweight collection using an existing <see cref="DumpContext"/>.</summary>
-    public static DumpSnapshot CollectLightweight(DumpContext ctx) => CollectFromContext(ctx, full: false);
+    public static DumpSnapshot CollectLightweight(DumpContext ctx, Action<string>? progress = null)
+        => CollectFromContext(ctx, full: false, progress);
 
     /// <summary>Full collection — opens its own DataTarget from <paramref name="dumpPath"/>.</summary>
     public static DumpSnapshot CollectFull(string dumpPath, Action<string>? progress = null)
@@ -48,12 +50,11 @@ public static class DumpCollector
 
     // ── Private collect paths ─────────────────────────────────────────────────
 
-    private static DumpSnapshot CollectFromContext(DumpContext ctx, bool full)
+    private static DumpSnapshot CollectFromContext(DumpContext ctx, bool full, Action<string>? progress = null)
     {
-
         var snapshot = CreateSnapshot(ctx.DumpPath, ctx.FileTime, full);
         snapshot.ClrVersion = ctx.ClrVersion;
-        return FinalizeSnapshot(ctx.Runtime, snapshot, full, progress: null);
+        return FinalizeSnapshot(ctx.Runtime, snapshot, full, progress);
     }
 
     private static DumpSnapshot Collect(string dumpPath, bool full, Action<string>? progress = null)
@@ -116,17 +117,32 @@ public static class DumpCollector
 
     private static void CollectThreads(ClrRuntime runtime, DumpSnapshot s)
     {
-        var threads = runtime.Threads.ToList();
-        s.ThreadCount          = threads.Count;
-        s.AliveThreadCount     = threads.Count(t => t.IsAlive);
-        s.ExceptionThreadCount = threads.Count(t => t.CurrentException is not null);
-        s.BlockedThreadCount   = threads.Count(t =>
-            t.EnumerateStackTrace().Take(5).Any(f =>
+        // Single pass — avoids ToList() allocation and 3 separate LINQ sweeps
+        int total = 0, alive = 0, withEx = 0, blocked = 0;
+        foreach (var t in runtime.Threads)
+        {
+            total++;
+            if (t.IsAlive)                      alive++;
+            if (t.CurrentException is not null) withEx++;
+
+            // Check up to 5 stack frames for a known blocking call
+            int frames = 0;
+            foreach (var f in t.EnumerateStackTrace())
             {
+                if (++frames > 5) break;
                 var name = f.Method?.Name ?? string.Empty;
-                return name is "WaitOne" or "Wait" or "Enter" or "TryEnter" or "Join"
-                    || name.Contains("Wait", StringComparison.OrdinalIgnoreCase);
-            }));
+                if (name is "WaitOne" or "Wait" or "Enter" or "TryEnter" or "Join"
+                    || name.Contains("Wait", StringComparison.OrdinalIgnoreCase))
+                {
+                    blocked++;
+                    break;  // count at most once per thread
+                }
+            }
+        }
+        s.ThreadCount          = total;
+        s.AliveThreadCount     = alive;
+        s.ExceptionThreadCount = withEx;
+        s.BlockedThreadCount   = blocked;
     }
 
     // ── Thread pool ───────────────────────────────────────────────────────────
@@ -145,7 +161,8 @@ public static class DumpCollector
 
     private static void CollectHandles(ClrRuntime runtime, DumpSnapshot s)
     {
-        var rootedByKey = new Dictionary<string, (int Count, long Size)>(StringComparer.Ordinal);
+        // (Kind, TypeName) tuple key: avoids per-handle string interpolation and later IndexOf parsing
+        var rootedByKey = new Dictionary<(ClrHandleKind Kind, string TypeName), (int Count, long Size)>(4096);
 
         foreach (var h in runtime.EnumerateHandles())
         {
@@ -164,12 +181,10 @@ public static class DumpCollector
                     var heapObj = runtime.Heap.GetObject(obj);
                     if (!heapObj.IsValid) continue;
                     var typeName = heapObj.Type?.Name ?? "<unknown>";
-                    var key      = $"{h.HandleKind}|{typeName}";
+                    var key      = (h.HandleKind, typeName);
                     long size    = (long)heapObj.Size;
-                    if (rootedByKey.TryGetValue(key, out var e))
-                        rootedByKey[key] = (e.Count + 1, e.Size + size);
-                    else
-                        rootedByKey[key] = (1, size);
+                    ref var e = ref CollectionsMarshal.GetValueRefOrAddDefault(rootedByKey, key, out bool exists);
+                    e = exists ? (e.Count + 1, e.Size + size) : (1, size);
                 }
                 catch { }
             }
@@ -178,13 +193,7 @@ public static class DumpCollector
         s.TopRootedTypes = rootedByKey
             .OrderByDescending(kv => kv.Value.Count)
             .Take(15)
-            .Select(kv =>
-            {
-                var sep      = kv.Key.IndexOf('|');
-                var kind     = sep >= 0 ? kv.Key[..sep]   : kv.Key;
-                var typeName = sep >= 0 ? kv.Key[(sep+1)..] : string.Empty;
-                return new RootedHandleStat(kind, typeName, kv.Value.Count, kv.Value.Size);
-            })
+            .Select(kv => new RootedHandleStat(kv.Key.Kind.ToString(), kv.Key.TypeName, kv.Value.Count, kv.Value.Size))
             .ToList();
     }
 
@@ -251,16 +260,18 @@ public static class DumpCollector
         var typeMetaCache = new Dictionary<ulong, HeapTypeMeta>(8192);
 
         int timerCount = 0, wcfCount = 0, wcfFaulted = 0, connCount = 0;
+        int asyncBacklogTotal = 0;  // accumulated inline — avoids a second pass over asyncCounts
         long processedCount = 0;
         long totalObjects = 0;
-        var watch = new Stopwatch();
-        watch.Start();
+        var watch = Stopwatch.StartNew();
         foreach (var obj in heap.EnumerateObjects())
         {
             processedCount++;
-            if(watch is not null && progress is not null && watch.Elapsed.TotalSeconds >= 1)
+            // Gate the stopwatch read (QueryPerformanceCounter) to every 65 536 objects to avoid
+            // the syscall overhead on every single iteration of the hot loop.
+            if (progress is not null && (processedCount & 0xFFFF) == 0 && watch.ElapsedMilliseconds >= 1000)
             {
-                progress!($"Walking heap objects — {processedCount:N0} processed");
+                progress($"Walking heap objects — {processedCount:N0} processed");
                 watch.Restart();
             }
 
@@ -318,6 +329,7 @@ public static class DumpCollector
             {
                 ref int ac = ref CollectionsMarshal.GetValueRefOrAddDefault(asyncCounts, asyncMethod, out bool asyncExists);
                 ac = asyncExists ? ac + 1 : 1;
+                asyncBacklogTotal++;  // accumulated here — avoids post-loop summation pass
             }
 
             if (meta.IsTimer)
@@ -386,9 +398,6 @@ public static class DumpCollector
         exceptionCounts.Sort(static (a, b) => b.Count.CompareTo(a.Count));
         s.ExceptionCounts = exceptionCounts;
 
-        int asyncBacklogTotal = 0;
-        foreach (var kv in asyncCounts)
-            asyncBacklogTotal += kv.Value;
         s.AsyncBacklogTotal = asyncBacklogTotal;
 
         var topAsyncMethods = new List<(string Method, int Count)>(asyncCounts.Count);
@@ -537,15 +546,18 @@ public static class DumpCollector
 
     private static void CollectFinalizerQueue(ClrHeap heap, DumpSnapshot s)
     {
-        var counts = new Dictionary<string, int>(StringComparer.Ordinal);
+        var counts = new Dictionary<string, int>(256, StringComparer.Ordinal);
+        int total = 0;
         foreach (var obj in heap.EnumerateFinalizableObjects())
         {
             if (!obj.IsValid) continue;
             var name = obj.Type?.Name ?? "<unknown>";
-            counts.TryGetValue(name, out int c);
-            counts[name] = c + 1;
+            // Single lookup via ref — avoids TryGetValue + indexer double lookup
+            ref int c = ref CollectionsMarshal.GetValueRefOrAddDefault(counts, name, out _);
+            c++;
+            total++;
         }
-        s.FinalizerQueueDepth = counts.Values.Sum();
+        s.FinalizerQueueDepth = total;
         s.TopFinalizerTypes   = counts
             .OrderByDescending(kv => kv.Value)
             .Take(10)

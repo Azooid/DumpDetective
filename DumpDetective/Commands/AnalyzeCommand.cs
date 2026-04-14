@@ -60,26 +60,21 @@ internal static class AnalyzeCommand
 
         CommandBase.PrintAnalyzing(dumpPath);
 
-        // ── Phase 1: snapshot collection (always with progress) ───────────────
-        DumpSnapshot snap = null!;
-        var sw = Stopwatch.StartNew();
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start($"Running {(full ? "full" : "mini")} analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", ctx =>
-            {
-                void Upd(string msg) =>
-                    ctx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
-                // Full collection captures string dupes + event leaks for the summary score
-                snap = full
-                    ? DumpCollector.CollectFull(dumpPath, Upd)
-                    : DumpCollector.CollectLightweight(dumpPath, Upd);
-            });
-        AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
-
         if (!full)
         {
-            // ── Mini: scored summary only ─────────────────────────────────────
+            // ── Mini: single open, lightweight collection + scored summary ────
+            DumpSnapshot snap = null!;
+            var sw = Stopwatch.StartNew();
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Running mini analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", spinCtx =>
+                {
+                    void Upd(string msg) =>
+                        spinCtx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
+                    snap = DumpCollector.CollectLightweight(dumpPath, Upd);
+                });
+            AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
             using var sink = IRenderSink.Create(outputPath);
             RenderReport(snap, sink);
             if (sink.IsFile && sink.FilePath is not null)
@@ -87,18 +82,42 @@ internal static class AnalyzeCommand
             return 0;
         }
 
-        // ── Full: scored summary + all individual sub-reports ─────────────────
-        // Re-open dump so every sub-command can walk the heap independently.
-        AnsiConsole.MarkupLine("[dim]Opening dump for detailed sub-reports...[/]");
-        return CommandBase.Execute(dumpPath, outputPath, (ctx, sink) =>
+        // ── Full: open dump once — snapshot collection + all sub-reports ──────
+        try
         {
-            // Chapter 1 — Scored summary (uses already-collected snapshot)
+            using var dumpCtx = DumpContext.Open(dumpPath);
+            if (dumpCtx.ArchWarning is not null)
+                AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(dumpCtx.ArchWarning)}[/]");
+            DumpSnapshot snap = null!;
+            var sw = Stopwatch.StartNew();
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Running full analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", spinCtx =>
+                {
+                    void Upd(string msg) =>
+                        spinCtx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
+                    snap = DumpCollector.CollectFull(dumpCtx, Upd);
+                });
+            AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
+            using var sink = IRenderSink.Create(outputPath);
             RenderReport(snap, sink);
-
-            // Chapters 2-N — Individual command reports
             AnsiConsole.MarkupLine("[bold blue]Embedding detailed sub-reports:[/]");
-            RenderEmbeddedReports(ctx, sink);
-        });
+            RenderEmbeddedReports(dumpCtx, sink);
+            if (sink.IsFile && sink.FilePath is not null)
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+            return 0;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Unexpected error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
     }
 
     // ── Embedded sub-reports (full mode only) ─────────────────────────────────

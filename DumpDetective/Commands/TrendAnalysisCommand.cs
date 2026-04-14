@@ -127,6 +127,12 @@ internal static class TrendAnalysisCommand
 
         var snapshots = new List<DumpDetective.Models.DumpSnapshot>();
 
+        // Full mode: capture sub-reports while each dump is still open, eliminating
+        // a second pass through the dump files later. null in lightweight mode.
+        DumpDetective.Models.ReportDoc?[]? capturedSubReports = full
+            ? new DumpDetective.Models.ReportDoc?[dumpPaths.Count]
+            : null;
+
         for (int i = 0; i < dumpPaths.Count; i++)
         {
             var label    = $"D{i + 1}";
@@ -134,27 +140,59 @@ internal static class TrendAnalysisCommand
             var dispName = ShortName(path);
             DumpSnapshot? snap = null;
 
-            AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .SpinnerStyle(Style.Parse("blue"))
-                .Start($"[bold]{label}[/]  {Markup.Escape(dispName)}  opening...", ctx =>
+            // Open the dump once for both snapshot collection and (in full mode)
+            // sub-report capture — the file is never opened a second time.
+            {
+                using var dumpCtx = DumpContext.Open(path);
+
+                AnsiConsole.Status()
+                    .Spinner(Spinner.Known.Dots)
+                    .SpinnerStyle(Style.Parse("blue"))
+                    .Start($"[bold]{label}[/]  {Markup.Escape(dispName)}  opening...", spinCtx =>
+                    {
+                        void Upd(string msg) =>
+                            spinCtx.Status($"[bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  {Markup.Escape(msg)}");
+                        snap = full
+                            ? DumpCollector.CollectFull(dumpCtx, Upd)
+                            : DumpCollector.CollectLightweight(dumpCtx, Upd);
+                    });
+
+                snapshots.Add(snap!);
+                var sc = snap!.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
+                AnsiConsole.MarkupLine(
+                    $"  [green]✓[/]  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
+                    $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
+
+                if (capturedSubReports is not null)
                 {
-                    void Upd(string msg) =>
-                        ctx.Status($"[bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  {Markup.Escape(msg)}");
-                    snap = full
-                        ? DumpCollector.CollectFull(path, Upd)
-                        : DumpCollector.CollectLightweight(path, Upd);
-                });
+                    CommandBase.SuppressVerbose = true;
+                    try
+                    {
+                        var cap = new DumpDetective.Output.CaptureSink();
+                        cap.Header(
+                            $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
+                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
+                        AnalyzeCommand.RenderReport(snap, cap, includeHeader: false);
+                        AnalyzeCommand.RenderEmbeddedReports(dumpCtx, cap);
+                        capturedSubReports[i] = cap.GetDoc();
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.MarkupLine($"  [yellow]⚠ Sub-reports partial: {Markup.Escape(ex.Message)}[/]");
+                        var capErr = new DumpDetective.Output.CaptureSink();
+                        capErr.Alert(DumpDetective.Output.AlertLevel.Warning,
+                            $"Sub-reports incomplete for {dispName}: {ex.Message}");
+                        capturedSubReports[i] = capErr.GetDoc();
+                    }
+                    finally
+                    {
+                        CommandBase.SuppressVerbose = false;
+                    }
+                }
+                // dumpCtx (DataTarget + ClrRuntime) disposed here — before GC sweep
+            }
 
-            snapshots.Add(snap!);
-            var sc = snap!.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
-            AnsiConsole.MarkupLine(
-                $"  [green]✓[/]  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
-                $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
-
-            // Non-blocking sweep between dumps — releases typeStats, stringValues,
-            // delFieldsCache etc. while the next dump file is being opened (I/O time).
-            // No compaction: avoids the multi-second STW pause from moving objects.
+            // Release large snapshot collections between dumps
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(1, GCCollectionMode.Forced, blocking: true, compacting: true);
@@ -174,62 +212,9 @@ internal static class TrendAnalysisCommand
         // ── .json output = save raw snapshots (re-renderable with trend-render) ────────
         if (output is not null && output.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
-            // In full mode, capture every sub-command's rendered output per dump so
-            // trend-render can replay it later without reopening the dump files.
-            DumpDetective.Models.ReportDoc?[]? subReports = null;
-            if (full)
-            {
-                subReports = new DumpDetective.Models.ReportDoc?[snapshots.Count];
-                AnsiConsole.MarkupLine("[bold]Capturing per-dump sub-reports for JSON export…[/]");
-                CommandBase.SuppressVerbose = true;
-                try
-                {
-                    for (int i = 0; i < dumpPaths.Count; i++)
-                    {
-                        var label    = $"D{i + 1}";
-                        var path     = dumpPaths[i];
-                        var snap     = snapshots[i];
-                        var sc       = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
-                        AnsiConsole.MarkupLine(
-                            $"  [bold]{label}[/]  [dim]{Markup.Escape(ShortName(path))}[/]  " +
-                            $"[{sc}]{snap.HealthScore}/100[/]");
-
-                        var cap = new DumpDetective.Output.CaptureSink();
-
-                        // Add the per-dump chapter header to the capture
-                        cap.Header(
-                            $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
-                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
-
-                        // Scored summary from snapshot (no heap re-open needed)
-                        AnalyzeCommand.RenderReport(snap, cap, includeHeader: false);
-
-                        // Full sub-reports — re-open dump for live heap-walk commands
-                        try
-                        {
-                            using var ctx = DumpContext.Open(path);
-                            AnalyzeCommand.RenderEmbeddedReports(ctx, cap);
-                        }
-                        catch (Exception ex)
-                        {
-                            AnsiConsole.MarkupLine($"  [yellow]⚠ Sub-reports partial: {Markup.Escape(ex.Message)}[/]");
-                            cap.Alert(DumpDetective.Output.AlertLevel.Warning,
-                                $"Sub-reports incomplete for {ShortName(path)}: {ex.Message}");
-                        }
-
-                        subReports[i] = cap.GetDoc();
-
-                        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                        GC.WaitForPendingFinalizers();
-                    }
-                }
-                finally
-                {
-                    CommandBase.SuppressVerbose = false;
-                }
-            }
-
-            TrendRawSerializer.Save(snapshots, output, subReports);
+            // Sub-reports were already captured during collection (full mode).
+            // No second pass through dump files is needed.
+            TrendRawSerializer.Save(snapshots, output, capturedSubReports);
             AnsiConsole.MarkupLine($"[dim]→ Raw snapshot data written to:[/] {Markup.Escape(output)}");
             AnsiConsole.MarkupLine("[dim]Use 'trend-render' to convert to HTML/Markdown/text at any time.[/]");
             return 0;
@@ -238,47 +223,23 @@ internal static class TrendAnalysisCommand
         using var sink = IRenderSink.Create(output);
         RenderTrend(snapshots, sink, ignoreEvents, baselineIndex);
 
-        // ── Full mode: append per-dump scored summary + embedded sub-reports ──
-        if (full)
+        // ── Full mode: replay per-dump sub-reports captured during collection ──
+        if (capturedSubReports is not null)
         {
             AnsiConsole.MarkupLine("[bold]Rendering per-dump detailed reports…[/]");
             for (int i = 0; i < dumpPaths.Count; i++)
             {
-                var label    = $"D{i + 1}";
-                var path     = dumpPaths[i];
-                var snap     = snapshots[i];
-                var dispName = ShortName(path);
-                var sc       = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
+                var label = $"D{i + 1}";
+                var path  = dumpPaths[i];
+                var snap  = snapshots[i];
+                var sc    = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
                 AnsiConsole.MarkupLine(
-                    $"  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
+                    $"  [bold]{label}[/]  [dim]{Markup.Escape(ShortName(path))}[/]  " +
                     $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
 
-                // Chapter header for this dump
-                sink.Header(
-                    $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
-                    $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
-
-                // Mini scored summary (uses already-collected snapshot, no extra I/O).
-                // includeHeader:false avoids a duplicate "Analysis Report" hero —
-                // the "Per-Dump Report: DX" hero written above is sufficient.
-                AnalyzeCommand.RenderReport(snap, sink, includeHeader: false);
-
-                // Full sub-reports — re-open dump for live heap-walk commands
-                try
-                {
-                    using var ctx = DumpContext.Open(path);
-                    AnalyzeCommand.RenderEmbeddedReports(ctx, sink);
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"  [yellow]⚠ Could not render sub-reports: {Markup.Escape(ex.Message)}[/]");
-                    sink.Alert(AlertLevel.Warning,
-                        $"Could not re-open {dispName} for sub-reports: {ex.Message}");
-                }
-
-                // Release memory between dumps
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
+                // Replay captured sub-reports — no file I/O needed
+                if (capturedSubReports[i] is { } doc)
+                    ReportDocReplay.Replay(doc, sink);
             }
         }
 
