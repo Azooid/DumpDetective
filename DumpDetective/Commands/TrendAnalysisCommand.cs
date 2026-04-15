@@ -312,6 +312,10 @@ internal static class TrendAnalysisCommand
             "Dump Detective \u2014 Trend Analysis Report",
             $"{snaps.Count} dumps  |  {snaps[0].FileTime:yyyy-MM-dd HH:mm} \u2192 {sN.FileTime:yyyy-MM-dd HH:mm}  |  {(full ? "Full" : "Lightweight")} mode{baselineNote}");
 
+        // ── Diagnosis Summary Table ───────────────────────────────────────────
+        sink.Section("Diagnosis Summary");
+        RenderDiagnosisSummary(snaps, s0, sN, labels, baselineLabel, sink);
+
         // ── 1. Dump Timeline ──────────────────────────────────────────────────
         sink.Section("0. Dump Timeline");
         sink.Table(
@@ -1179,6 +1183,187 @@ internal static class TrendAnalysisCommand
         }
     }
 
+    // ── Diagnosis Summary Table ───────────────────────────────────────────────
+    // One row per unique finding across all dumps:
+    //   Severity | Analyzer | Title | Evidence (per-dump metric) | Recommendation
+
+    private static void RenderDiagnosisSummary(
+        List<DumpSnapshot> snaps,
+        DumpSnapshot       s0,
+        DumpSnapshot       sN,
+        string[]           labels,
+        string             baselineLabel,
+        IRenderSink        sink)
+    {
+        static string SevLabel(FindingSeverity s) => s switch
+        {
+            FindingSeverity.Critical => "CRITICAL",
+            FindingSeverity.Warning  => "WARNING",
+            _                        => "INFO",
+        };
+
+        static string Fs(long b)  => DumpHelpers.FormatSize(b);
+        static string N(double v) => v >= 1_000_000 ? $"{v / 1_000_000.0:F1}M"
+                                   : v >= 1_000      ? $"{v / 1_000.0:F1}K"
+                                   : v.ToString("N0");
+
+        // "D1: val  →  D2: val  →  DN: val"
+        string Join(Func<DumpSnapshot, string> sel) =>
+            string.Join("  \u2192  ", snaps.Select((s, i) => $"{labels[i]}: {sel(s)}"));
+
+        // ── Topic key ─────────────────────────────────────────────────────────
+        // Normalises a finding to a semantic key used for deduplication.
+        // All dump-specific numbers are absorbed by the key pattern,
+        // so "Finalizer queue has 2,087" and "Finalizer queue has 93,668"
+        // both collapse to the same "Memory|finalizer" key.
+
+        static string ExtractTypeName(string headline)
+        {
+            const string prefix = "High instance count: ";
+            int start = headline.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            if (start < 0) return headline;
+            string rest = headline[(start + prefix.Length)..];
+            int cross = rest.IndexOf('\u00d7');   // ×
+            return cross >= 0 ? rest[..cross].Trim() : rest.Trim();
+        }
+
+        static string TopicKey(Finding f)
+        {
+            string h = f.Headline.ToLowerInvariant();
+            return f.Category switch
+            {
+                "Memory" when h.Contains("finalizer")                              => "Memory|finalizer",
+                "Memory" when h.Contains("fragment")                               => "Memory|fragmentation",
+                "Memory" when h.Contains("loh")                                    => "Memory|loh",
+                "Memory" when h.Contains("pinned")                                 => "Memory|pinned",
+                "Memory" when h.Contains("string")                                 => "Memory|string",
+                "Memory"                                                            => "Memory|heap",
+                "Memory Leak" when h.Contains("gen2")                              => "MemoryLeak|gen2",
+                "Memory Leak"                                                       => $"MemoryLeak|{ExtractTypeName(f.Headline)}",
+                "Async"                                                             => "Async|backlog",
+                "Threading" when h.Contains("saturated") || h.Contains("capacity") => "Threading|tpsat",
+                "Threading"                                                         => "Threading|blocked",
+                "Connections"                                                       => "Connections|db",
+                "Leaks"     when h.Contains("event")                               => "Leaks|event",
+                "Leaks"                                                             => "Leaks|timer",
+                "Exceptions"                                                        => "Exceptions|active",
+                "WCF"                                                               => "WCF|faulted",
+                _                                                                   => $"{f.Category}|{f.Headline}",
+            };
+        }
+
+        // ── Canonical title ───────────────────────────────────────────────────
+        // Human-readable label for each topic key (no dump-specific numbers).
+
+        static string CanonicalTitle(string key) => key switch
+        {
+            "Memory|heap"           => "Heap Size",
+            "Memory|loh"            => "LOH (Large Object Heap) Growth",
+            "Memory|fragmentation"  => "Heap Fragmentation",
+            "Memory|finalizer"      => "Finalizer Queue Accumulating",
+            "Memory|pinned"         => "Pinned GC Handles",
+            "Memory|string"         => "String Duplication Waste",
+            "MemoryLeak|gen2"       => "Gen2 Memory Leak",
+            "Async|backlog"         => "Async Continuation Backlog",
+            "Threading|tpsat"       => "Thread Pool Saturation",
+            "Threading|blocked"     => "Blocked Threads",
+            "Connections|db"        => "DB Connection Leak",
+            "Leaks|event"           => "Event Handler Leak",
+            "Leaks|timer"           => "Timer Leak",
+            "Exceptions|active"     => "Active Thread Exceptions",
+            "WCF|faulted"           => "WCF Faulted Channels",
+            _ when key.StartsWith("MemoryLeak|")
+                                    => $"High Instance Count: {key["MemoryLeak|".Length..]}",
+            _                       => key.Contains('|') ? key[(key.IndexOf('|') + 1)..] : key,
+        };
+
+        // ── Per-topic evidence ─────────────────────────────────────────────────
+
+        string Evidence(string key)
+        {
+            if (key.StartsWith("MemoryLeak|") && key != "MemoryLeak|gen2")
+            {
+                string typeName = key["MemoryLeak|".Length..];
+                return Join(s =>
+                {
+                    var t = s.TopTypes.FirstOrDefault(x => x.Name == typeName);
+                    return t is null ? "\u2014" : $"{N(t.Count)}  ({Fs(t.TotalBytes)})";
+                });
+            }
+
+            return key switch
+            {
+                "Memory|heap"           => Join(s => Fs(s.TotalHeapBytes)),
+                "Memory|loh"            => Join(s => Fs(s.LohBytes)),
+                "Memory|fragmentation"  => Join(s => $"{s.FragmentationPct:F1}%  ({Fs(s.HeapFreeBytes)} free)"),
+                "Memory|finalizer"      => Join(s => N(s.FinalizerQueueDepth)),
+                "Memory|pinned"         => Join(s => N(s.PinnedHandleCount)),
+                "Memory|string"         => Join(s => Fs(s.StringWastedBytes)),
+                "MemoryLeak|gen2"       => Join(s =>
+                                          {
+                                              double p = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+                                              return $"Gen2 {p:F1}%  ({Fs(s.Gen2Bytes)})";
+                                          }),
+                "Async|backlog"         => Join(s => $"{N(s.AsyncBacklogTotal)} continuations"),
+                "Threading|tpsat"       => Join(s => $"{s.TpActiveWorkers}/{s.TpMaxWorkers} workers"),
+                "Threading|blocked"     => Join(s => $"{N(s.BlockedThreadCount)} blocked"),
+                "Connections|db"        => Join(s => $"{N(s.ConnectionCount)} connections"),
+                "Leaks|event"           => Join(s => $"{N(s.EventSubscriberTotal)} subscribers, {s.EventLeakFieldCount} fields"),
+                "Leaks|timer"           => Join(s => $"{N(s.TimerCount)} timers"),
+                "Exceptions|active"     => Join(s => $"{N(s.ExceptionThreadCount)} threads"),
+                "WCF|faulted"           => Join(s => $"{N(s.WcfFaultedCount)} faulted"),
+                _                       => "\u2014",
+            };
+        }
+
+        // ── Deduplicate & build rows ───────────────────────────────────────────
+
+        var dedupedRows = snaps
+            .SelectMany(s => s.Findings)
+            .Where(f => f.Severity != FindingSeverity.Info)
+            .GroupBy(f => TopicKey(f))
+            .Select(g =>
+            {
+                var best = g.OrderByDescending(f => (int)f.Severity).First();
+                return (
+                    key:      g.Key,
+                    severity: best.Severity,
+                    category: best.Category,
+                    title:    CanonicalTitle(g.Key),
+                    advice:   best.Advice ?? "\u2014"
+                );
+            })
+            .OrderBy(r  => r.severity == FindingSeverity.Critical ? 0 : 1)
+            .ThenBy(r   => r.category)
+            .ThenBy(r   => r.title)
+            .ToList();
+
+        if (dedupedRows.Count == 0)
+        {
+            sink.Alert(AlertLevel.Info, "No findings above warning threshold across all dumps.",
+                "All monitored signals are within acceptable thresholds.");
+            return;
+        }
+
+        var tableRows = dedupedRows
+            .Select(r => new[]
+            {
+                SevLabel(r.severity),
+                r.category,
+                r.title,
+                Evidence(r.key),
+                r.advice,
+            })
+            .ToList();
+
+        sink.Table(
+            ["Severity", "Analyzer", "Title", "Evidence", "Recommendation"],
+            tableRows,
+            $"One row per signal, deduplicated across all {snaps.Count} dump(s).  " +
+            $"Evidence shows per-dump metric progression ({labels[0]} \u2192 {labels[^1]}).  " +
+            "Sorted: CRITICAL first.");
+    }
+
     static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";
 
     // Truncates to ≤42 chars so status lines never overflow and cause Spectre box rendering.
@@ -1195,19 +1380,39 @@ internal static class TrendAnalysisCommand
     {
         // New type appeared (was absent in baseline)
         if (first <= 0)
-        {
-            if (last > 0)
-                return higherIsBad ? "↑↑ new" : "↓ appeared";
-            return "~";
-        }
+            return last > 0 ? (higherIsBad ? "↑ new" : "↓ appeared") : "~";
+
         // Type disappeared
         if (last <= 0)
             return higherIsBad ? "↓ gone" : "↑ resolved";
 
-        double pct   = (last - first) / first * 100;
-        string arrow = pct > 50 ? "↑↑" : pct > 10 ? "↑" : pct < -10 ? "↓" : "~";
-        if (higherIsBad && pct > 50) arrow += " ↑↑";
-        else if (higherIsBad && pct > 10) arrow += " ↑";
-        return arrow;
+        double pct = (last - first) / first * 100;
+
+        // Direction arrow + % change + plain-English severity label
+        string sign  = pct >= 0 ? "+" : "";
+        string pctStr = Math.Abs(pct) >= 1_000 ? $"{sign}{pct / 1_000.0:F1}K%"
+                      : $"{sign}{pct:F0}%";
+
+        string label;
+        if (higherIsBad)
+        {
+            label = pct >  500 ? "↑↑ explosive growth"
+                  : pct >  100 ? "↑↑ severe increase"
+                  : pct >   50 ? "↑ significant increase"
+                  : pct >   10 ? "↑ moderate increase"
+                  : pct <  -50 ? "↓ significant drop"
+                  : pct <  -10 ? "↓ improving"
+                  :              "~ stable";
+        }
+        else
+        {
+            label = pct < -50 ? "↑↑ severe drop"
+                  : pct < -10 ? "↑ declining"
+                  : pct >  50 ? "↓ strong improvement"
+                  : pct >  10 ? "↓ improving"
+                  :              "~ stable";
+        }
+
+        return $"{label}  ({pctStr})";
     }
 }
