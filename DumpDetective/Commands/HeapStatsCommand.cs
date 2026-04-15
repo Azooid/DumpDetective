@@ -83,10 +83,22 @@ internal static class HeapStatsCommand
 
     // Walks the heap once, building a per-type (Count, Size, Gen) accumulator.
     // Applies --filter and --gen filters during the walk to reduce allocations.
+    // Fast path: when a shared HeapSnapshot is available (analyze --full) and no
+    // per-object filters are active, the snapshot data is used directly — no heap walk.
     static Dictionary<string, (long Count, long Size, string Gen)> ScanHeap(
         DumpContext ctx, string? filter, string? genFilter)
     {
-        // mtToGen: MethodTable → segment kind label (first object seen in that segment)
+        // Fast path — reuse shared snapshot (no --gen or --filter means all types match)
+        if (ctx.Snapshot is { } snap && filter is null && genFilter is null)
+        {
+            var result = new Dictionary<string, (long Count, long Size, string Gen)>(
+                snap.TypeStats.Count, StringComparer.Ordinal);
+            foreach (var (name, a) in snap.TypeStats)
+                result[name] = (a.Count, a.Size, a.GenLabel);
+            return result;
+        }
+
+        // Slow path — standalone command run, or filters require object-level evaluation
         var mtToGen = new Dictionary<ulong, string>();
         var stats   = new Dictionary<string, (long Count, long Size, string Gen)>(StringComparer.Ordinal);
 

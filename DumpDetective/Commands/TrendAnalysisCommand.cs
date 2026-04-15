@@ -140,6 +140,8 @@ internal static class TrendAnalysisCommand
             var dispName = ShortName(path);
             DumpSnapshot? snap = null;
 
+            ToolMemoryDiagnostic.BeginDumpScope(label);
+
             // Open the dump once for both snapshot collection and (in full mode)
             // sub-report capture — the file is never opened a second time.
             {
@@ -196,8 +198,11 @@ internal static class TrendAnalysisCommand
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(1, GCCollectionMode.Forced, blocking: true, compacting: true);
+
+            ToolMemoryDiagnostic.EndDumpScope();
         }
 
+        ToolMemoryDiagnostic.PrintDumpScopes();
         AnsiConsole.WriteLine();
 
         // Validate and convert to 0-based

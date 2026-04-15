@@ -98,7 +98,19 @@ internal static class HighRefsCommand
             return;
         }
 
-        var (inboundCounts, totalRefs, totalObjs) = BuildInboundCounts(ctx);
+        // Use the snapshot's inbound-count table when available (saves a full heap pass)
+        Dictionary<ulong, int> inboundCounts;
+        long totalRefs, totalObjs;
+        if (ctx.Snapshot is { } snap)
+        {
+            inboundCounts = snap.InboundCounts;
+            totalRefs     = snap.TotalRefs;
+            totalObjs     = snap.TotalObjects;
+        }
+        else
+        {
+            (inboundCounts, totalRefs, totalObjs) = BuildInboundCounts(ctx);
+        }
 
         // ── Identify top candidates ───────────────────────────────────────────
         var topAddrs = inboundCounts

@@ -1,19 +1,29 @@
-﻿using System.Text;
-using DumpDetective.Commands;
+﻿using DumpDetective.Commands;
+using DumpDetective.Helpers;
+
+using Spectre.Console;
+
+using System.Diagnostics;
+using System.Text;
 
 Console.OutputEncoding = Encoding.UTF8;
 
-//Environment.SetEnvironmentVariable("DD_DUMP", @"D:\dumps\Full_day_03_04_2026_bal_LT\w3wp.exe__BALLOADTEST__PID__2864__Date__04_03_2026__Time_06_08_04PM__459__Manual Dump.dmp");
-
+//Environment.SetEnvironmentVariable("DD_DUMP", @"D:\Dump\WCF_dump_final\senerio2_dump\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_12_58_17PM__219__Manual Dump.dmp");
+//Environment.SetEnvironmentVariable("DD_DUMP", null);
 if (args.Length == 0 || args[0] is "--help" or "-h")
 {
     PrintHelp();
     return 0;
 }
 
-var commandArgs = InjectDumpPath(args[1..]);
+// Strip --debug before passing args to sub-commands
+bool showMemory = args.Contains("--debug");
+var commandArgs = InjectDumpPath(args[1..].Where(a => a != "--debug").ToArray());
 
-return args[0] switch
+Stopwatch stopwatch = Stopwatch.StartNew();
+ToolMemoryDiagnostic.Start();
+
+var result = args[0] switch
 {
     "event-analysis"     => EventAnalysisCommand.Run(commandArgs),
     "heap-stats"         => HeapStatsCommand.Run(commandArgs),
@@ -96,6 +106,9 @@ static void PrintHelp()
     Console.WriteLine();
     Console.WriteLine("Output formats (all commands):  .html  .md  .txt  .json");
     Console.WriteLine();
+    Console.WriteLine("Global flags:");
+    Console.WriteLine("  --debug   Print tool peak memory usage table after the command completes");
+    Console.WriteLine();
     Console.WriteLine("Run 'DumpDetective <command> --help' for command-specific options.");
     Console.WriteLine();
     Console.WriteLine("Env vars:");
@@ -121,3 +134,12 @@ static int UnknownCommand(string name)
     return 1;
 }
 
+
+stopwatch?.Stop();
+if (showMemory)
+    ToolMemoryDiagnostic.PrintSummary();
+else
+    ToolMemoryDiagnostic.StopPoller();   // still stop the background timer
+AnsiConsole.MarkupLine($"[dim]Total execution time:[/] [bold]{stopwatch?.Elapsed.TotalSeconds:F1}s[/]");
+
+return result;

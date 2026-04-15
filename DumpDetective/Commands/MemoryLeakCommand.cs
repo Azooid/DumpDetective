@@ -113,14 +113,14 @@ internal static class MemoryLeakCommand
             return;
         }
 
-        // Step 1 — dumpheap-stat equivalent (single heap walk)
-        var (allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal, totalObjs, typeMap) =
+        // Step 1 — dumpheap-stat equivalent (single heap walk, or fast path from snapshot)
+        var (allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal, totalObjs, typeCount) =
             WalkHeap(ctx);
         long totalHeap = allTypes.Sum(t => t.TotalSize);
 
         sink.Section("Heap Snapshot");
         RenderHeapSnapshot(sink, allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal,
-            totalObjs, typeMap, top, totalHeap);
+            totalObjs, typeCount, top, totalHeap);
 
         // Step 2 — Suspect types (count-based AND size-based)
         var (suspects, sizeSuspects) = ComputeSuspects(allTypes, minCount, inclSystem);
@@ -194,7 +194,7 @@ internal static class MemoryLeakCommand
         IRenderSink sink,
         List<TypeStat> allTypes,
         long gen0Total, long gen1Total, long gen2Total, long lohTotal, long pohTotal,
-        int totalObjs, Dictionary<string, TypeAccum> typeMap,
+        int totalObjs, int typeCount,
         int top, long totalHeap)
     {
         double gen2Pct = Pct(gen2Total, totalHeap);
@@ -206,7 +206,7 @@ internal static class MemoryLeakCommand
             ("Large Object Heap",   $"{DumpHelpers.FormatSize(lohTotal)}  ({Pct(lohTotal, totalHeap):F1}%)"),
             ("Pinned Object Heap",  DumpHelpers.FormatSize(pohTotal)),
             ("Total live objects",  totalObjs.ToString("N0")),
-            ("Unique types",        typeMap.Count.ToString("N0")),
+            ("Unique types",        typeCount.ToString("N0")),
         ]);
 
         if (gen2Pct > 60 && gen2Total > 20_000_000)
@@ -233,7 +233,7 @@ internal static class MemoryLeakCommand
                 DumpHelpers.FormatSize(t.TotalSize),
                 Truncate(t.Name, 72),
             }).ToList(),
-            $"Total: {totalObjs:N0} objects  |  {typeMap.Count:N0} unique types");
+            $"Total: {totalObjs:N0} objects  |  {typeCount:N0} unique types");
     }
 
     // Partitions allTypes into count-based and size-based suspect lists.
@@ -326,12 +326,34 @@ internal static class MemoryLeakCommand
     }
 
     // Walks the heap once accumulating per-type counts, sizes, and generation breakdowns (Step 1).
-    // Returns the sorted allTypes list, generation totals, object count, and the raw accumulator map.
+    // Returns the sorted allTypes list, generation totals, object count, and unique type count.
+    // Fast path: when a shared HeapSnapshot is available (analyze --full), the cached data is
+    // used directly and no heap walk is performed.
     private static (List<TypeStat> AllTypes,
                     long Gen0Total, long Gen1Total, long Gen2Total, long LohTotal, long PohTotal,
-                    int TotalObjs, Dictionary<string, TypeAccum> TypeMap)
+                    int TotalObjs, int TypeCount)
         WalkHeap(DumpContext ctx)
     {
+        // Fast path — reuse shared snapshot
+        if (ctx.Snapshot is { } snap)
+        {
+            var allTypesFast = snap.TypeStats.Values
+                .Select(a => new TypeStat(
+                    a.Name, a.MT,
+                    a.Count, a.Size,
+                    a.G0c, a.G0s,
+                    a.G1c, a.G1s,
+                    a.G2c, a.G2s,
+                    a.Lc,  a.Ls,
+                    a.SampleAddrs))
+                .OrderByDescending(t => t.TotalSize)
+                .ToList();
+            return (allTypesFast,
+                    snap.Gen0Total, snap.Gen1Total, snap.Gen2Total, snap.LohTotal, snap.PohTotal,
+                    (int)snap.TotalObjects, snap.TypeStats.Count);
+        }
+
+        // Slow path — standalone command run
         var typeMap = new Dictionary<string, TypeAccum>(StringComparer.Ordinal);
         long gen0Total = 0, gen1Total = 0, gen2Total = 0, lohTotal = 0, pohTotal = 0;
         int  totalObjs = 0;
@@ -400,7 +422,7 @@ internal static class MemoryLeakCommand
             .OrderByDescending(t => t.TotalSize)
             .ToList();
 
-        return (allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal, totalObjs, typeMap);
+        return (allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal, totalObjs, typeMap.Count);
     }
 
     // Renders the Step 3 accumulation-pattern detail blocks for any flagged patterns.

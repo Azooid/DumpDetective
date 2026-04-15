@@ -80,9 +80,16 @@ internal static class GenSummaryCommand
 
     // Walks every live object on the heap (inside a spinner) and increments per-generation
     // counters. Requires CanWalkHeap; returns (0, 0, 0) if the heap is not walkable.
+    // Fast path: when a shared HeapSnapshot is available (analyze --full), uses cached counts.
     static (long Gen0c, long Gen1c, long Gen2c) ScanObjectCounts(DumpContext ctx)
     {
         if (!ctx.Heap.CanWalkHeap) return (0, 0, 0);
+
+        // Fast path — reuse shared snapshot
+        if (ctx.Snapshot is { } snap)
+            return (snap.Gen0ObjCount, snap.Gen1ObjCount, snap.Gen2ObjCount);
+
+        // Slow path — standalone command run
         long gen0c = 0, gen1c = 0, gen2c = 0;
         AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Counting objects per generation...", _ =>
         {
@@ -154,13 +161,26 @@ internal static class GenSummaryCommand
 
         if (!ctx.Heap.CanWalkHeap) return;
         long frozenObj = 0, pohObj = 0, frozenSize = 0, pohSize = 0;
-        foreach (var obj in ctx.Heap.EnumerateObjects())
+
+        // Fast path — reuse shared snapshot
+        if (ctx.Snapshot is { } snap)
         {
-            if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-            var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
-            if (seg is null) continue;
-            if (seg.Kind == GCSegmentKind.Frozen) { frozenObj++; frozenSize += (long)obj.Size; }
-            if (seg.Kind == GCSegmentKind.Pinned) { pohObj++;    pohSize    += (long)obj.Size; }
+            frozenObj  = snap.FrozenObjCount;
+            frozenSize = snap.FrozenObjSize;
+            pohObj     = snap.PohObjCount;
+            pohSize    = snap.PohObjSize;
+        }
+        else
+        {
+            // Slow path — standalone command run
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
+                if (seg is null) continue;
+                if (seg.Kind == GCSegmentKind.Frozen) { frozenObj++; frozenSize += (long)obj.Size; }
+                if (seg.Kind == GCSegmentKind.Pinned) { pohObj++;    pohSize    += (long)obj.Size; }
+            }
         }
         sink.KeyValues([
             ("Frozen objects", $"{frozenObj:N0}  ({DumpHelpers.FormatSize(frozenSize)})"),

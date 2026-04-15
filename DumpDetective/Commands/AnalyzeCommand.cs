@@ -124,6 +124,19 @@ internal static class AnalyzeCommand
 
     internal static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink)
     {
+        // Walk the heap exactly once and share the result across all 23 sub-commands.
+        // Without this, each command that enumerates objects would walk the heap independently.
+        var snapSw = Stopwatch.StartNew();
+        AnsiConsole.Status()
+            .Spinner(Spinner.Known.Dots)
+            .SpinnerStyle(Style.Parse("blue"))
+            .Start("Building shared heap snapshot for sub-reports...", _ => ctx.EnsureSnapshot());
+        AnsiConsole.MarkupLine(
+            $"[dim]  Snapshot: {ctx.Snapshot!.TotalObjects:N0} objects, " +
+            $"{ctx.Snapshot.TypeStats.Count:N0} types, " +
+            $"{ctx.Snapshot.InboundCounts.Count:N0} referenced addrs  " +
+            $"({snapSw.Elapsed.TotalSeconds:F1}s)[/]");
+
         // Each command writes its own Header+Sections, becoming a natural "chapter".
         // SuppressVerbose suppresses the repeated "Analyzing: <path>" lines and
         // per-pass counters from individual commands. Each command's own Status spinner

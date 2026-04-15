@@ -102,9 +102,15 @@ internal static class StringDuplicatesCommand
 
     // Enumerates every System.String object on the heap, accumulating (count, total-size)
     // per unique value. Returns the raw groups dictionary alongside heap-level totals.
+    // Fast path: when a shared HeapSnapshot is available (analyze --full), uses cached data.
     static (Dictionary<string, (int Count, long TotalSize)> Groups, long TotalStrings, long TotalSize)
         ScanStrings(DumpContext ctx)
     {
+        // Fast path — reuse shared snapshot
+        if (ctx.Snapshot is { } snap)
+            return (snap.StringGroups, snap.TotalStringCount, snap.TotalStringSize);
+
+        // Slow path — standalone command run
         var groups = new Dictionary<string, (int Count, long TotalSize)>(StringComparer.Ordinal);
         long totalStrings = 0, totalSize = 0;
 
