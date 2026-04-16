@@ -168,11 +168,37 @@ internal sealed class HtmlSink : IRenderSink
             if (k.Contains("score", StringComparison.OrdinalIgnoreCase) ||
                 k.Contains("health", StringComparison.OrdinalIgnoreCase))
             {
-                var numStr = v.Split('/')[0].Trim();
-                if (int.TryParse(numStr, out int sc))
+                if (v.Contains('→'))
                 {
-                    string badgeCls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
-                    valHtml = $"<span class=\"score-badge {badgeCls}\">{H(v)}</span>";
+                    // "95/100 HEALTHY  →  80/100 HEALTHY  (↓ −15 pts)" — render two badges + delta
+                    var arrow = v.IndexOf('→');
+                    string left  = v[..arrow].Trim();
+                    string right = v[(arrow + 1)..].Trim();
+                    // Split trailing delta "(…)" from the right score
+                    string delta = string.Empty;
+                    var dm = System.Text.RegularExpressions.Regex.Match(right, @"^(.*?)(\s*\([^)]+\))\s*$");
+                    if (dm.Success) { right = dm.Groups[1].Value.Trim(); delta = dm.Groups[2].Value.Trim(); }
+                    static (string cls, string html) ScoreBadge(string part) {
+                        var n = part.Split('/')[0].Trim();
+                        if (int.TryParse(n, out int sc)) {
+                            string cls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
+                            return (cls, $"<span class=\"score-badge {cls}\">{H(part)}</span>");
+                        }
+                        return ("", H(part));
+                    }
+                    var (_, lHtml) = ScoreBadge(left);
+                    var (_, rHtml) = ScoreBadge(right);
+                    string deltaHtml = delta.Length > 0 ? $" <span class=\"kv-delta\">{H(delta)}</span>" : string.Empty;
+                    valHtml = $"{lHtml} <span class=\"kv-arrow\">&rarr;</span> {rHtml}{deltaHtml}";
+                }
+                else
+                {
+                    var numStr = v.Split('/')[0].Trim();
+                    if (int.TryParse(numStr, out int sc))
+                    {
+                        string badgeCls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
+                        valHtml = $"<span class=\"score-badge {badgeCls}\">{H(v)}</span>";
+                    }
                 }
             }
             _w.WriteLine($"<div class=\"kv-row\"><span class=\"kv-key\">{H(k)}</span><span class=\"kv-val\">{valHtml}</span></div>");
@@ -364,7 +390,9 @@ internal sealed class HtmlSink : IRenderSink
         .kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:.35rem .75rem;margin:.4rem 0 .65rem}
         .kv-row{display:flex;gap:.5rem;align-items:baseline;padding:.2rem .4rem;border-radius:4px;background:#fafafa;border:1px solid #f0f0f0}
         .kv-key{color:#64748b;font-size:12.5px;white-space:nowrap;flex-shrink:0;min-width:160px}
-        .kv-val{font-weight:600;color:#111827;font-size:13px;overflow-wrap:anywhere}
+        .kv-val{font-weight:600;color:#111827;font-size:13px;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem}
+        .kv-arrow{color:#94a3b8;font-size:12px}
+        .kv-delta{color:#64748b;font-size:12px;font-weight:400}
         .score-badge{display:inline-block;padding:.15rem .55rem;border-radius:4px;font-weight:700;font-size:13px}
         .badge-ok  {background:#dcfce7;color:#15803d}
         .badge-warn{background:#fef9c3;color:#854d0e}
