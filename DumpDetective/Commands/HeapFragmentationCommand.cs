@@ -136,9 +136,11 @@ internal static class HeapFragmentationCommand
                 s.PinnedCount.ToString("N0"),
             };
         }).ToList();
+        sink.BeginDetails($"Segment Details ({allSegs.Count} segment(s))");
         sink.Table(
             ["Segment Addr", "Kind", "Committed", "Live", "Free", "Frag %", "Pinned"],
-            rows, $"{allSegs.Count} segment(s)");
+            rows);
+        sink.EndDetails();
     }
 
     // Per-segment hotspot alerts for segments whose frag % is ≥ 50%.

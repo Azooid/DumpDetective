@@ -39,7 +39,9 @@ internal static class GenSummaryCommand
         long totalObj = gen0c + gen1c + gen2c;
 
         RenderGenBreakdown(sink, gen0, gen1, gen2, loh, poh, frozen, total, gen0c, gen1c, gen2c, totalObj);
-        sink.Table(["Segment Address", "Kind", "Committed"], segRows, $"{segRows.Count} segment(s)");
+        sink.BeginDetails($"Segment Details ({segRows.Count} segment(s))");
+        sink.Table(["Segment Address", "Kind", "Committed"], segRows);
+        sink.EndDetails();
         RenderFrozenPohDetail(sink, ctx, frozen, poh);
     }
 
