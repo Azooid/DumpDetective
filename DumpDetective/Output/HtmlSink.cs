@@ -99,15 +99,63 @@ internal sealed class HtmlSink : IRenderSink
     {
         CloseSection();
         int id = ++_sectionSeq;
+        string tip = TipHtml(title);
         _w.WriteLine($"""
             <div class="card" id="s{id}">
               <h2 class="card-title" onclick="toggleCard('s{id}')" title="Click to collapse/expand">
-                <span class="card-arrow">▾</span>{H(title)}
+                <span class="card-arrow">▾</span>{H(title)}{tip}
               </h2>
               <div class="card-body">
             """);
         _inSection = true;
     }
+
+    static string TipHtml(string title)
+    {
+        foreach (var (key, text) in s_tooltips)
+            if (title.Contains(key, StringComparison.OrdinalIgnoreCase))
+            {
+                string lines = string.Join("<br>", text.Split('\n'));
+                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+            }
+        return string.Empty;
+    }
+
+    static readonly (string Key, string Text)[] s_tooltips =
+    [
+        ("Dump Timeline",           "Temporal ordering of all analyzed dump snapshots.\nUse to correlate symptoms with capture time."),
+        ("Incident Summary",        "Health scores and critical findings per snapshot.\nQuickly identifies the most degraded dump."),
+        ("Overall Growth Summary",  "Memory, thread, and object count deltas across dumps.\nSteady growth without release indicates a leak."),
+        ("Thread & Application",    "Thread pool queue depth and worker saturation.\nHigh pressure indicates starvation or lock contention."),
+        ("Event Leak",              "Event handler subscriptions growing across snapshots.\nUnsubscribed handlers keep publisher objects alive."),
+        ("Finalize Queue Detail",   "Finalizer queue size trend across snapshots.\nGrowth indicates IDisposable pattern violations."),
+        ("Highly Referenced",       "Objects with the most incoming references.\nHigh counts often reveal retention roots."),
+        ("Rooted Objects",          "Objects reachable from static or thread roots.\nRooted objects cannot be collected by GC."),
+        ("Duplicate String",        "Identical string instances present in the heap.\nConsolidate with string.Intern or a shared dictionary."),
+        ("String Duplicate",        "Identical string instances present in the heap.\nConsolidate with string.Intern or a shared dictionary."),
+        ("Memory Leak Analysis",    "Types that accumulate across snapshots without release.\nIndicates missing Dispose calls or static retention."),
+        ("Diagnosis Summary",       "Cross-snapshot comparison of key health signals.\nHighlights degradation trends and probable root causes."),
+        ("Heap Statistics",         "Total managed heap size and per-segment breakdown.\nHigh committed memory may indicate GC pressure."),
+        ("GC Generation Summary",   "Object counts by generation (Gen0/Gen1/Gen2/LOH).\nGen2 accumulation is the primary signal of a memory leak."),
+        ("Heap Fragmentation",      "Free memory gaps between live objects on the heap.\nHigh fragmentation degrades allocation performance."),
+        ("Large Objects",           "Objects over 85,000 bytes on the Large Object Heap.\nLOH is rarely compacted; leaks here cause OutOfMemoryException."),
+        ("Exception Analysis",      "Exceptions found on thread stacks or in the heap.\nFrequent exceptions degrade throughput significantly."),
+        ("Thread Analysis",         "Thread count, state, and call stacks.\nHigh counts or stuck threads indicate contention or deadlock."),
+        ("Thread Pool",             "Managed thread pool workers, queue depth, and completions.\nQueue growth signals async starvation."),
+        ("Async State Machine",     "In-flight async/await continuations.\nBacklog growth indicates a downstream bottleneck."),
+        ("Deadlock",                "Cycles detected in lock-wait graphs.\nA single deadlock causes a complete application hang."),
+        ("Finalizer Queue",         "Objects queued for finalization by the GC.\nGrowth indicates improper IDisposable usage."),
+        ("GC Handle Table",         "GC-tracked and pinned object handles.\nExcess pinned handles fragment the managed heap."),
+        ("Pinned Objects",          "Objects pinned in memory for native interop or unsafe code.\nExcessive pinning creates heap fragmentation."),
+        ("Weak Reference",          "WeakReference objects tracked by the GC.\nExcessive weak refs may indicate problematic caching patterns."),
+        ("Static Reference",        "Static fields that hold object references.\nStatic roots prevent GC from collecting referenced objects."),
+        ("Timer Leak",              "Timer instances that were created but never disposed.\nLeaking timers keep callbacks and closures alive indefinitely."),
+        ("Event Analysis",          "Event handler subscription counts by type.\nGrowth across dumps is a reliable leak indicator."),
+        ("WCF Channel",             "Open WCF client channel instances.\nAborted or faulted channels must be explicitly closed."),
+        ("DB Connection Pool",      "SQL/database connection pool usage and leaks.\nPool exhaustion causes timeouts and application hangs."),
+        ("HTTP",                    "Outgoing HTTP requests and connection instances.\nStuck or leaked requests indicate downstream service issues."),
+        ("Module List",             "Loaded .NET assemblies and native modules.\nUnexpected modules may indicate dynamic injection or leaks."),
+    ];
 
     public void KeyValues(IReadOnlyList<(string Key, string Value)> pairs, string? title = null)
     {
@@ -302,8 +350,9 @@ internal sealed class HtmlSink : IRenderSink
         .chapter-body{margin-bottom:.5rem}
 
         /* ── Card / Section ───────────────────────────────────────────── */
-        .card{background:#fff;border-radius:8px;margin:.65rem 0;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.05);overflow:hidden}
-        .card-title{font-size:1rem;font-weight:700;color:#1e3a5f;padding:.75rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid #e2e8f0}
+        .card{background:#fff;border-radius:8px;margin:.65rem 0;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.05);overflow:visible}
+        .card-title{font-size:1rem;font-weight:700;color:#1e3a5f;padding:.75rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid #e2e8f0;border-radius:8px 8px 0 0;position:relative}
+        .card.collapsed .card-title{border-radius:8px}
         .card-title:hover{background:#f8fafc}
         .card-arrow{font-size:.7rem;transition:transform .18s;color:#64748b;flex-shrink:0}
         .card.collapsed .card-arrow{transform:rotate(-90deg)}
@@ -377,6 +426,14 @@ internal sealed class HtmlSink : IRenderSink
         #back-top.vis{opacity:.85}
         #back-top:hover{opacity:1}
 
+        /* ── Metric Tooltips ──────────────────────────────────────────── */
+        .tip-wrap{position:relative;display:inline-flex;align-items:center;margin-left:.4rem;flex-shrink:0;cursor:default}
+        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#94a3b8;color:#fff;font-size:9px;font-weight:700;line-height:1;user-select:none;flex-shrink:0}
+        .tip-wrap:hover .tip-icon{background:#3b82f6}
+        .tip-box{visibility:hidden;opacity:0;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#e2e8f0;font-size:12px;font-weight:400;line-height:1.55;padding:.55rem .75rem;border-radius:6px;white-space:normal;width:360px;box-shadow:0 4px 12px rgba(0,0,0,.3);pointer-events:none;transition:opacity .15s,visibility .15s;z-index:50;text-align:left}
+        .tip-box::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#1e293b}
+        .tip-wrap:hover .tip-box{visibility:visible;opacity:1}
+
         /* ── Print ────────────────────────────────────────────────────── */
         @media print{
           #sidebar,#back-top{display:none}
@@ -405,7 +462,7 @@ internal sealed class HtmlSink : IRenderSink
         (function(){
           const nav  = document.getElementById('nav-list');
           const root = document.getElementById('report-root');
-          function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,''); }
+          function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,'').replace(/^Per-Dump\s+/i,''); }
 
           // Three-tier hierarchy:
           //   Level 1 → top-level chapter (Trend Analysis Report, Per-Dump Report: Dn)
@@ -446,7 +503,8 @@ internal sealed class HtmlSink : IRenderSink
                   ca.href = '#' + c.id;
                   ca.className = 'nav-card';
                   const hdr = c.querySelector('.card-title');
-                  ca.textContent = (hdr ? hdr.textContent : c.id).replace('▾','').trim();
+                  if(hdr){ const cl = hdr.cloneNode(true); cl.querySelectorAll('.tip-wrap').forEach(function(e){e.remove();}); ca.textContent = cl.textContent.replace('▾','').trim(); }
+                  else { ca.textContent = c.id; }
                   ca.title = ca.textContent;
                   curL1Div.appendChild(ca);
                 });
