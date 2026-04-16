@@ -1118,6 +1118,58 @@ internal static class TrendAnalysisCommand
                 .Distinct()
                 .ToList();
 
+            // Gen2 dominance advisory + new-type accumulation check
+            double gen2PctLatest = Gen2Pct(sN);
+            double gen2PctBase   = Gen2Pct(s0);
+            double gen2Delta     = gen2PctLatest - gen2PctBase;
+
+            // Detect types that appeared from zero or grew explosively between baseline and latest
+            var newOrExplosive = allTypeNames
+                .Select(name =>
+                {
+                    long baseCount   = s0.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
+                    long latestCount = sN.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
+                    return (name, baseCount, latestCount);
+                })
+                .Where(x => x.latestCount >= 500 &&
+                            (x.baseCount == 0 ||
+                             (x.baseCount > 0 && (x.latestCount - x.baseCount) * 100.0 / x.baseCount > 50)))
+                .OrderByDescending(x => x.latestCount)
+                .Take(5)
+                .ToList();
+
+            bool hasNewTypes        = newOrExplosive.Any(x => x.baseCount == 0);
+            bool hasExplosiveGrowth = newOrExplosive.Any(x => x.baseCount > 0);
+
+            if (gen2PctLatest > 50)
+                sink.Alert(AlertLevel.Critical,
+                    $"Gen2 holds {gen2PctLatest:F1}% of heap in latest dump ({labels[^1]})",
+                    detail: "Objects are accumulating across GC generations — strong managed memory leak signal.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify suspect types and GC root chains.");
+            else if (gen2Delta > 10)
+                sink.Alert(AlertLevel.Warning,
+                    $"Gen2 grew from {gen2PctBase:F1}% ({baselineLabel}) to {gen2PctLatest:F1}% ({labels[^1]})",
+                    detail: $"+{gen2Delta:F1} percentage points across the analysis window.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify accumulating types.");
+            else if (hasNewTypes)
+                sink.Alert(AlertLevel.Critical,
+                    $"New high-count types appeared since {baselineLabel} that were absent before",
+                    detail: string.Join("\n",
+                        newOrExplosive.Where(x => x.baseCount == 0)
+                            .Select(x => $"{x.name}  (0 → {x.latestCount:N0})")),
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to trace GC root chains for these types.");
+            else if (hasExplosiveGrowth)
+                sink.Alert(AlertLevel.Warning,
+                    $"Types with >50% instance count growth between {baselineLabel} and {labels[^1]}",
+                    detail: string.Join("\n",
+                        newOrExplosive.Where(x => x.baseCount > 0)
+                            .Select(x => $"{x.name}  ({x.baseCount:N0} → {x.latestCount:N0})")),
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify the retaining root.");
+            else
+                sink.Alert(AlertLevel.Info,
+                    $"Gen2 at {gen2PctLatest:F1}% in latest dump ({labels[^1]}) — no strong leak signal from generation data alone.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} for deeper analysis including GC root chains.");
+
             var topByCount = allTypeNames
                 .Select(name =>
                 {
@@ -1144,58 +1196,6 @@ internal static class TrendAnalysisCommand
                     "Top 15 types by peak instance count — types growing over time are strong leak suspects. " +
                     "Run 'memory-leak <dump>' on the latest dump for GC root chains.");
             }
-
-            // Gen2 dominance advisory + new-type accumulation check
-            double gen2PctLatest = Gen2Pct(sN);
-            double gen2PctBase   = Gen2Pct(s0);
-            double gen2Delta     = gen2PctLatest - gen2PctBase;
-
-            // Detect types that appeared from zero or grew explosively between baseline and latest
-            var newOrExplosive = allTypeNames
-                .Select(name =>
-                {
-                    long baseCount   = s0.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
-                    long latestCount = sN.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
-                    return (name, baseCount, latestCount);
-                })
-                .Where(x => x.latestCount >= 500 &&
-                            (x.baseCount == 0 ||
-                             (x.baseCount > 0 && (x.latestCount - x.baseCount) * 100.0 / x.baseCount > 50)))
-                .OrderByDescending(x => x.latestCount)
-                .Take(5)
-                .ToList();
-
-            bool hasNewTypes = newOrExplosive.Any(x => x.baseCount == 0);
-            bool hasExplosiveGrowth = newOrExplosive.Any(x => x.baseCount > 0);
-
-            if (gen2PctLatest > 50)
-                sink.Alert(AlertLevel.Critical,
-                    $"Gen2 holds {gen2PctLatest:F1}% of heap in latest dump ({labels[^1]})",
-                    detail: "Objects are accumulating across GC generations — strong managed memory leak signal.",
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify suspect types and GC root chains.");
-            else if (gen2Delta > 10)
-                sink.Alert(AlertLevel.Warning,
-                    $"Gen2 grew from {gen2PctBase:F1}% ({baselineLabel}) to {gen2PctLatest:F1}% ({labels[^1]})",
-                    detail: $"+{gen2Delta:F1} percentage points across the analysis window.",
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify accumulating types.");
-            else if (hasNewTypes)
-                sink.Alert(AlertLevel.Critical,
-                    $"New high-count types appeared since {baselineLabel} that were absent before",
-                    detail: string.Join("; ",
-                        newOrExplosive.Where(x => x.baseCount == 0)
-                            .Select(x => $"{x.name} (0 → {x.latestCount:N0})")),
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to trace GC root chains for these types.");
-            else if (hasExplosiveGrowth)
-                sink.Alert(AlertLevel.Warning,
-                    $"Types with >50% instance count growth between {baselineLabel} and {labels[^1]}",
-                    detail: string.Join("; ",
-                        newOrExplosive.Where(x => x.baseCount > 0)
-                            .Select(x => $"{x.name} ({x.baseCount:N0} → {x.latestCount:N0})")),
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify the retaining root.");
-            else
-                sink.Alert(AlertLevel.Info,
-                    $"Gen2 at {gen2PctLatest:F1}% in latest dump ({labels[^1]}) — no strong leak signal from generation data alone.",
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} for deeper analysis including GC root chains.");
         }
     }
 
