@@ -10,7 +10,7 @@ internal sealed class MarkdownSink : IRenderSink
 
     public MarkdownSink(string path) => _w = new StreamWriter(path, append: false);
 
-    public void Header(string title, string? subtitle = null)
+    public void Header(string title, string? subtitle = null, int navLevel = 0)
     {
         _w.WriteLine($"# {title}");
         if (subtitle is not null) _w.WriteLine($"*{subtitle}*");

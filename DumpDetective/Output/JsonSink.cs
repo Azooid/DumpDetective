@@ -48,7 +48,7 @@ internal sealed class JsonSink : IRenderSink
 
     public JsonSink(string path) => _path = path;
 
-    public void Header(string title, string? subtitle = null)                      => _capture.Header(title, subtitle);
+    public void Header(string title, string? subtitle = null, int navLevel = 0)                      => _capture.Header(title, subtitle, navLevel);
     public void Section(string title)                                              => _capture.Section(title);
     public void KeyValues(IReadOnlyList<(string Key, string Value)> pairs, string? title = null) => _capture.KeyValues(pairs, title);
     public void Table(string[] headers, IReadOnlyList<string[]> rows, string? caption = null)    => _capture.Table(headers, rows, caption);

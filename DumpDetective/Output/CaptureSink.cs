@@ -54,14 +54,17 @@ internal sealed class CaptureSink : IRenderSink
 
     // ── IRenderSink ───────────────────────────────────────────────────────────
 
-    public void Header(string title, string? subtitle = null)
+    public void Header(string title, string? subtitle = null, int navLevel = 0)
     {
         _detailsStack.Clear();
         _chapter = new ReportChapter
         {
             Title    = title,
             Subtitle = subtitle,
-            NavLevel = CommandBase.SuppressVerbose ? 2 : 1,
+            NavLevel = navLevel > 0 ? navLevel
+                     : !CommandBase.SuppressVerbose ? 1
+                     : title.StartsWith("Per-Dump Report", StringComparison.OrdinalIgnoreCase) ? 1
+                     : 2,
         };
         _section = null;
         _doc.Chapters.Add(_chapter);

@@ -35,10 +35,11 @@ internal sealed class HtmlSink : IRenderSink
 
     // ── IRenderSink ───────────────────────────────────────────────────────────
 
-    public void Header(string title, string? subtitle = null)
+    public void Header(string title, string? subtitle = null, int navLevel = 0)
     {
         CloseSection();
         int id = ++_chapterSeq;
+        int navLevelOverride = navLevel;
         string meta = string.Empty;
         if (subtitle is not null)
         {
@@ -67,17 +68,25 @@ internal sealed class HtmlSink : IRenderSink
         if (_chapterBodyOpen)
             _w.WriteLine("</div> <!-- /chapter-body -->");
 
-        // SuppressVerbose is true while RenderEmbeddedReports runs sub-commands
-        // → those headers are secondary (collapsed in nav), level-1 otherwise.
-        string navLevel = CommandBase.SuppressVerbose ? "2" : "1";
-        // For level-2 (sub-command) headers strip the "Dump Detective — " prefix that
-        // every command includes in its title — it's redundant inside a parent chapter.
-        string displayTitle = navLevel == "2"
+        // Determine nav level: caller may override via navLevel param (e.g. ReportDocReplay).
+        // Fallback: SuppressVerbose==true → level 2, otherwise level 1.
+        // "Per-Dump Report:" chapters are level 1 (top-level, same as Trend Analysis);
+        // sub-command chapters inside per-dump replays are level 2.
+        int resolvedLevel;
+        if (navLevelOverride > 0)
+            resolvedLevel = navLevelOverride;
+        else if (CommandBase.SuppressVerbose)
+            resolvedLevel = title.StartsWith("Per-Dump Report", StringComparison.OrdinalIgnoreCase) ? 1 : 2;
+        else
+            resolvedLevel = 1;
+
+        // Strip repetitive prefix for level 2/3 headers
+        string displayTitle = resolvedLevel >= 2
             ? System.Text.RegularExpressions.Regex.Replace(title, @"^Dump Detective\s*[—\-]\s*", string.Empty, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
             : title;
 
         _w.WriteLine($"""
-            <div class="hero" id="ch{id}" data-nav-level="{navLevel}">
+            <div class="hero" id="ch{id}" data-nav-level="{resolvedLevel}">
               <h1 class="hero-title">{H(displayTitle)}</h1>
               {meta}
             </div>
@@ -258,6 +267,15 @@ internal sealed class HtmlSink : IRenderSink
         .nav-sub-chapters.open{display:block}
         .nav-sub-chapters a{padding-left:.6rem!important;font-size:11px!important;color:#64748b!important}
         .nav-sub-chapters a:hover,.nav-sub-chapters a.active{color:#e2e8f0!important}
+        /* Level-2 (per-dump) entries inside the Per-Dump group */
+        .nav-chapter-l2{margin-top:.25rem;margin-left:.3rem}
+        .nav-chapter-l2>.nav-title-l2{display:block;padding:.2rem .4rem;color:#94a3b8;font-weight:600;font-size:11px;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .nav-chapter-l2>.nav-title-l2:hover{background:#334155;color:#e2e8f0}
+        /* Level-3 sub-reports inside each per-dump */
+        .nav-subreports-l3{padding:.15rem .4rem .15rem 1.2rem!important;font-size:10.5px!important}
+        .nav-sub-l3{margin-left:.8rem}
+        .nav-sub-l3 a{padding-left:.5rem!important;font-size:10.5px!important;color:#475569!important}
+        .nav-sub-l3 a:hover,.nav-sub-l3 a.active{color:#e2e8f0!important}
         #search-box{width:100%;padding:.3rem .45rem;border-radius:4px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:11.5px;margin-bottom:.6rem;outline:none}
         #search-box::placeholder{color:#64748b}
 
@@ -385,15 +403,21 @@ internal sealed class HtmlSink : IRenderSink
         <script>
         /* ── Navigation builder ───────────────────────────────────────── */
         (function(){
-          const nav = document.getElementById('nav-list');
+          const nav  = document.getElementById('nav-list');
           const root = document.getElementById('report-root');
-          // Strip the repetitive "Dump Detective — " prefix that every sub-command adds
           function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,''); }
 
-          let curChDiv = null;   // current level-1 nav-chapter div
-          let subChDiv = null;   // collapsible sub-chapters div (created on first level-2)
-          let toggleEl = null;   // the ▸/▾ toggle anchor
-          let subCount  = 0;     // running count of level-2 items for toggle label update
+          // Three-tier hierarchy:
+          //   Level 1 → top-level chapter (Trend Analysis Report, Per-Dump Report: Dn)
+          //     └ section cards (for Trend Analysis: Diagnosis Summary, 0. Dump Timeline, …)
+          //     └ Sub-reports collapsible (for Per-Dump Report entries)
+          //   Level 2 → sub-command chapters inside per-dump (Heap Statistics, Thread Analysis, …)
+          //   Level 3 → currently unused
+
+          let curL1Div = null;  // current level-1 nav-chapter div
+          let subList  = null;  // collapsible "Sub-reports" list under level-1
+          let subToggle= null;  // the ▸/▾ toggle
+          let subCount = 0;
 
           root.querySelectorAll('.hero').forEach(function(h){
             const id    = h.id;
@@ -402,20 +426,19 @@ internal sealed class HtmlSink : IRenderSink
             const level = parseInt(h.dataset.navLevel ?? '1');
 
             if(level === 1){
-              // Start a new chapter entry
-              curChDiv = document.createElement('div');
-              curChDiv.className = 'nav-chapter';
-              subChDiv = null; toggleEl = null; subCount = 0;
+              // ── Level 1: top-level chapter ────────────────────────────────
+              curL1Div = document.createElement('div');
+              curL1Div.className = 'nav-chapter';
+              subList = null; subToggle = null; subCount = 0;
 
-              // Chapter title link
               const titleA = document.createElement('a');
               titleA.href = '#' + id;
               titleA.className = 'nav-title';
               titleA.textContent = shortTitle(raw);
               titleA.title = raw;
-              curChDiv.appendChild(titleA);
+              curL1Div.appendChild(titleA);
 
-              // Direct section cards within this chapter body
+              // Section cards directly inside this chapter body (e.g. Trend Analysis sections)
               const chBody = document.getElementById('chb' + num);
               if(chBody){
                 chBody.querySelectorAll(':scope > .card').forEach(function(c){
@@ -425,49 +448,41 @@ internal sealed class HtmlSink : IRenderSink
                   const hdr = c.querySelector('.card-title');
                   ca.textContent = (hdr ? hdr.textContent : c.id).replace('▾','').trim();
                   ca.title = ca.textContent;
-                  curChDiv.appendChild(ca);
+                  curL1Div.appendChild(ca);
                 });
               }
+              nav.appendChild(curL1Div);
 
-              nav.appendChild(curChDiv);
+            } else if(level === 2){
+              // ── Level 2: sub-command inside per-dump ─────────────────────
+              if(!curL1Div) return;
 
-            } else {
-              // Level-2: sub-command header — goes into a collapsible group
-              // inside the most recent level-1 chapter.
-              if(!curChDiv) return;
-              if(!subChDiv){
-                // First time we see a level-2: create the toggle + collapsed list.
-                // They are appended AFTER the card items so the visual order is:
-                //   Chapter title
-                //   └ card item 1, card item 2 …
-                //   ▸ Sub-reports (N)   ← click to expand
-                //     Heap Statistics
-                //     Gen Summary …
-                subChDiv = document.createElement('div');
-                subChDiv.className = 'nav-sub-chapters';
+              // Create the "Sub-reports" collapsible on first encounter under this level-1
+              if(!subList){
+                subList = document.createElement('div');
+                subList.className = 'nav-sub-chapters';
 
-                toggleEl = document.createElement('a');
-                toggleEl.className = 'nav-subreports';
-                toggleEl.textContent = '▸ Sub-reports';
+                subToggle = document.createElement('a');
+                subToggle.className = 'nav-subreports';
+                subToggle.textContent = '▸ Sub-reports';
 
-                const sc = subChDiv, tg = toggleEl;
-                toggleEl.onclick = function(e){
+                const sl = subList, st = subToggle;
+                subToggle.onclick = function(e){
                   e.preventDefault();
-                  const open = sc.classList.toggle('open');
-                  tg.textContent = (open ? '▾ ' : '▸ ') + 'Sub-reports (' + subCount + ')';
+                  const open = sl.classList.toggle('open');
+                  st.textContent = (open ? '▾ ' : '▸ ') + 'Sub-reports (' + subCount + ')';
                 };
-
-                curChDiv.appendChild(toggleEl);
-                curChDiv.appendChild(subChDiv);
+                curL1Div.appendChild(subToggle);
+                curL1Div.appendChild(subList);
               }
 
               const a = document.createElement('a');
               a.href = '#' + id;
               a.textContent = shortTitle(raw);
               a.title = raw;
-              subChDiv.appendChild(a);
+              subList.appendChild(a);
               subCount++;
-              toggleEl.textContent = '▸ Sub-reports (' + subCount + ')';
+              subToggle.textContent = '▸ Sub-reports (' + subCount + ')';
             }
           });
         })();
