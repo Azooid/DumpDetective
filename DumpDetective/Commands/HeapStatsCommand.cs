@@ -166,9 +166,6 @@ internal static class HeapStatsCommand
             totalSize > 0 ? $"{kv.Value.Size * 100.0 / totalSize:F1}%" : "?",
         }).ToList();
 
-        sink.Table(["Type", "Gen", "Count", "Total Size", "% of Heap"], rows,
-            $"Top {rows.Count} types by {sortBy}" + (genFilter is not null ? $" (gen={genFilter})" : ""));
-
         sink.KeyValues(
         [
             ("Types shown",   rows.Count.ToString("N0")),
@@ -176,6 +173,9 @@ internal static class HeapStatsCommand
             ("Total objects", totalObjs.ToString("N0")),
             ("Total size",    DumpHelpers.FormatSize(totalSize)),
         ]);
+
+        sink.Table(["Type", "Gen", "Count", "Total Size", "% of Heap"], rows,
+            $"Top {rows.Count} types by {sortBy}" + (genFilter is not null ? $" (gen={genFilter})" : ""));
     }
 
     // Detects open-generic types with 5+ distinct closed specializations and reports bloat.

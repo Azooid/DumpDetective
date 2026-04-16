@@ -350,22 +350,7 @@ internal static class AnalyzeCommand
                                          : "—"),
             ]);
 
-            // Top accumulation suspects: high-count or large types
-            var suspects = s.TopTypes
-                .Where(t => t.Count >= 1_000 || t.TotalBytes >= 1_000_000)
-                .OrderByDescending(t => t.Count)
-                .Take(15)
-                .ToList();
-
-            if (suspects.Count > 0)
-                sink.Table(
-                    ["Type", "Count", "Total Size"],
-                    suspects.Select(t =>
-                        new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
-                    "High-count / large types — accumulating types are leak suspects. " +
-                    "Run 'memory-leak <dump>' for full Gen2/LOH breakdown + GC root chains.");
-
-            // Advisory alert based on Gen2 dominance
+            // Advisory alert based on Gen2 dominance — shown BEFORE the type table
             if (gen2Pct > 50)
                 sink.Alert(AlertLevel.Critical,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap",
@@ -380,6 +365,21 @@ internal static class AnalyzeCommand
                 sink.Alert(AlertLevel.Info,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap — within normal range.",
                     advice: "Run: memory-leak <dump>  for a deeper investigation if growth is suspected.");
+
+            // Top accumulation suspects: high-count or large types
+            var suspects = s.TopTypes
+                .Where(t => t.Count >= 1_000 || t.TotalBytes >= 1_000_000)
+                .OrderByDescending(t => t.Count)
+                .Take(15)
+                .ToList();
+
+            if (suspects.Count > 0)
+                sink.Table(
+                    ["Type", "Count", "Total Size"],
+                    suspects.Select(t =>
+                        new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
+                    "High-count / large types — accumulating types are leak suspects. " +
+                    "Run 'memory-leak <dump>' for full Gen2/LOH breakdown + GC root chains.");
         }    }
 
     static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";
