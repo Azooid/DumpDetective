@@ -274,12 +274,12 @@ internal static partial class ConnectionPoolCommand
         }
 
         var cmdGroups = commandTexts
-            .GroupBy(c => c.CommandText.Length > 200 ? c.CommandText[..200] : c.CommandText)
+            .GroupBy(c => c.CommandText)
             .Select(g => new[]
             {
                 g.Count().ToString("N0"),
                 g.First().Type.Contains('.') ? g.First().Type[(g.First().Type.LastIndexOf('.') + 1)..] : g.First().Type,
-                g.Key.Length > 120 ? g.Key[..117] + "…" : g.Key,
+                g.Key,
             })
             .OrderByDescending(r => int.Parse(r[0].Replace(",", "")))
             .ToList();

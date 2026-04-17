@@ -876,12 +876,12 @@ internal static class MemoryLeakCommand
             if (isRoot)
             {
                 var ri = rootMap[cur];
-                string tp = ri.ObjType is not null ? $"  [{Truncate(ri.ObjType, 55)}]" : string.Empty;
+                string tp = ri.ObjType is not null ? $"  [{ri.ObjType}]" : string.Empty;
                 display = $"{ri.Kind}  @0x{cur:X16}{tp}";
             }
             else
             {
-                display = $"{Truncate(prev[cur].Type, 70)}  @0x{cur:X16}";
+                display = $"{prev[cur].Type}  @0x{cur:X16}";
             }
             pathNodes.Add((cur, display, isRoot));
 
