@@ -35,10 +35,11 @@ internal sealed class HtmlSink : IRenderSink
 
     // ── IRenderSink ───────────────────────────────────────────────────────────
 
-    public void Header(string title, string? subtitle = null)
+    public void Header(string title, string? subtitle = null, int navLevel = 0)
     {
         CloseSection();
         int id = ++_chapterSeq;
+        int navLevelOverride = navLevel;
         string meta = string.Empty;
         if (subtitle is not null)
         {
@@ -67,17 +68,25 @@ internal sealed class HtmlSink : IRenderSink
         if (_chapterBodyOpen)
             _w.WriteLine("</div> <!-- /chapter-body -->");
 
-        // SuppressVerbose is true while RenderEmbeddedReports runs sub-commands
-        // → those headers are secondary (collapsed in nav), level-1 otherwise.
-        string navLevel = CommandBase.SuppressVerbose ? "2" : "1";
-        // For level-2 (sub-command) headers strip the "Dump Detective — " prefix that
-        // every command includes in its title — it's redundant inside a parent chapter.
-        string displayTitle = navLevel == "2"
+        // Determine nav level: caller may override via navLevel param (e.g. ReportDocReplay).
+        // Fallback: SuppressVerbose==true → level 2, otherwise level 1.
+        // "Per-Dump Report:" chapters are level 1 (top-level, same as Trend Analysis);
+        // sub-command chapters inside per-dump replays are level 2.
+        int resolvedLevel;
+        if (navLevelOverride > 0)
+            resolvedLevel = navLevelOverride;
+        else if (CommandBase.SuppressVerbose)
+            resolvedLevel = title.StartsWith("Per-Dump Report", StringComparison.OrdinalIgnoreCase) ? 1 : 2;
+        else
+            resolvedLevel = 1;
+
+        // Strip repetitive prefix for level 2/3 headers
+        string displayTitle = resolvedLevel >= 2
             ? System.Text.RegularExpressions.Regex.Replace(title, @"^Dump Detective\s*[—\-]\s*", string.Empty, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
             : title;
 
         _w.WriteLine($"""
-            <div class="hero" id="ch{id}" data-nav-level="{navLevel}">
+            <div class="hero" id="ch{id}" data-nav-level="{resolvedLevel}">
               <h1 class="hero-title">{H(displayTitle)}</h1>
               {meta}
             </div>
@@ -90,15 +99,63 @@ internal sealed class HtmlSink : IRenderSink
     {
         CloseSection();
         int id = ++_sectionSeq;
+        string tip = TipHtml(title);
         _w.WriteLine($"""
             <div class="card" id="s{id}">
               <h2 class="card-title" onclick="toggleCard('s{id}')" title="Click to collapse/expand">
-                <span class="card-arrow">▾</span>{H(title)}
+                <span class="card-arrow">▾</span>{H(title)}{tip}
               </h2>
               <div class="card-body">
             """);
         _inSection = true;
     }
+
+    static string TipHtml(string title)
+    {
+        foreach (var (key, text) in s_tooltips)
+            if (title.Contains(key, StringComparison.OrdinalIgnoreCase))
+            {
+                string lines = string.Join("<br>", text.Split('\n'));
+                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+            }
+        return string.Empty;
+    }
+
+    static readonly (string Key, string Text)[] s_tooltips =
+    [
+        ("Dump Timeline",           "Temporal ordering of all analyzed dump snapshots.\nUse to correlate symptoms with capture time."),
+        ("Incident Summary",        "Health scores and critical findings per snapshot.\nQuickly identifies the most degraded dump."),
+        ("Overall Growth Summary",  "Memory, thread, and object count deltas across dumps.\nSteady growth without release indicates a leak."),
+        ("Thread & Application",    "Thread pool queue depth and worker saturation.\nHigh pressure indicates starvation or lock contention."),
+        ("Event Leak",              "Event handler subscriptions growing across snapshots.\nUnsubscribed handlers keep publisher objects alive."),
+        ("Finalize Queue Detail",   "Finalizer queue size trend across snapshots.\nGrowth indicates IDisposable pattern violations."),
+        ("Highly Referenced",       "Objects with the most incoming references.\nHigh counts often reveal retention roots."),
+        ("Rooted Objects",          "Objects reachable from static or thread roots.\nRooted objects cannot be collected by GC."),
+        ("Duplicate String",        "Identical string instances present in the heap.\nConsolidate with string.Intern or a shared dictionary."),
+        ("String Duplicate",        "Identical string instances present in the heap.\nConsolidate with string.Intern or a shared dictionary."),
+        ("Memory Leak Analysis",    "Types that accumulate across snapshots without release.\nIndicates missing Dispose calls or static retention."),
+        ("Diagnosis Summary",       "Cross-snapshot comparison of key health signals.\nHighlights degradation trends and probable root causes."),
+        ("Heap Statistics",         "Total managed heap size and per-segment breakdown.\nHigh committed memory may indicate GC pressure."),
+        ("GC Generation Summary",   "Object counts by generation (Gen0/Gen1/Gen2/LOH).\nGen2 accumulation is the primary signal of a memory leak."),
+        ("Heap Fragmentation",      "Free memory gaps between live objects on the heap.\nHigh fragmentation degrades allocation performance."),
+        ("Large Objects",           "Objects over 85,000 bytes on the Large Object Heap.\nLOH is rarely compacted; leaks here cause OutOfMemoryException."),
+        ("Exception Analysis",      "Exceptions found on thread stacks or in the heap.\nFrequent exceptions degrade throughput significantly."),
+        ("Thread Analysis",         "Thread count, state, and call stacks.\nHigh counts or stuck threads indicate contention or deadlock."),
+        ("Thread Pool",             "Managed thread pool workers, queue depth, and completions.\nQueue growth signals async starvation."),
+        ("Async State Machine",     "In-flight async/await continuations.\nBacklog growth indicates a downstream bottleneck."),
+        ("Deadlock",                "Cycles detected in lock-wait graphs.\nA single deadlock causes a complete application hang."),
+        ("Finalizer Queue",         "Objects queued for finalization by the GC.\nGrowth indicates improper IDisposable usage."),
+        ("GC Handle Table",         "GC-tracked and pinned object handles.\nExcess pinned handles fragment the managed heap."),
+        ("Pinned Objects",          "Objects pinned in memory for native interop or unsafe code.\nExcessive pinning creates heap fragmentation."),
+        ("Weak Reference",          "WeakReference objects tracked by the GC.\nExcessive weak refs may indicate problematic caching patterns."),
+        ("Static Reference",        "Static fields that hold object references.\nStatic roots prevent GC from collecting referenced objects."),
+        ("Timer Leak",              "Timer instances that were created but never disposed.\nLeaking timers keep callbacks and closures alive indefinitely."),
+        ("Event Analysis",          "Event handler subscription counts by type.\nGrowth across dumps is a reliable leak indicator."),
+        ("WCF Channel",             "Open WCF client channel instances.\nAborted or faulted channels must be explicitly closed."),
+        ("DB Connection Pool",      "SQL/database connection pool usage and leaks.\nPool exhaustion causes timeouts and application hangs."),
+        ("HTTP",                    "Outgoing HTTP requests and connection instances.\nStuck or leaked requests indicate downstream service issues."),
+        ("Module List",             "Loaded .NET assemblies and native modules.\nUnexpected modules may indicate dynamic injection or leaks."),
+    ];
 
     public void KeyValues(IReadOnlyList<(string Key, string Value)> pairs, string? title = null)
     {
@@ -111,11 +168,37 @@ internal sealed class HtmlSink : IRenderSink
             if (k.Contains("score", StringComparison.OrdinalIgnoreCase) ||
                 k.Contains("health", StringComparison.OrdinalIgnoreCase))
             {
-                var numStr = v.Split('/')[0].Trim();
-                if (int.TryParse(numStr, out int sc))
+                if (v.Contains('→'))
                 {
-                    string badgeCls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
-                    valHtml = $"<span class=\"score-badge {badgeCls}\">{H(v)}</span>";
+                    // "95/100 HEALTHY  →  80/100 HEALTHY  (↓ −15 pts)" — render two badges + delta
+                    var arrow = v.IndexOf('→');
+                    string left  = v[..arrow].Trim();
+                    string right = v[(arrow + 1)..].Trim();
+                    // Split trailing delta "(…)" from the right score
+                    string delta = string.Empty;
+                    var dm = System.Text.RegularExpressions.Regex.Match(right, @"^(.*?)(\s*\([^)]+\))\s*$");
+                    if (dm.Success) { right = dm.Groups[1].Value.Trim(); delta = dm.Groups[2].Value.Trim(); }
+                    static (string cls, string html) ScoreBadge(string part) {
+                        var n = part.Split('/')[0].Trim();
+                        if (int.TryParse(n, out int sc)) {
+                            string cls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
+                            return (cls, $"<span class=\"score-badge {cls}\">{H(part)}</span>");
+                        }
+                        return ("", H(part));
+                    }
+                    var (_, lHtml) = ScoreBadge(left);
+                    var (_, rHtml) = ScoreBadge(right);
+                    string deltaHtml = delta.Length > 0 ? $" <span class=\"kv-delta\">{H(delta)}</span>" : string.Empty;
+                    valHtml = $"{lHtml} <span class=\"kv-arrow\">&rarr;</span> {rHtml}{deltaHtml}";
+                }
+                else
+                {
+                    var numStr = v.Split('/')[0].Trim();
+                    if (int.TryParse(numStr, out int sc))
+                    {
+                        string badgeCls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
+                        valHtml = $"<span class=\"score-badge {badgeCls}\">{H(v)}</span>";
+                    }
                 }
             }
             _w.WriteLine($"<div class=\"kv-row\"><span class=\"kv-key\">{H(k)}</span><span class=\"kv-val\">{valHtml}</span></div>");
@@ -258,6 +341,15 @@ internal sealed class HtmlSink : IRenderSink
         .nav-sub-chapters.open{display:block}
         .nav-sub-chapters a{padding-left:.6rem!important;font-size:11px!important;color:#64748b!important}
         .nav-sub-chapters a:hover,.nav-sub-chapters a.active{color:#e2e8f0!important}
+        /* Level-2 (per-dump) entries inside the Per-Dump group */
+        .nav-chapter-l2{margin-top:.25rem;margin-left:.3rem}
+        .nav-chapter-l2>.nav-title-l2{display:block;padding:.2rem .4rem;color:#94a3b8;font-weight:600;font-size:11px;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .nav-chapter-l2>.nav-title-l2:hover{background:#334155;color:#e2e8f0}
+        /* Level-3 sub-reports inside each per-dump */
+        .nav-subreports-l3{padding:.15rem .4rem .15rem 1.2rem!important;font-size:10.5px!important}
+        .nav-sub-l3{margin-left:.8rem}
+        .nav-sub-l3 a{padding-left:.5rem!important;font-size:10.5px!important;color:#475569!important}
+        .nav-sub-l3 a:hover,.nav-sub-l3 a.active{color:#e2e8f0!important}
         #search-box{width:100%;padding:.3rem .45rem;border-radius:4px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:11.5px;margin-bottom:.6rem;outline:none}
         #search-box::placeholder{color:#64748b}
 
@@ -284,8 +376,9 @@ internal sealed class HtmlSink : IRenderSink
         .chapter-body{margin-bottom:.5rem}
 
         /* ── Card / Section ───────────────────────────────────────────── */
-        .card{background:#fff;border-radius:8px;margin:.65rem 0;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.05);overflow:hidden}
-        .card-title{font-size:1rem;font-weight:700;color:#1e3a5f;padding:.75rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid #e2e8f0}
+        .card{background:#fff;border-radius:8px;margin:.65rem 0;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.05);overflow:visible}
+        .card-title{font-size:1rem;font-weight:700;color:#1e3a5f;padding:.75rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid #e2e8f0;border-radius:8px 8px 0 0;position:relative}
+        .card.collapsed .card-title{border-radius:8px}
         .card-title:hover{background:#f8fafc}
         .card-arrow{font-size:.7rem;transition:transform .18s;color:#64748b;flex-shrink:0}
         .card.collapsed .card-arrow{transform:rotate(-90deg)}
@@ -297,7 +390,9 @@ internal sealed class HtmlSink : IRenderSink
         .kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:.35rem .75rem;margin:.4rem 0 .65rem}
         .kv-row{display:flex;gap:.5rem;align-items:baseline;padding:.2rem .4rem;border-radius:4px;background:#fafafa;border:1px solid #f0f0f0}
         .kv-key{color:#64748b;font-size:12.5px;white-space:nowrap;flex-shrink:0;min-width:160px}
-        .kv-val{font-weight:600;color:#111827;font-size:13px;overflow-wrap:anywhere}
+        .kv-val{font-weight:600;color:#111827;font-size:13px;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem}
+        .kv-arrow{color:#94a3b8;font-size:12px}
+        .kv-delta{color:#64748b;font-size:12px;font-weight:400}
         .score-badge{display:inline-block;padding:.15rem .55rem;border-radius:4px;font-weight:700;font-size:13px}
         .badge-ok  {background:#dcfce7;color:#15803d}
         .badge-warn{background:#fef9c3;color:#854d0e}
@@ -359,6 +454,14 @@ internal sealed class HtmlSink : IRenderSink
         #back-top.vis{opacity:.85}
         #back-top:hover{opacity:1}
 
+        /* ── Metric Tooltips ──────────────────────────────────────────── */
+        .tip-wrap{position:relative;display:inline-flex;align-items:center;margin-left:.4rem;flex-shrink:0;cursor:default}
+        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#94a3b8;color:#fff;font-size:9px;font-weight:700;line-height:1;user-select:none;flex-shrink:0}
+        .tip-wrap:hover .tip-icon{background:#3b82f6}
+        .tip-box{visibility:hidden;opacity:0;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#e2e8f0;font-size:12px;font-weight:400;line-height:1.55;padding:.55rem .75rem;border-radius:6px;white-space:normal;width:360px;box-shadow:0 4px 12px rgba(0,0,0,.3);pointer-events:none;transition:opacity .15s,visibility .15s;z-index:50;text-align:left}
+        .tip-box::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#1e293b}
+        .tip-wrap:hover .tip-box{visibility:visible;opacity:1}
+
         /* ── Print ────────────────────────────────────────────────────── */
         @media print{
           #sidebar,#back-top{display:none}
@@ -385,15 +488,21 @@ internal sealed class HtmlSink : IRenderSink
         <script>
         /* ── Navigation builder ───────────────────────────────────────── */
         (function(){
-          const nav = document.getElementById('nav-list');
+          const nav  = document.getElementById('nav-list');
           const root = document.getElementById('report-root');
-          // Strip the repetitive "Dump Detective — " prefix that every sub-command adds
-          function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,''); }
+          function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,'').replace(/^Per-Dump\s+/i,''); }
 
-          let curChDiv = null;   // current level-1 nav-chapter div
-          let subChDiv = null;   // collapsible sub-chapters div (created on first level-2)
-          let toggleEl = null;   // the ▸/▾ toggle anchor
-          let subCount  = 0;     // running count of level-2 items for toggle label update
+          // Three-tier hierarchy:
+          //   Level 1 → top-level chapter (Trend Analysis Report, Per-Dump Report: Dn)
+          //     └ section cards (for Trend Analysis: Diagnosis Summary, 0. Dump Timeline, …)
+          //     └ Sub-reports collapsible (for Per-Dump Report entries)
+          //   Level 2 → sub-command chapters inside per-dump (Heap Statistics, Thread Analysis, …)
+          //   Level 3 → currently unused
+
+          let curL1Div = null;  // current level-1 nav-chapter div
+          let subList  = null;  // collapsible "Sub-reports" list under level-1
+          let subToggle= null;  // the ▸/▾ toggle
+          let subCount = 0;
 
           root.querySelectorAll('.hero').forEach(function(h){
             const id    = h.id;
@@ -402,20 +511,19 @@ internal sealed class HtmlSink : IRenderSink
             const level = parseInt(h.dataset.navLevel ?? '1');
 
             if(level === 1){
-              // Start a new chapter entry
-              curChDiv = document.createElement('div');
-              curChDiv.className = 'nav-chapter';
-              subChDiv = null; toggleEl = null; subCount = 0;
+              // ── Level 1: top-level chapter ────────────────────────────────
+              curL1Div = document.createElement('div');
+              curL1Div.className = 'nav-chapter';
+              subList = null; subToggle = null; subCount = 0;
 
-              // Chapter title link
               const titleA = document.createElement('a');
               titleA.href = '#' + id;
               titleA.className = 'nav-title';
               titleA.textContent = shortTitle(raw);
               titleA.title = raw;
-              curChDiv.appendChild(titleA);
+              curL1Div.appendChild(titleA);
 
-              // Direct section cards within this chapter body
+              // Section cards directly inside this chapter body (e.g. Trend Analysis sections)
               const chBody = document.getElementById('chb' + num);
               if(chBody){
                 chBody.querySelectorAll(':scope > .card').forEach(function(c){
@@ -423,51 +531,44 @@ internal sealed class HtmlSink : IRenderSink
                   ca.href = '#' + c.id;
                   ca.className = 'nav-card';
                   const hdr = c.querySelector('.card-title');
-                  ca.textContent = (hdr ? hdr.textContent : c.id).replace('▾','').trim();
+                  if(hdr){ const cl = hdr.cloneNode(true); cl.querySelectorAll('.tip-wrap').forEach(function(e){e.remove();}); ca.textContent = cl.textContent.replace('▾','').trim(); }
+                  else { ca.textContent = c.id; }
                   ca.title = ca.textContent;
-                  curChDiv.appendChild(ca);
+                  curL1Div.appendChild(ca);
                 });
               }
+              nav.appendChild(curL1Div);
 
-              nav.appendChild(curChDiv);
+            } else if(level === 2){
+              // ── Level 2: sub-command inside per-dump ─────────────────────
+              if(!curL1Div) return;
 
-            } else {
-              // Level-2: sub-command header — goes into a collapsible group
-              // inside the most recent level-1 chapter.
-              if(!curChDiv) return;
-              if(!subChDiv){
-                // First time we see a level-2: create the toggle + collapsed list.
-                // They are appended AFTER the card items so the visual order is:
-                //   Chapter title
-                //   └ card item 1, card item 2 …
-                //   ▸ Sub-reports (N)   ← click to expand
-                //     Heap Statistics
-                //     Gen Summary …
-                subChDiv = document.createElement('div');
-                subChDiv.className = 'nav-sub-chapters';
+              // Create the "Sub-reports" collapsible on first encounter under this level-1
+              if(!subList){
+                subList = document.createElement('div');
+                subList.className = 'nav-sub-chapters';
 
-                toggleEl = document.createElement('a');
-                toggleEl.className = 'nav-subreports';
-                toggleEl.textContent = '▸ Sub-reports';
+                subToggle = document.createElement('a');
+                subToggle.className = 'nav-subreports';
+                subToggle.textContent = '▸ Sub-reports';
 
-                const sc = subChDiv, tg = toggleEl;
-                toggleEl.onclick = function(e){
+                const sl = subList, st = subToggle;
+                subToggle.onclick = function(e){
                   e.preventDefault();
-                  const open = sc.classList.toggle('open');
-                  tg.textContent = (open ? '▾ ' : '▸ ') + 'Sub-reports (' + subCount + ')';
+                  const open = sl.classList.toggle('open');
+                  st.textContent = (open ? '▾ ' : '▸ ') + 'Sub-reports (' + subCount + ')';
                 };
-
-                curChDiv.appendChild(toggleEl);
-                curChDiv.appendChild(subChDiv);
+                curL1Div.appendChild(subToggle);
+                curL1Div.appendChild(subList);
               }
 
               const a = document.createElement('a');
               a.href = '#' + id;
               a.textContent = shortTitle(raw);
               a.title = raw;
-              subChDiv.appendChild(a);
+              subList.appendChild(a);
               subCount++;
-              toggleEl.textContent = '▸ Sub-reports (' + subCount + ')';
+              subToggle.textContent = '▸ Sub-reports (' + subCount + ')';
             }
           });
         })();

@@ -10,6 +10,9 @@ using System.Diagnostics;
 
 namespace DumpDetective.Commands;
 
+// Scored health report for a single dump. Mini mode: lightweight summary across
+// memory, threads, exceptions, async, leaks, handles, WCF, and connections.
+// Full mode: scored summary plus all individual command reports embedded as chapters.
 internal static class AnalyzeCommand
 {
     private const string Help = """
@@ -57,26 +60,21 @@ internal static class AnalyzeCommand
 
         CommandBase.PrintAnalyzing(dumpPath);
 
-        // ── Phase 1: snapshot collection (always with progress) ───────────────
-        DumpSnapshot snap = null!;
-        var sw = Stopwatch.StartNew();
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start($"Running {(full ? "full" : "mini")} analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", ctx =>
-            {
-                void Upd(string msg) =>
-                    ctx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
-                // Full collection captures string dupes + event leaks for the summary score
-                snap = full
-                    ? DumpCollector.CollectFull(dumpPath, Upd)
-                    : DumpCollector.CollectLightweight(dumpPath, Upd);
-            });
-        AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
-
         if (!full)
         {
-            // ── Mini: scored summary only ─────────────────────────────────────
+            // ── Mini: single open, lightweight collection + scored summary ────
+            DumpSnapshot snap = null!;
+            var sw = Stopwatch.StartNew();
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Running mini analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", spinCtx =>
+                {
+                    void Upd(string msg) =>
+                        spinCtx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
+                    snap = DumpCollector.CollectLightweight(dumpPath, Upd);
+                });
+            AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
             using var sink = IRenderSink.Create(outputPath);
             RenderReport(snap, sink);
             if (sink.IsFile && sink.FilePath is not null)
@@ -84,72 +82,136 @@ internal static class AnalyzeCommand
             return 0;
         }
 
-        // ── Full: scored summary + all individual sub-reports ─────────────────
-        // Re-open dump so every sub-command can walk the heap independently.
-        AnsiConsole.MarkupLine("[dim]Opening dump for detailed sub-reports...[/]");
-        return CommandBase.Execute(dumpPath, outputPath, (ctx, sink) =>
+        // ── Full: open dump once — snapshot collection + all sub-reports ──────
+        try
         {
-            // Chapter 1 — Scored summary (uses already-collected snapshot)
+            using var dumpCtx = DumpContext.Open(dumpPath);
+            if (dumpCtx.ArchWarning is not null)
+                AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(dumpCtx.ArchWarning)}[/]");
+            DumpSnapshot snap = null!;
+            var sw = Stopwatch.StartNew();
+            AnsiConsole.Status()
+                .Spinner(Spinner.Known.Dots)
+                .SpinnerStyle(Style.Parse("blue"))
+                .Start($"Running full analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", spinCtx =>
+                {
+                    void Upd(string msg) =>
+                        spinCtx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}");
+                    snap = DumpCollector.CollectFull(dumpCtx, Upd);
+                });
+            AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
+            using var sink = IRenderSink.Create(outputPath);
             RenderReport(snap, sink);
-
-            // Chapters 2-N — Individual command reports
             AnsiConsole.MarkupLine("[bold blue]Embedding detailed sub-reports:[/]");
-            RenderEmbeddedReports(ctx, sink);
-        });
+            RenderEmbeddedReports(dumpCtx, sink);
+            if (sink.IsFile && sink.FilePath is not null)
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+            return 0;
+        }
+        catch (InvalidOperationException ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Unexpected error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
     }
 
     // ── Embedded sub-reports (full mode only) ─────────────────────────────────
 
     internal static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink)
     {
-        // Each command writes its own Header+Sections, becoming a natural "chapter".
-        // SuppressVerbose suppresses the repeated "Analyzing: <path>" lines and
-        // per-pass counters from individual commands. Each command's own Status spinner
-        // still runs normally — they are sequential so there's no nesting conflict.
+        // When CollectFull(DumpContext) was used, the combined walk already built and
+        // cached the HeapSnapshot — EnsureSnapshot() returns it instantly (no heap walk).
+        // Otherwise (standalone analyze command) we build it here for the first time.
+        var snapSw = Stopwatch.StartNew();
+        bool alreadyBuilt = ctx.Snapshot is not null;
+        if (!alreadyBuilt)
+            CommandBase.RunStatus("Building shared heap snapshot for sub-reports...", () => ctx.EnsureSnapshot());
+        else
+            ctx.EnsureSnapshot(); // no-op, just ensures non-null for the lines below
+        AnsiConsole.MarkupLine(
+            $"[dim]  Snapshot: {ctx.Snapshot!.TotalObjects:N0} objects, " +
+            $"{ctx.Snapshot.TypeStats.Count:N0} types, " +
+            $"{ctx.Snapshot.InboundCounts.Count:N0} referenced addrs" +
+            (alreadyBuilt ? "  (built during primary collection)" :
+             $"  ({snapSw.Elapsed.TotalSeconds:F1}s)") + "[/]");
+
+        // Define each sub-report as a (label, render action) pair.
+        // All 23 run in parallel — each writes to its own CaptureSink so there
+        // is no shared-sink contention. Results are replayed in order afterward.
         const int Total = 23;
+        var steps = new (string Label, Action<IRenderSink> Fn)[Total]
+        {
+            ("Heap Statistics",     s => HeapStatsCommand.Render(ctx, s, top: 100)),
+            ("Gen Summary",         s => GenSummaryCommand.Render(ctx, s)),
+            ("Heap Fragmentation",  s => HeapFragmentationCommand.Render(ctx, s)),
+            ("Large Objects",       s => LargeObjectsCommand.Render(ctx, s, top: 100)),
+            ("High-Refs Analysis",  s => HighRefsCommand.Render(ctx, s, top: 50, minRefs: 5)),
+            ("Exception Analysis",  s => ExceptionAnalysisCommand.Render(ctx, s, top: 50, showStack: true)),
+            ("Thread Analysis",     s => ThreadAnalysisCommand.Render(ctx, s, showStacks: true)),
+            ("Thread Pool",         s => ThreadPoolCommand.Render(ctx, s)),
+            ("Async Stacks",        s => AsyncStacksCommand.Render(ctx, s, top: 100)),
+            ("Deadlock Detection",  s => DeadlockDetectionCommand.Render(ctx, s)),
+            ("Finalizer Queue",     s => FinalizerQueueCommand.Render(ctx, s, top: 50)),
+            ("Handle Table",        s => HandleTableCommand.Render(ctx, s)),
+            ("Pinned Objects",      s => PinnedObjectsCommand.Render(ctx, s)),
+            ("Weak Refs",           s => WeakRefsCommand.Render(ctx, s)),
+            ("Static Refs",         s => StaticRefsCommand.Render(ctx, s)),
+            ("Timer Leaks",         s => TimerLeaksCommand.Render(ctx, s)),
+            ("Event Analysis",      s => EventAnalysisCommand.Render(ctx, s)),
+            ("String Duplicates",   s => StringDuplicatesCommand.Render(ctx, s, top: 100, minCount: 2)),
+            ("WCF Channels",        s => WcfChannelsCommand.Render(ctx, s)),
+            ("Connection Pool",     s => ConnectionPoolCommand.Render(ctx, s)),
+            ("HTTP Requests",       s => HttpRequestsCommand.Render(ctx, s)),
+            ("Memory Leak Analysis",s => MemoryLeakCommand.Render(ctx, s, top: 30, minCount: 500, noRootTrace: false, inclSystem: false)),
+            ("Module List",         s => ModuleListCommand.Render(ctx, s)),
+        };
+
+        var captures = new CaptureSink[Total];
+        for (int i = 0; i < Total; i++) captures[i] = new CaptureSink();
+
         var overallSw = Stopwatch.StartNew();
-        int step = 0;
-
-        CommandBase.SuppressVerbose = true;
-        try
-        {
-            void Step(string label, Action fn)
+        AnsiConsole.Progress()
+            .AutoRefresh(true)
+            .AutoClear(false)
+            .HideCompleted(false)
+            .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new ElapsedTimeColumn())
+            .Start(pCtx =>
             {
-                step++;
-                AnsiConsole.MarkupLine($"    [dim]{step,2}/{Total}[/]  {Markup.Escape(label)}…");
-                fn();
-            }
+                var task = pCtx.AddTask($"[bold]Sub-reports[/]  [dim]0/{Total}[/]", maxValue: Total);
 
-            Step("Heap Statistics",     () => HeapStatsCommand.Render(ctx, sink, top: 100));
-            Step("Gen Summary",         () => GenSummaryCommand.Render(ctx, sink));
-            Step("Heap Fragmentation",  () => HeapFragmentationCommand.Render(ctx, sink));
-            Step("Large Objects",       () => LargeObjectsCommand.Render(ctx, sink, top: 100));
-            Step("High-Refs Analysis",  () => HighRefsCommand.Render(ctx, sink, top: 50, minRefs: 5));
-            Step("Exception Analysis",  () => ExceptionAnalysisCommand.Render(ctx, sink, top: 50, showStack: true));
-            Step("Thread Analysis",     () => ThreadAnalysisCommand.Render(ctx, sink, showStacks: true));
-            Step("Thread Pool",         () => ThreadPoolCommand.Render(ctx, sink));
-            Step("Async Stacks",        () => AsyncStacksCommand.Render(ctx, sink, top: 100));
-            Step("Deadlock Detection",  () => DeadlockDetectionCommand.Render(ctx, sink));
-            Step("Finalizer Queue",     () => FinalizerQueueCommand.Render(ctx, sink, top: 50));
-            Step("Handle Table",        () => HandleTableCommand.Render(ctx, sink));
-            Step("Pinned Objects",      () => PinnedObjectsCommand.Render(ctx, sink));
-            Step("Weak Refs",           () => WeakRefsCommand.Render(ctx, sink));
-            Step("Static Refs",         () => StaticRefsCommand.Render(ctx, sink));
-            Step("Timer Leaks",         () => TimerLeaksCommand.Render(ctx, sink));
-            Step("Event Analysis",      () => EventAnalysisCommand.Render(ctx, sink));
-            Step("String Duplicates",   () => StringDuplicatesCommand.Render(ctx, sink, top: 100, minCount: 2));
-            Step("WCF Channels",        () => WcfChannelsCommand.Render(ctx, sink));
-            Step("Connection Pool",     () => ConnectionPoolCommand.Render(ctx, sink));
-            Step("HTTP Requests",       () => HttpRequestsCommand.Render(ctx, sink));
-            Step("Memory Leak Analysis",() => MemoryLeakCommand.Render(ctx, sink, top: 30, minCount: 500, noRootTrace: false, inclSystem: false));
-            Step("Module List",         () => ModuleListCommand.Render(ctx, sink));
-        }
-        finally
-        {
-            CommandBase.SuppressVerbose = false;
-        }
+                Parallel.For(0, Total,
+                    new ParallelOptions { MaxDegreeOfParallelism = 8 },
+                    i =>
+                    {
+                        // [ThreadStatic] flag — each worker suppresses its own Status spinners
+                        // and PrintAnalyzing lines without interfering with other threads.
+                        CommandBase.SuppressVerbose = true;
+                        try
+                        {
+                            steps[i].Fn(captures[i]);
+                                task.Increment(1);
+                                int n = (int)task.Value;
+                                task.Description = n >= Total
+                                    ? $"[bold]Sub-reports[/]  [dim]{Total}/{Total}  Done[/]"
+                                    : $"[bold]Sub-reports[/]  [dim]{n}/{Total}  {Markup.Escape(steps[i].Label)}[/]";
+                        }
+                        finally
+                        {
+                            CommandBase.SuppressVerbose = false;
+                        }
+                    });
+            });
 
-        AnsiConsole.MarkupLine($"  [dim]  ✓ {step}/{Total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+        AnsiConsole.MarkupLine($"[dim]  ✓ {Total}/{Total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+
+        // Replay all captured chapters into the real sink in their original order.
+        for (int i = 0; i < Total; i++)
+            ReportDocReplay.Replay(captures[i].GetDoc(), sink);
     }
 
     // ── Renderer (used by this command, TrendAnalysisCommand, and full mode) ──
@@ -315,22 +377,7 @@ internal static class AnalyzeCommand
                                          : "—"),
             ]);
 
-            // Top accumulation suspects: high-count or large types
-            var suspects = s.TopTypes
-                .Where(t => t.Count >= 1_000 || t.TotalBytes >= 1_000_000)
-                .OrderByDescending(t => t.Count)
-                .Take(15)
-                .ToList();
-
-            if (suspects.Count > 0)
-                sink.Table(
-                    ["Type", "Count", "Total Size"],
-                    suspects.Select(t =>
-                        new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
-                    "High-count / large types — accumulating types are leak suspects. " +
-                    "Run 'memory-leak <dump>' for full Gen2/LOH breakdown + GC root chains.");
-
-            // Advisory alert based on Gen2 dominance
+            // Advisory alert based on Gen2 dominance — shown BEFORE the type table
             if (gen2Pct > 50)
                 sink.Alert(AlertLevel.Critical,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap",
@@ -345,6 +392,21 @@ internal static class AnalyzeCommand
                 sink.Alert(AlertLevel.Info,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap — within normal range.",
                     advice: "Run: memory-leak <dump>  for a deeper investigation if growth is suspected.");
+
+            // Top accumulation suspects: high-count or large types
+            var suspects = s.TopTypes
+                .Where(t => t.Count >= 1_000 || t.TotalBytes >= 1_000_000)
+                .OrderByDescending(t => t.Count)
+                .Take(15)
+                .ToList();
+
+            if (suspects.Count > 0)
+                sink.Table(
+                    ["Type", "Count", "Total Size"],
+                    suspects.Select(t =>
+                        new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
+                    "High-count / large types — accumulating types are leak suspects. " +
+                    "Run 'memory-leak <dump>' for full Gen2/LOH breakdown + GC root chains.");
         }    }
 
     static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";

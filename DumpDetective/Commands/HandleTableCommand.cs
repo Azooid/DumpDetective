@@ -6,6 +6,8 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Analyzes the GC handle table. Groups handles by kind, shows object-type
+// breakdowns per kind with size estimates, and alerts on large Strong/Pinned pressure.
 internal static class HandleTableCommand
 {
     private const string Help = """
@@ -21,12 +23,15 @@ internal static class HandleTableCommand
     public static int Run(string[] args)
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
-        int top = 5; string? filter = null;
+        int top = 5;
+        string? filter = null;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
         {
-            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)         int.TryParse(args[++i], out top);
-            else if ((args[i] is "--filter" or "-f") && i + 1 < args.Length) filter = args[++i];
+            if ((args[i] is "--top" or "-n") && i + 1 < args.Length)
+                int.TryParse(args[++i], out top);
+            else if ((args[i] is "--filter" or "-f") && i + 1 < args.Length)
+                filter = args[++i];
         }
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, top, filter));
     }
@@ -34,26 +39,36 @@ internal static class HandleTableCommand
     internal static void Render(DumpContext ctx, IRenderSink sink, int topN = 5, string? filter = null)
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
-
         sink.Header(
             "Dump Detective — GC Handle Table",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
-        // kind → (TotalCount, TotalSize, typeName → (Count, Size))
+        var (byKind, total) = ScanHandles(ctx, filter);
+
+        sink.Section("Handle Summary");
+        if (total == 0) { sink.Text("No GC handles found."); return; }
+
+        RenderSummaryTable(sink, byKind, total);
+        RenderPerKindBreakdown(sink, byKind, topN);
+    }
+
+    // ── Data gathering ────────────────────────────────────────────────────────
+
+    // Enumerates all GC handles via ClrRuntime and groups them into KindInfo buckets
+    // keyed by HandleKind name. The optional filter is applied to the kind string only;
+    // filtered-out handles still increment total so the summary count is accurate.
+    static (Dictionary<string, KindInfo> ByKind, int Total) ScanHandles(DumpContext ctx, string? filter)
+    {
         var byKind = new Dictionary<string, KindInfo>(StringComparer.Ordinal);
         int total  = 0;
-
         foreach (var h in ctx.Runtime.EnumerateHandles())
         {
             total++;
             var kind = h.HandleKind.ToString();
             if (filter != null && !kind.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
-
             if (!byKind.TryGetValue(kind, out var info))
                 info = new KindInfo();
-
             info.Count++;
-
             if (h.Object != 0)
             {
                 try
@@ -61,7 +76,7 @@ internal static class HandleTableCommand
                     var obj = ctx.Heap.GetObject(h.Object);
                     if (obj.IsValid)
                     {
-                        long size     = (long)obj.Size;
+                        long   size     = (long)obj.Size;
                         string typeName = obj.Type?.Name ?? "<unknown>";
                         info.TotalSize += size;
                         info.Types.TryGetValue(typeName, out var ts);
@@ -70,13 +85,16 @@ internal static class HandleTableCommand
                 }
                 catch { }
             }
-
             byKind[kind] = info;
         }
+        return (byKind, total);
+    }
 
-        sink.Section("Handle Summary");
-        if (total == 0) { sink.Text("No GC handles found."); return; }
+    // ── Rendering ─────────────────────────────────────────────────────────────
 
+    // Overall handle-kind frequency table + strong-handle size alert.
+    static void RenderSummaryTable(IRenderSink sink, Dictionary<string, KindInfo> byKind, int total)
+    {
         var summaryRows = byKind
             .OrderByDescending(kv => kv.Value.Count)
             .Select(kv => new[]
@@ -86,17 +104,19 @@ internal static class HandleTableCommand
                 DumpHelpers.FormatSize(kv.Value.TotalSize),
             })
             .ToList();
-        sink.Table(["Handle Kind", "Count", "Referenced Size"], summaryRows,
-            $"{total:N0} total handles");
+        sink.Table(["Handle Kind", "Count", "Referenced Size"], summaryRows, $"{total:N0} total handles");
         sink.KeyValues([("Total handles", total.ToString("N0"))]);
 
-        // ── Strong handle size alert ──────────────────────────────────────────
         if (byKind.TryGetValue("Strong", out var strongInfo) && strongInfo.TotalSize > 500 * 1024 * 1024L)
             sink.Alert(AlertLevel.Critical,
                 $"Strong handles reference {DumpHelpers.FormatSize(strongInfo.TotalSize)} of live objects.",
                 advice: "Review GCHandle.Alloc(obj, GCHandleType.Normal) usage — these prevent GC of the entire retained graph.");
+    }
 
-        // ── Per-kind type breakdown ───────────────────────────────────────────
+    // Collapsible accordions per handle kind showing the top-N object types by count.
+    // Strong and Pinned handles are expanded by default as they are the most actionable.
+    static void RenderPerKindBreakdown(IRenderSink sink, Dictionary<string, KindInfo> byKind, int topN)
+    {
         sink.Section("Per-Kind Type Breakdown");
         foreach (var kv in byKind.OrderByDescending(k => k.Value.Count))
         {
@@ -104,7 +124,6 @@ internal static class HandleTableCommand
             sink.BeginDetails(
                 $"{kv.Key}  —  {kv.Value.Count:N0} handle(s)  |  {DumpHelpers.FormatSize(kindSize)}",
                 open: kv.Key is "Strong" or "Pinned");
-
             var typeRows = kv.Value.Types
                 .OrderByDescending(t => t.Value.Count)
                 .Take(topN)
@@ -120,13 +139,13 @@ internal static class HandleTableCommand
                     $"Top {typeRows.Count} types under {kv.Key} handles");
             else
                 sink.Text("  (no object type info available)");
-
             sink.EndDetails();
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Mutable accumulator used while scanning; one instance per unique HandleKind name.
     private sealed class KindInfo
     {
         public int    Count;

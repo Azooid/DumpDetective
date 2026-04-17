@@ -6,6 +6,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Deep-inspects a managed object at a given address. Displays type metadata, fields
+// with values, GC generation, finalizer/pinned status, and recursively renders
+// referenced children up to a configurable depth.
 internal static class ObjectInspectCommand
 {
     private const string Help = """
@@ -199,6 +202,7 @@ internal static class ObjectInspectCommand
         }
     }
 
+    // Reads a primitive value field from obj using the matching ClrElementType overload.
     private static string ReadPrimitive(ClrObject obj, ClrField field)
     {
         string name = field.Name ?? "";
@@ -228,6 +232,7 @@ internal static class ObjectInspectCommand
         catch { return "<error reading value>"; }
     }
 
+    // Reads a primitive value element from a value-type array using the matching GetValue<T> overload.
     private static string ReadPrimitiveArrayElement(ClrArray arr, int index, ClrElementType elemType)
     {
         try
@@ -253,6 +258,7 @@ internal static class ObjectInspectCommand
         catch { return "<error>"; }
     }
 
+    // Maps a heap address to a generation label (LOH/POH/Frozen/GenX/?). 
     private static string GetGenLabel(DumpContext ctx, ulong addr)
     {
         var seg = ctx.Heap.GetSegmentByAddress(addr);
@@ -267,6 +273,7 @@ internal static class ObjectInspectCommand
         };
     }
 
+    // Returns "Gen0", "Gen1", or "Gen2" for an address inside an ephemeral segment.
     private static string EphemeralGen(ClrSegment seg, ulong addr)
     {
         if (seg.Generation0.Contains(addr)) return "Gen0";
@@ -274,6 +281,7 @@ internal static class ObjectInspectCommand
         return "Gen2";
     }
 
+    // Parses "0x1234ABCD" or "1234ABCD" hex strings into a ulong address.
     private static bool TryParseHex(string s, out ulong value)
     {
         s = s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s[2..] : s;

@@ -125,10 +125,7 @@ internal static class ExceptionAnalysisCommand
         var totals   = new Dictionary<string, int>();
         int totalAll = 0;
 
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start("Scanning exception objects...", statusCtx =>
+        CommandBase.RunStatus("Scanning exception objects...", upd =>
             {
                 var watch    = Stopwatch.StartNew();
                 long visited = 0;
@@ -163,7 +160,7 @@ internal static class ExceptionAnalysisCommand
                     visited++;
                     if (watch.Elapsed.TotalSeconds >= 1)
                     {
-                        statusCtx.Status($"Scanning exception objects — {visited:N0} visited, {totalAll:N0} found");
+                        upd($"Scanning exception objects — {visited:N0} visited, {totalAll:N0} found");
                         watch.Restart();
                     }
                 }

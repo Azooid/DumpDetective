@@ -127,6 +127,12 @@ internal static class TrendAnalysisCommand
 
         var snapshots = new List<DumpDetective.Models.DumpSnapshot>();
 
+        // Full mode: capture sub-reports while each dump is still open, eliminating
+        // a second pass through the dump files later. null in lightweight mode.
+        DumpDetective.Models.ReportDoc?[]? capturedSubReports = full
+            ? new DumpDetective.Models.ReportDoc?[dumpPaths.Count]
+            : null;
+
         for (int i = 0; i < dumpPaths.Count; i++)
         {
             var label    = $"D{i + 1}";
@@ -134,32 +140,69 @@ internal static class TrendAnalysisCommand
             var dispName = ShortName(path);
             DumpSnapshot? snap = null;
 
-            AnsiConsole.Status()
-                .Spinner(Spinner.Known.Dots)
-                .SpinnerStyle(Style.Parse("blue"))
-                .Start($"[bold]{label}[/]  {Markup.Escape(dispName)}  opening...", ctx =>
+            ToolMemoryDiagnostic.BeginDumpScope(label);
+
+            // Open the dump once for both snapshot collection and (in full mode)
+            // sub-report capture — the file is never opened a second time.
+            {
+                using var dumpCtx = DumpContext.Open(path);
+
+                AnsiConsole.Status()
+                    .Spinner(Spinner.Known.Dots)
+                    .SpinnerStyle(Style.Parse("blue"))
+                    .Start($"[bold]{label}[/]  {Markup.Escape(dispName)}  opening...", spinCtx =>
+                    {
+                        void Upd(string msg) =>
+                            spinCtx.Status($"[bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  {Markup.Escape(msg)}");
+                        snap = full
+                            ? DumpCollector.CollectFull(dumpCtx, Upd)
+                            : DumpCollector.CollectLightweight(dumpCtx, Upd);
+                    });
+
+                snapshots.Add(snap!);
+                var sc = snap!.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
+                AnsiConsole.MarkupLine(
+                    $"  [green]✓[/]  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
+                    $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
+
+                if (capturedSubReports is not null)
                 {
-                    void Upd(string msg) =>
-                        ctx.Status($"[bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  {Markup.Escape(msg)}");
-                    snap = full
-                        ? DumpCollector.CollectFull(path, Upd)
-                        : DumpCollector.CollectLightweight(path, Upd);
-                });
+                    CommandBase.SuppressVerbose = true;
+                    try
+                    {
+                        var cap = new DumpDetective.Output.CaptureSink();
+                        cap.Header(
+                            $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
+                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
+                        AnalyzeCommand.RenderReport(snap, cap, includeHeader: false);
+                        AnalyzeCommand.RenderEmbeddedReports(dumpCtx, cap);
+                        capturedSubReports[i] = cap.GetDoc();
+                    }
+                    catch (Exception ex)
+                    {
+                        AnsiConsole.MarkupLine($"  [yellow]⚠ Sub-reports partial: {Markup.Escape(ex.Message)}[/]");
+                        var capErr = new DumpDetective.Output.CaptureSink();
+                        capErr.Alert(DumpDetective.Output.AlertLevel.Warning,
+                            $"Sub-reports incomplete for {dispName}: {ex.Message}");
+                        capturedSubReports[i] = capErr.GetDoc();
+                    }
+                    finally
+                    {
+                        CommandBase.SuppressVerbose = false;
+                    }
+                }
+                // dumpCtx (DataTarget + ClrRuntime) disposed here — before GC sweep
+            }
 
-            snapshots.Add(snap!);
-            var sc = snap!.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
-            AnsiConsole.MarkupLine(
-                $"  [green]✓[/]  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
-                $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
-
-            // Non-blocking sweep between dumps — releases typeStats, stringValues,
-            // delFieldsCache etc. while the next dump file is being opened (I/O time).
-            // No compaction: avoids the multi-second STW pause from moving objects.
+            // Release large snapshot collections between dumps
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(1, GCCollectionMode.Forced, blocking: true, compacting: true);
+
+            ToolMemoryDiagnostic.EndDumpScope();
         }
 
+        ToolMemoryDiagnostic.PrintDumpScopes();
         AnsiConsole.WriteLine();
 
         // Validate and convert to 0-based
@@ -174,62 +217,9 @@ internal static class TrendAnalysisCommand
         // ── .json output = save raw snapshots (re-renderable with trend-render) ────────
         if (output is not null && output.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
-            // In full mode, capture every sub-command's rendered output per dump so
-            // trend-render can replay it later without reopening the dump files.
-            DumpDetective.Models.ReportDoc?[]? subReports = null;
-            if (full)
-            {
-                subReports = new DumpDetective.Models.ReportDoc?[snapshots.Count];
-                AnsiConsole.MarkupLine("[bold]Capturing per-dump sub-reports for JSON export…[/]");
-                CommandBase.SuppressVerbose = true;
-                try
-                {
-                    for (int i = 0; i < dumpPaths.Count; i++)
-                    {
-                        var label    = $"D{i + 1}";
-                        var path     = dumpPaths[i];
-                        var snap     = snapshots[i];
-                        var sc       = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
-                        AnsiConsole.MarkupLine(
-                            $"  [bold]{label}[/]  [dim]{Markup.Escape(ShortName(path))}[/]  " +
-                            $"[{sc}]{snap.HealthScore}/100[/]");
-
-                        var cap = new DumpDetective.Output.CaptureSink();
-
-                        // Add the per-dump chapter header to the capture
-                        cap.Header(
-                            $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
-                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
-
-                        // Scored summary from snapshot (no heap re-open needed)
-                        AnalyzeCommand.RenderReport(snap, cap, includeHeader: false);
-
-                        // Full sub-reports — re-open dump for live heap-walk commands
-                        try
-                        {
-                            using var ctx = DumpContext.Open(path);
-                            AnalyzeCommand.RenderEmbeddedReports(ctx, cap);
-                        }
-                        catch (Exception ex)
-                        {
-                            AnsiConsole.MarkupLine($"  [yellow]⚠ Sub-reports partial: {Markup.Escape(ex.Message)}[/]");
-                            cap.Alert(DumpDetective.Output.AlertLevel.Warning,
-                                $"Sub-reports incomplete for {ShortName(path)}: {ex.Message}");
-                        }
-
-                        subReports[i] = cap.GetDoc();
-
-                        GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                        GC.WaitForPendingFinalizers();
-                    }
-                }
-                finally
-                {
-                    CommandBase.SuppressVerbose = false;
-                }
-            }
-
-            TrendRawSerializer.Save(snapshots, output, subReports);
+            // Sub-reports were already captured during collection (full mode).
+            // No second pass through dump files is needed.
+            TrendRawSerializer.Save(snapshots, output, capturedSubReports);
             AnsiConsole.MarkupLine($"[dim]→ Raw snapshot data written to:[/] {Markup.Escape(output)}");
             AnsiConsole.MarkupLine("[dim]Use 'trend-render' to convert to HTML/Markdown/text at any time.[/]");
             return 0;
@@ -238,47 +228,23 @@ internal static class TrendAnalysisCommand
         using var sink = IRenderSink.Create(output);
         RenderTrend(snapshots, sink, ignoreEvents, baselineIndex);
 
-        // ── Full mode: append per-dump scored summary + embedded sub-reports ──
-        if (full)
+        // ── Full mode: replay per-dump sub-reports captured during collection ──
+        if (capturedSubReports is not null)
         {
             AnsiConsole.MarkupLine("[bold]Rendering per-dump detailed reports…[/]");
             for (int i = 0; i < dumpPaths.Count; i++)
             {
-                var label    = $"D{i + 1}";
-                var path     = dumpPaths[i];
-                var snap     = snapshots[i];
-                var dispName = ShortName(path);
-                var sc       = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
+                var label = $"D{i + 1}";
+                var path  = dumpPaths[i];
+                var snap  = snapshots[i];
+                var sc    = snap.HealthScore >= 70 ? "green" : snap.HealthScore >= 40 ? "yellow" : "red";
                 AnsiConsole.MarkupLine(
-                    $"  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
+                    $"  [bold]{label}[/]  [dim]{Markup.Escape(ShortName(path))}[/]  " +
                     $"[{sc}]{snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}[/]");
 
-                // Chapter header for this dump
-                sink.Header(
-                    $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
-                    $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {ScoreLabel(snap.HealthScore)}");
-
-                // Mini scored summary (uses already-collected snapshot, no extra I/O).
-                // includeHeader:false avoids a duplicate "Analysis Report" hero —
-                // the "Per-Dump Report: DX" hero written above is sufficient.
-                AnalyzeCommand.RenderReport(snap, sink, includeHeader: false);
-
-                // Full sub-reports — re-open dump for live heap-walk commands
-                try
-                {
-                    using var ctx = DumpContext.Open(path);
-                    AnalyzeCommand.RenderEmbeddedReports(ctx, sink);
-                }
-                catch (Exception ex)
-                {
-                    AnsiConsole.MarkupLine($"  [yellow]⚠ Could not render sub-reports: {Markup.Escape(ex.Message)}[/]");
-                    sink.Alert(AlertLevel.Warning,
-                        $"Could not re-open {dispName} for sub-reports: {ex.Message}");
-                }
-
-                // Release memory between dumps
-                GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
-                GC.WaitForPendingFinalizers();
+                // Replay captured sub-reports — no file I/O needed
+                if (capturedSubReports[i] is { } doc)
+                    ReportDocReplay.Replay(doc, sink);
             }
         }
 
@@ -345,6 +311,10 @@ internal static class TrendAnalysisCommand
         sink.Header(
             "Dump Detective \u2014 Trend Analysis Report",
             $"{snaps.Count} dumps  |  {snaps[0].FileTime:yyyy-MM-dd HH:mm} \u2192 {sN.FileTime:yyyy-MM-dd HH:mm}  |  {(full ? "Full" : "Lightweight")} mode{baselineNote}");
+
+        // ── Diagnosis Summary Table ───────────────────────────────────────────
+        sink.Section("Diagnosis Summary");
+        RenderDiagnosisSummary(snaps, s0, sN, labels, baselineLabel, sink);
 
         // ── 1. Dump Timeline ──────────────────────────────────────────────────
         sink.Section("0. Dump Timeline");
@@ -515,20 +485,17 @@ internal static class TrendAnalysisCommand
                     leakTrend]);
             }
 
-            sink.Table(incidentCols, incidentRows,
-                "✓ good  ⚠ warning  ✗ critical  (thresholds are heuristic)");
-
-            // ── Executive summary paragraph ───────────────────────────────────────
-            // span = full timeline (first dump → last dump), independent of baseline
+            // ── Executive summary — structured blocks ─────────────────────────────
             var span      = sN.FileTime - snaps[0].FileTime;
             var spanStr   = span.TotalHours >= 1
                 ? $"{span.TotalHours:F1} hours" : $"{span.TotalMinutes:F0} minutes";
-            // score change compares baseline → latest
             var scoreChange = sN.HealthScore - s0.HealthScore;
-            var scoreDir  = scoreChange > 0 ? $"improved by {scoreChange} points"
-                : scoreChange < 0 ? $"declined by {Math.Abs(scoreChange)} points"
-                : "remained stable";
+            string scoreDelta = scoreChange == 0 ? "no change"
+                : scoreChange > 0 ? $"+{scoreChange} pts"
+                : $"{scoreChange} pts";
+            string scoreArrow = scoreChange > 0 ? "↑" : scoreChange < 0 ? "↓" : "~";
 
+            // Build critical / warning signal lists first so they can appear above the table
             var criticals = new List<string>();
             var warnings  = new List<string>();
 
@@ -557,48 +524,74 @@ internal static class TrendAnalysisCommand
             if (snaps.Any(s => s.StringWastedBytes > 0))
                 CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0,    tt.StringWasteWarnMb, tt.StringWasteCritMb);
 
-            // Memory leak signal for executive summary
+            // Memory leak signal
             {
                 double gen2PctN = sN.TotalHeapBytes > 0 ? sN.Gen2Bytes * 100.0 / sN.TotalHeapBytes : 0;
-                bool hasNewTypeN = sN.TopTypes.Any(t =>
-                    t.Count >= 500 && s0.TopTypes.All(b => b.Name != t.Name));
-                bool hasExplosiveN = sN.TopTypes.Any(t =>
+                bool hasNewTypeN    = sN.TopTypes.Any(t => t.Count >= 500 && s0.TopTypes.All(b => b.Name != t.Name));
+                bool hasExplosiveN  = sN.TopTypes.Any(t =>
                 {
                     var b = s0.TopTypes.FirstOrDefault(x => x.Name == t.Name);
                     return b is not null && b.Count > 0 &&
                            (t.Count - b.Count) * 100.0 / b.Count > 50 && t.Count >= 500;
                 });
-                if (gen2PctN > 50 || hasNewTypeN)
-                    criticals.Add("Memory Leak Suspects");
-                else if (gen2PctN > 30 || hasExplosiveN)
-                    warnings.Add("Memory Leak Suspects");
+                if (gen2PctN > 50 || hasNewTypeN)        criticals.Add("Memory Leak Suspects");
+                else if (gen2PctN > 30 || hasExplosiveN) warnings.Add("Memory Leak Suspects");
             }
 
-            var sb = new System.Text.StringBuilder();
-            string baselineSuffix = baselineIndex == 0 ? "" : $" (baseline: {baselineLabel})";
-            sb.Append($"Analysis covers {snaps.Count} memory dump{(snaps.Count == 1 ? "" : "s")} " +
-                      $"spanning {spanStr} ({snaps[0].FileTime:yyyy-MM-dd HH:mm} → {sN.FileTime:yyyy-MM-dd HH:mm}). ");
-            sb.Append($"Trends compare {labels[^1]} against baseline {baselineLabel}{baselineSuffix}. " +
-                      $"The application health score {scoreDir} " +
-                      $"({s0.HealthScore}/100 {ScoreLabel(s0.HealthScore)} → {sN.HealthScore}/100 {ScoreLabel(sN.HealthScore)}). ");
-            if (criticals.Count == 0 && warnings.Count == 0)
+            // Compute finding delta early so it can enrich the alert cards
+            static string Truncate(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+
+            var newFindings = sN.Findings
+                .Where(f => !s0.Findings.Any(x => x.Category == f.Category && x.Headline == f.Headline))
+                .ToList();
+            var resolvedFindings = s0.Findings
+                .Where(f => !sN.Findings.Any(x => x.Category == f.Category && x.Headline == f.Headline))
+                .ToList();
+
+            string findingDeltaDetail = string.Empty;
+            if (newFindings.Count > 0 || resolvedFindings.Count > 0)
             {
-                sb.Append("All monitored signals are within acceptable thresholds. No immediate action is required.");
+                var parts = new List<string>();
+                if (newFindings.Count > 0)
+                    parts.Add($"{newFindings.Count} new finding{(newFindings.Count == 1 ? "" : "s")}: " +
+                              string.Join("; ", newFindings.Take(3).Select(f => Truncate(f.Headline, 60))) +
+                              (newFindings.Count > 3 ? "…" : ""));
+                if (resolvedFindings.Count > 0)
+                    parts.Add($"{resolvedFindings.Count} resolved: " +
+                              string.Join("; ", resolvedFindings.Take(3).Select(f => Truncate(f.Headline, 60))) +
+                              (resolvedFindings.Count > 3 ? "…" : ""));
+                findingDeltaDetail = string.Join("  |  ", parts);
             }
-            else
-            {
-                if (criticals.Count > 0)
-                    sb.Append($"Critical signals requiring immediate attention: {string.Join(", ", criticals)}. ");
-                if (warnings.Count > 0)
-                    sb.Append($"Signals to monitor: {string.Join(", ", warnings)}. ");
-                sb.Append(criticals.Count > 0
-                    ? "Immediate investigation and remediation is recommended."
-                    : "The system is operational but should be monitored to prevent escalation.");
-            }
+
+            // ── 1. Key-value overview ──────────────────────────────────────────────
+            sink.KeyValues(
+            [
+                ("Dumps Analyzed", snaps.Count.ToString()),
+                ("Time Span",      $"{spanStr}  ({snaps[0].FileTime:yyyy-MM-dd HH:mm} → {sN.FileTime:yyyy-MM-dd HH:mm})"),
+                ("Comparison",     $"{labels[^1]} vs baseline {baselineLabel}"),
+                ("Health Score",   $"{s0.HealthScore}/100 {ScoreLabel(s0.HealthScore)}  →  {sN.HealthScore}/100 {ScoreLabel(sN.HealthScore)}  ({scoreArrow} {scoreDelta})"),
+            ]);
+
+            // ── 2. Alert cards (before table) ──────────────────────────────────────
+            if (criticals.Count > 0)
+                sink.Alert(AlertLevel.Critical,
+                    $"Critical signals ({criticals.Count}): {string.Join(" · ", criticals)}",
+                    detail: "These signals exceeded critical thresholds in the latest dump. Immediate investigation and remediation is recommended.");
+            else if (warnings.Count == 0)
+                sink.Alert(AlertLevel.Info,
+                    "All monitored signals are within acceptable thresholds.",
+                    detail: "No immediate action required. Continue monitoring.");
+
+            if (warnings.Count > 0)
+                sink.Alert(AlertLevel.Warning,
+                    $"Signals to monitor ({warnings.Count}): {string.Join(" · ", warnings)}",
+                    detail: "These signals exceeded warning thresholds but are not yet critical. Monitor for further degradation.");
+
+            // ── 3. Signal table ────────────────────────────────────────────────────
+            sink.Table(incidentCols, incidentRows,
+                "✓ good  ⚠ warning  ✗ critical  (thresholds are heuristic)");
 
             // ── Findings across dumps ─────────────────────────────────────────
-            // Collect all unique (Category, Headline, Severity) tuples across every snapshot
-            // then show which dumps raised each finding, sorted Critical → Warning → Info.
             var allFindings = snaps
                 .SelectMany(s => s.Findings.Select(f => (f.Severity, f.Category, f.Headline)))
                 .Distinct()
@@ -609,9 +602,6 @@ internal static class TrendAnalysisCommand
 
             if (allFindings.Count > 0)
             {
-                // One collapsible accordion per dump; inside, findings are rendered as
-                // styled alert cards grouped Critical → Warning → Info.
-                // First dump is open by default; subsequent ones are collapsed.
                 int dumpIdx = 0;
                 foreach (var (s, lbl) in snaps.Zip(labels))
                 {
@@ -624,7 +614,9 @@ internal static class TrendAnalysisCommand
                                     $"{(infoCount  > 0 ? $"  ℹ {infoCount} info"     : "")}";
                     sink.BeginDetails($"{lbl}  —  Score {s.HealthScore}/100 {ScoreLabel(s.HealthScore)}{badge}", open: dumpIdx == 0);
 
-                    foreach (var f in s.Findings.OrderBy(f => f.Severity == FindingSeverity.Critical ? 0 : f.Severity == FindingSeverity.Warning ? 1 : 2).ThenBy(f => f.Category))
+                    foreach (var f in s.Findings
+                        .OrderBy(f => f.Severity == FindingSeverity.Critical ? 0 : f.Severity == FindingSeverity.Warning ? 1 : 2)
+                        .ThenBy(f => f.Category))
                     {
                         var lvl = f.Severity == FindingSeverity.Critical ? AlertLevel.Critical
                                 : f.Severity == FindingSeverity.Warning  ? AlertLevel.Warning
@@ -636,27 +628,21 @@ internal static class TrendAnalysisCommand
                     dumpIdx++;
                 }
 
-                // Enrich executive summary with finding counts and any new/resolved findings
-                var newFindings = sN.Findings
-                    .Where(f => !s0.Findings.Any(x => x.Category == f.Category && x.Headline == f.Headline))
-                    .ToList();
-                var resolvedFindings = s0.Findings
-                    .Where(f => !sN.Findings.Any(x => x.Category == f.Category && x.Headline == f.Headline))
-                    .ToList();
-
+                // ── Finding delta table ────────────────────────────────────────────
                 if (newFindings.Count > 0 || resolvedFindings.Count > 0)
                 {
-                    sb.Append(" Finding changes between first and last dump:");
-                    if (newFindings.Count > 0)
-                        sb.Append($" {newFindings.Count} new finding{(newFindings.Count == 1 ? "" : "s")} appeared" +
-                                  $" ({string.Join("; ", newFindings.Take(3).Select(f => f.Headline))}{(newFindings.Count > 3 ? "…" : "")}).");
-                    if (resolvedFindings.Count > 0)
-                        sb.Append($" {resolvedFindings.Count} finding{(resolvedFindings.Count == 1 ? "" : "s")} resolved" +
-                                  $" ({string.Join("; ", resolvedFindings.Take(3).Select(f => f.Headline))}{(resolvedFindings.Count > 3 ? "…" : "")}).");
+                    var deltaRows = new List<string[]>();
+                    foreach (var f in newFindings)
+                        deltaRows.Add(["🆕 New", f.Category, Truncate(f.Headline, 70)]);
+                    foreach (var f in resolvedFindings)
+                        deltaRows.Add(["✅ Resolved", f.Category, Truncate(f.Headline, 70)]);
+
+                    sink.Table(
+                        ["Change", "Category", "Finding"],
+                        deltaRows,
+                        $"Finding changes between {baselineLabel} and {labels[^1]}");
                 }
             }
-
-            sink.Text(sb.ToString());
         }
 
         // ── 2. Overall Growth Summary ──────────────────────────────────────────────────
@@ -1132,6 +1118,58 @@ internal static class TrendAnalysisCommand
                 .Distinct()
                 .ToList();
 
+            // Gen2 dominance advisory + new-type accumulation check
+            double gen2PctLatest = Gen2Pct(sN);
+            double gen2PctBase   = Gen2Pct(s0);
+            double gen2Delta     = gen2PctLatest - gen2PctBase;
+
+            // Detect types that appeared from zero or grew explosively between baseline and latest
+            var newOrExplosive = allTypeNames
+                .Select(name =>
+                {
+                    long baseCount   = s0.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
+                    long latestCount = sN.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
+                    return (name, baseCount, latestCount);
+                })
+                .Where(x => x.latestCount >= 500 &&
+                            (x.baseCount == 0 ||
+                             (x.baseCount > 0 && (x.latestCount - x.baseCount) * 100.0 / x.baseCount > 50)))
+                .OrderByDescending(x => x.latestCount)
+                .Take(5)
+                .ToList();
+
+            bool hasNewTypes        = newOrExplosive.Any(x => x.baseCount == 0);
+            bool hasExplosiveGrowth = newOrExplosive.Any(x => x.baseCount > 0);
+
+            if (gen2PctLatest > 50)
+                sink.Alert(AlertLevel.Critical,
+                    $"Gen2 holds {gen2PctLatest:F1}% of heap in latest dump ({labels[^1]})",
+                    detail: "Objects are accumulating across GC generations — strong managed memory leak signal.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify suspect types and GC root chains.");
+            else if (gen2Delta > 10)
+                sink.Alert(AlertLevel.Warning,
+                    $"Gen2 grew from {gen2PctBase:F1}% ({baselineLabel}) to {gen2PctLatest:F1}% ({labels[^1]})",
+                    detail: $"+{gen2Delta:F1} percentage points across the analysis window.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify accumulating types.");
+            else if (hasNewTypes)
+                sink.Alert(AlertLevel.Critical,
+                    $"New high-count types appeared since {baselineLabel} that were absent before",
+                    detail: string.Join("\n",
+                        newOrExplosive.Where(x => x.baseCount == 0)
+                            .Select(x => $"{x.name}  (0 → {x.latestCount:N0})")),
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to trace GC root chains for these types.");
+            else if (hasExplosiveGrowth)
+                sink.Alert(AlertLevel.Warning,
+                    $"Types with >50% instance count growth between {baselineLabel} and {labels[^1]}",
+                    detail: string.Join("\n",
+                        newOrExplosive.Where(x => x.baseCount > 0)
+                            .Select(x => $"{x.name}  ({x.baseCount:N0} → {x.latestCount:N0})")),
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify the retaining root.");
+            else
+                sink.Alert(AlertLevel.Info,
+                    $"Gen2 at {gen2PctLatest:F1}% in latest dump ({labels[^1]}) — no strong leak signal from generation data alone.",
+                    advice: $"Run: memory-leak <dump>  on {labels[^1]} for deeper analysis including GC root chains.");
+
             var topByCount = allTypeNames
                 .Select(name =>
                 {
@@ -1158,59 +1196,210 @@ internal static class TrendAnalysisCommand
                     "Top 15 types by peak instance count — types growing over time are strong leak suspects. " +
                     "Run 'memory-leak <dump>' on the latest dump for GC root chains.");
             }
-
-            // Gen2 dominance advisory + new-type accumulation check
-            double gen2PctLatest = Gen2Pct(sN);
-            double gen2PctBase   = Gen2Pct(s0);
-            double gen2Delta     = gen2PctLatest - gen2PctBase;
-
-            // Detect types that appeared from zero or grew explosively between baseline and latest
-            var newOrExplosive = allTypeNames
-                .Select(name =>
-                {
-                    long baseCount   = s0.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
-                    long latestCount = sN.TopTypes.FirstOrDefault(x => x.Name == name)?.Count ?? 0;
-                    return (name, baseCount, latestCount);
-                })
-                .Where(x => x.latestCount >= 500 &&
-                            (x.baseCount == 0 ||
-                             (x.baseCount > 0 && (x.latestCount - x.baseCount) * 100.0 / x.baseCount > 50)))
-                .OrderByDescending(x => x.latestCount)
-                .Take(5)
-                .ToList();
-
-            bool hasNewTypes = newOrExplosive.Any(x => x.baseCount == 0);
-            bool hasExplosiveGrowth = newOrExplosive.Any(x => x.baseCount > 0);
-
-            if (gen2PctLatest > 50)
-                sink.Alert(AlertLevel.Critical,
-                    $"Gen2 holds {gen2PctLatest:F1}% of heap in latest dump ({labels[^1]})",
-                    detail: "Objects are accumulating across GC generations — strong managed memory leak signal.",
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify suspect types and GC root chains.");
-            else if (gen2Delta > 10)
-                sink.Alert(AlertLevel.Warning,
-                    $"Gen2 grew from {gen2PctBase:F1}% ({baselineLabel}) to {gen2PctLatest:F1}% ({labels[^1]})",
-                    detail: $"+{gen2Delta:F1} percentage points across the analysis window.",
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify accumulating types.");
-            else if (hasNewTypes)
-                sink.Alert(AlertLevel.Critical,
-                    $"New high-count types appeared since {baselineLabel} that were absent before",
-                    detail: string.Join("; ",
-                        newOrExplosive.Where(x => x.baseCount == 0)
-                            .Select(x => $"{x.name} (0 → {x.latestCount:N0})")),
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to trace GC root chains for these types.");
-            else if (hasExplosiveGrowth)
-                sink.Alert(AlertLevel.Warning,
-                    $"Types with >50% instance count growth between {baselineLabel} and {labels[^1]}",
-                    detail: string.Join("; ",
-                        newOrExplosive.Where(x => x.baseCount > 0)
-                            .Select(x => $"{x.name} ({x.baseCount:N0} → {x.latestCount:N0})")),
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} to identify the retaining root.");
-            else
-                sink.Alert(AlertLevel.Info,
-                    $"Gen2 at {gen2PctLatest:F1}% in latest dump ({labels[^1]}) — no strong leak signal from generation data alone.",
-                    advice: $"Run: memory-leak <dump>  on {labels[^1]} for deeper analysis including GC root chains.");
         }
+    }
+
+    // ── Diagnosis Summary Table ───────────────────────────────────────────────
+    // One row per unique finding across all dumps:
+    //   Severity | Analyzer | Title | Evidence (per-dump metric) | Recommendation
+
+    private static void RenderDiagnosisSummary(
+        List<DumpSnapshot> snaps,
+        DumpSnapshot       s0,
+        DumpSnapshot       sN,
+        string[]           labels,
+        string             baselineLabel,
+        IRenderSink        sink)
+    {
+        static string SevLabel(FindingSeverity s) => s switch
+        {
+            FindingSeverity.Critical => "CRITICAL",
+            FindingSeverity.Warning  => "WARNING",
+            _                        => "INFO",
+        };
+
+        static string Fs(long b)  => DumpHelpers.FormatSize(b);
+        static string N(double v) => v >= 1_000_000 ? $"{v / 1_000_000.0:F1}M"
+                                   : v >= 1_000      ? $"{v / 1_000.0:F1}K"
+                                   : v.ToString("N0");
+
+        // "D1: val  →  D2: val  →  DN: val"
+        string Join(Func<DumpSnapshot, string> sel) =>
+            string.Join("  \u2192  ", snaps.Select((s, i) => $"{labels[i]}: {sel(s)}"));
+
+        // ── Topic key ─────────────────────────────────────────────────────────
+        // Normalises a finding to a semantic key used for deduplication.
+        // All dump-specific numbers are absorbed by the key pattern,
+        // so "Finalizer queue has 2,087" and "Finalizer queue has 93,668"
+        // both collapse to the same "Memory|finalizer" key.
+
+        static string ExtractTypeName(string headline)
+        {
+            const string prefix = "High instance count: ";
+            int start = headline.IndexOf(prefix, StringComparison.OrdinalIgnoreCase);
+            if (start < 0) return headline;
+            string rest = headline[(start + prefix.Length)..];
+            int cross = rest.IndexOf('\u00d7');   // ×
+            return cross >= 0 ? rest[..cross].Trim() : rest.Trim();
+        }
+
+        static string TopicKey(Finding f)
+        {
+            string h = f.Headline.ToLowerInvariant();
+            return f.Category switch
+            {
+                "Memory" when h.Contains("finalizer")                              => "Memory|finalizer",
+                "Memory" when h.Contains("fragment")                               => "Memory|fragmentation",
+                "Memory" when h.Contains("loh")                                    => "Memory|loh",
+                "Memory" when h.Contains("pinned")                                 => "Memory|pinned",
+                "Memory" when h.Contains("string")                                 => "Memory|string",
+                "Memory"                                                            => "Memory|heap",
+                "Memory Leak" when h.Contains("gen2")                              => "MemoryLeak|gen2",
+                "Memory Leak"                                                       => $"MemoryLeak|{ExtractTypeName(f.Headline)}",
+                "Async"                                                             => "Async|backlog",
+                "Threading" when h.Contains("saturated") || h.Contains("capacity") => "Threading|tpsat",
+                "Threading"                                                         => "Threading|blocked",
+                "Connections"                                                       => "Connections|db",
+                "Leaks"     when h.Contains("event")                               => "Leaks|event",
+                "Leaks"                                                             => "Leaks|timer",
+                "Exceptions"                                                        => "Exceptions|active",
+                "WCF"                                                               => "WCF|faulted",
+                _                                                                   => $"{f.Category}|{f.Headline}",
+            };
+        }
+
+        // ── Canonical title ───────────────────────────────────────────────────
+        // Human-readable label for each topic key (no dump-specific numbers).
+
+        static string CanonicalTitle(string key) => key switch
+        {
+            "Memory|heap"           => "Heap Size",
+            "Memory|loh"            => "LOH (Large Object Heap) Growth",
+            "Memory|fragmentation"  => "Heap Fragmentation",
+            "Memory|finalizer"      => "Finalizer Queue Accumulating",
+            "Memory|pinned"         => "Pinned GC Handles",
+            "Memory|string"         => "String Duplication Waste",
+            "MemoryLeak|gen2"       => "Gen2 Memory Leak",
+            "Async|backlog"         => "Async Continuation Backlog",
+            "Threading|tpsat"       => "Thread Pool Saturation",
+            "Threading|blocked"     => "Blocked Threads",
+            "Connections|db"        => "DB Connection Leak",
+            "Leaks|event"           => "Event Handler Leak",
+            "Leaks|timer"           => "Timer Leak",
+            "Exceptions|active"     => "Active Thread Exceptions",
+            "WCF|faulted"           => "WCF Faulted Channels",
+            _ when key.StartsWith("MemoryLeak|")
+                                    => $"High Instance Count: {key["MemoryLeak|".Length..]}",
+            _                       => key.Contains('|') ? key[(key.IndexOf('|') + 1)..] : key,
+        };
+
+        static string FallbackAdvice(string key) => key switch
+        {
+            "Memory|heap"           => "Investigate large object allocations. Consider increasing GC LOH threshold or reviewing allocation patterns.",
+            "Memory|loh"            => "LOH is not compacted by default. Avoid frequent large allocations. Consider GCSettings.LargeObjectHeapCompactionMode.",
+            "Memory|fragmentation"  => "High fragmentation reduces allocation efficiency. Consider running GC.Collect(2, GCCollectionMode.Forced, true, true) during low-traffic periods.",
+            "Memory|finalizer"      => "Ensure IDisposable is implemented and Dispose() is called. Use 'using' statements to prevent finalizer queue buildup.",
+            "Memory|pinned"         => "Reduce GCHandle.Alloc(Pinned) usage. Prefer Memory<T>/Span<T> for interop. Unpin handles as soon as the native call completes.",
+            "Memory|string"         => "Intern repeated strings with string.Intern() or consolidate via a shared dictionary/lookup table.",
+            "MemoryLeak|gen2"       => "Identify types accumulating in Gen2. Run: gc-roots <dump> to trace retaining roots.",
+            "Async|backlog"         => "A downstream dependency is blocking async continuations. Profile the thread pool and check for synchronous blocking calls.",
+            "Threading|tpsat"       => "Thread pool is saturated. Reduce blocking calls inside async methods. Consider increasing thread pool min threads.",
+            "Threading|blocked"     => "Threads are blocked waiting on locks or I/O. Run: deadlock-detection <dump> to identify contention chains.",
+            "Connections|db"        => "SQL connections are not being returned to the pool. Ensure SqlConnection is wrapped in using or explicitly disposed.",
+            "Leaks|event"           => "Unsubscribe event handlers when objects are disposed. Use weak event patterns or WeakReference<T> for publisher/subscriber decoupling.",
+            "Leaks|timer"           => "Dispose System.Threading.Timer and System.Timers.Timer instances when no longer needed. Leaked timers keep closures alive.",
+            "Exceptions|active"     => "Frequent active exceptions degrade throughput. Review catch/rethrow patterns and eliminate exception-as-control-flow usage.",
+            "WCF|faulted"           => "Faulted WCF channels must be aborted (not closed). Call channel.Abort() in the catch block before recreating the channel.",
+            _ when key.StartsWith("MemoryLeak|")
+                                    => $"Run: memory-leak <dump> to trace GC root chains for {key["MemoryLeak|".Length..]}.",
+            _                       => "Investigate using the relevant per-dump analyzer command.",
+        };
+
+        // ── Per-topic evidence ─────────────────────────────────────────────────
+
+        string Evidence(string key)
+        {
+            if (key.StartsWith("MemoryLeak|") && key != "MemoryLeak|gen2")
+            {
+                string typeName = key["MemoryLeak|".Length..];
+                return Join(s =>
+                {
+                    var t = s.TopTypes.FirstOrDefault(x => x.Name == typeName);
+                    return t is null ? "0" : $"{N(t.Count)}  ({Fs(t.TotalBytes)})";
+                });
+            }
+
+            return key switch
+            {
+                "Memory|heap"           => Join(s => Fs(s.TotalHeapBytes)),
+                "Memory|loh"            => Join(s => Fs(s.LohBytes)),
+                "Memory|fragmentation"  => Join(s => $"{s.FragmentationPct:F1}%  ({Fs(s.HeapFreeBytes)} free)"),
+                "Memory|finalizer"      => Join(s => N(s.FinalizerQueueDepth)),
+                "Memory|pinned"         => Join(s => N(s.PinnedHandleCount)),
+                "Memory|string"         => Join(s => Fs(s.StringWastedBytes)),
+                "MemoryLeak|gen2"       => Join(s =>
+                                          {
+                                              double p = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+                                              return $"Gen2 {p:F1}%  ({Fs(s.Gen2Bytes)})";
+                                          }),
+                "Async|backlog"         => Join(s => $"{N(s.AsyncBacklogTotal)} continuations"),
+                "Threading|tpsat"       => Join(s => $"{s.TpActiveWorkers}/{s.TpMaxWorkers} workers"),
+                "Threading|blocked"     => Join(s => $"{N(s.BlockedThreadCount)} blocked"),
+                "Connections|db"        => Join(s => $"{N(s.ConnectionCount)} connections"),
+                "Leaks|event"           => Join(s => $"{N(s.EventSubscriberTotal)} subscribers, {s.EventLeakFieldCount} fields"),
+                "Leaks|timer"           => Join(s => $"{N(s.TimerCount)} timers"),
+                "Exceptions|active"     => Join(s => $"{N(s.ExceptionThreadCount)} threads"),
+                "WCF|faulted"           => Join(s => $"{N(s.WcfFaultedCount)} faulted"),
+                _                       => "\u2014",
+            };
+        }
+
+        // ── Deduplicate & build rows ───────────────────────────────────────────
+
+        var dedupedRows = snaps
+            .SelectMany(s => s.Findings)
+            .Where(f => f.Severity != FindingSeverity.Info)
+            .GroupBy(f => TopicKey(f))
+            .Select(g =>
+            {
+                var best = g.OrderByDescending(f => (int)f.Severity).First();
+                return (
+                    key:      g.Key,
+                    severity: best.Severity,
+                    category: best.Category,
+                    title:    CanonicalTitle(g.Key),
+                    advice:   best.Advice ?? FallbackAdvice(g.Key)
+                );
+            })
+            .OrderBy(r  => r.severity == FindingSeverity.Critical ? 0 : 1)
+            .ThenBy(r   => r.category)
+            .ThenBy(r   => r.title)
+            .ToList();
+
+        if (dedupedRows.Count == 0)
+        {
+            sink.Alert(AlertLevel.Info, "No findings above warning threshold across all dumps.",
+                "All monitored signals are within acceptable thresholds.");
+            return;
+        }
+
+        var tableRows = dedupedRows
+            .Select(r => new[]
+            {
+                SevLabel(r.severity),
+                r.category,
+                r.title,
+                Evidence(r.key),
+                r.advice,
+            })
+            .ToList();
+
+        sink.Table(
+            ["Severity", "Analyzer", "Title", "Evidence", "Recommendation"],
+            tableRows,
+            $"One row per signal, deduplicated across all {snaps.Count} dump(s).  " +
+            $"Evidence shows per-dump metric progression ({labels[0]} \u2192 {labels[^1]}).  " +
+            "Sorted: CRITICAL first.");
     }
 
     static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";
@@ -1229,19 +1418,39 @@ internal static class TrendAnalysisCommand
     {
         // New type appeared (was absent in baseline)
         if (first <= 0)
-        {
-            if (last > 0)
-                return higherIsBad ? "↑↑ new" : "↓ appeared";
-            return "~";
-        }
+            return last > 0 ? (higherIsBad ? "↑ new" : "↓ appeared") : "~";
+
         // Type disappeared
         if (last <= 0)
             return higherIsBad ? "↓ gone" : "↑ resolved";
 
-        double pct   = (last - first) / first * 100;
-        string arrow = pct > 50 ? "↑↑" : pct > 10 ? "↑" : pct < -10 ? "↓" : "~";
-        if (higherIsBad && pct > 50) arrow += " ↑↑";
-        else if (higherIsBad && pct > 10) arrow += " ↑";
-        return arrow;
+        double pct = (last - first) / first * 100;
+
+        // Direction arrow + % change + plain-English severity label
+        string sign  = pct >= 0 ? "+" : "";
+        string pctStr = Math.Abs(pct) >= 1_000 ? $"{sign}{pct / 1_000.0:F1}K%"
+                      : $"{sign}{pct:F0}%";
+
+        string label;
+        if (higherIsBad)
+        {
+            label = pct >  500 ? "↑↑ explosive growth"
+                  : pct >  100 ? "↑↑ severe increase"
+                  : pct >   50 ? "↑ significant increase"
+                  : pct >   10 ? "↑ moderate increase"
+                  : pct <  -50 ? "↓ significant drop"
+                  : pct <  -10 ? "↓ improving"
+                  :              "~ stable";
+        }
+        else
+        {
+            label = pct < -50 ? "↑↑ severe drop"
+                  : pct < -10 ? "↑ declining"
+                  : pct >  50 ? "↓ strong improvement"
+                  : pct >  10 ? "↓ improving"
+                  :              "~ stable";
+        }
+
+        return $"{label}  ({pctStr})";
     }
 }

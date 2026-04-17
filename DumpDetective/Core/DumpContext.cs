@@ -21,6 +21,32 @@ public sealed class DumpContext : IDisposable
     /// <summary>Non-null when the dump architecture differs from this tool's process architecture.</summary>
     public string?    ArchWarning { get; }
 
+    HeapSnapshot? _snapshot;
+
+    /// <summary>
+    /// Cached heap snapshot built by <see cref="EnsureSnapshot"/>.
+    /// Non-null after the first call to <see cref="EnsureSnapshot"/>.
+    /// </summary>
+    internal HeapSnapshot? Snapshot => _snapshot;
+
+    /// <summary>
+    /// Builds (or returns the cached) heap snapshot — a single walk that collects
+    /// type stats, inbound reference counts, string groups, and generation counts.
+    /// Calling this before running multiple sub-commands avoids per-command heap walks.
+    /// </summary>
+    internal HeapSnapshot EnsureSnapshot()
+    {
+        _snapshot ??= HeapSnapshot.Build(this);
+        return _snapshot;
+    }
+
+    /// <summary>
+    /// Injects a <see cref="HeapSnapshot"/> built externally during a combined collection walk,
+    /// so subsequent calls to <see cref="EnsureSnapshot"/> return it immediately without a
+    /// second heap enumeration.
+    /// </summary>
+    internal void PreloadSnapshot(HeapSnapshot snap) => _snapshot ??= snap;
+
     private DumpContext(string path, DataTarget dt, ClrRuntime rt, string? archWarning)
     {
         DumpPath    = path;

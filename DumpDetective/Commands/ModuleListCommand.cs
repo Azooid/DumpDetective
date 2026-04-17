@@ -5,6 +5,8 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Lists all loaded managed assemblies, categorized as App/System/GAC.
+// Detects duplicate assembly names loaded from multiple paths.
 internal static class ModuleListCommand
 {
     private const string Help = """
@@ -21,12 +23,15 @@ internal static class ModuleListCommand
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        string? filter = null; bool appOnly = false;
+        string? filter = null;
+        bool appOnly = false;
         var (dumpPath, output) = CommandBase.ParseCommon(args);
         for (int i = 0; i < args.Length; i++)
         {
-            if ((args[i] is "--filter" or "-f") && i + 1 < args.Length) filter = args[++i];
-            else if (args[i] == "--app-only") appOnly = true;
+            if ((args[i] is "--filter" or "-f") && i + 1 < args.Length)
+                filter = args[++i];
+            else if (args[i] == "--app-only")
+                appOnly = true;
         }
 
         return CommandBase.Execute(dumpPath, output, (ctx, sink) => Render(ctx, sink, filter, appOnly));
@@ -40,25 +45,7 @@ internal static class ModuleListCommand
             "Dump Detective — Module List",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
-        var modules = ctx.Runtime.EnumerateModules().ToList();
-
-        var rows = modules
-            .Select(m =>
-            {
-                string path = m.Name ?? m.AssemblyName ?? "<unknown>";
-                string fn   = Path.GetFileName(path);
-                long   size = m.MetadataAddress > 0 ? (long)m.Size : 0;
-                string kind = ModuleKind(path);
-
-                return (Path: path, FileName: fn, Kind: kind, Size: size);
-            })
-            .Where(m => filter is null || m.Path.Contains(filter, StringComparison.OrdinalIgnoreCase))
-            .Where(m => !appOnly || m.Kind == "App")
-            .OrderBy(m => m.Kind == "App" ? 0 : m.Kind == "GAC" ? 1 : 2)
-            .ThenBy(m => m.FileName)
-            .ToList();
-
-        // Detect duplicates: same filename loaded from multiple paths
+        var rows = ScanModules(ctx, filter, appOnly);
         var duplicates = rows
             .GroupBy(m => m.FileName, StringComparer.OrdinalIgnoreCase)
             .Where(g => g.Count() > 1)
@@ -70,39 +57,65 @@ internal static class ModuleListCommand
                 "Duplicate assemblies can cause type identity mismatches and unexpected behavior.",
                 "Ensure only one version of each assembly is deployed. Check binding redirects.");
 
+        RenderModuleTable(sink, rows, duplicates.Count);
+        if (duplicates.Count > 0)
+            RenderDuplicateAccordions(sink, duplicates);
+    }
+
+    // Enumerates all loaded managed modules, applies name/kind filters, and returns ordered rows.
+    static List<(string Path, string FileName, string Kind, long Size)>
+        ScanModules(DumpContext ctx, string? filter, bool appOnly) =>
+        ctx.Runtime.EnumerateModules()
+            .Select(m =>
+            {
+                string path = m.Name ?? m.AssemblyName ?? "<unknown>";
+                string fn   = Path.GetFileName(path);
+                long   size = m.MetadataAddress > 0 ? (long)m.Size : 0;
+                string kind = ModuleKind(path);
+                return (Path: path, FileName: fn, Kind: kind, Size: size);
+            })
+            .Where(m => filter is null || m.Path.Contains(filter, StringComparison.OrdinalIgnoreCase))
+            .Where(m => !appOnly || m.Kind == "App")
+            .OrderBy(m => m.Kind == "App" ? 0 : m.Kind == "GAC" ? 1 : 2)
+            .ThenBy(m => m.FileName)
+            .ToList();
+
+    // Renders the module table and summary key-values.
+    static void RenderModuleTable(IRenderSink sink,
+        List<(string Path, string FileName, string Kind, long Size)> rows, int dupCount)
+    {
         sink.Section("Loaded Modules");
         sink.Table(
             ["Assembly", "Kind", "Size", "Path"],
             rows.Select(m => new[] { m.FileName, m.Kind, DumpHelpers.FormatSize(m.Size), m.Path }).ToList(),
             $"{rows.Count} module(s)");
 
-        int appCount    = rows.Count(m => m.Kind == "App");
-        int systemCount = rows.Count(m => m.Kind == "System");
-        int gacCount    = rows.Count(m => m.Kind == "GAC");
-
         sink.KeyValues([
             ("Total modules",   rows.Count.ToString("N0")),
-            ("App modules",     appCount.ToString("N0")),
-            ("System modules",  systemCount.ToString("N0")),
-            ("GAC modules",     gacCount.ToString("N0")),
-            ("Duplicate names", duplicates.Count.ToString("N0")),
+            ("App modules",     rows.Count(m => m.Kind == "App").ToString("N0")),
+            ("System modules",  rows.Count(m => m.Kind == "System").ToString("N0")),
+            ("GAC modules",     rows.Count(m => m.Kind == "GAC").ToString("N0")),
+            ("Duplicate names", dupCount.ToString("N0")),
         ]);
+    }
 
-        if (duplicates.Count > 0)
+    // Renders per-duplicate-name collapsible accordions (each group = same filename, different paths).
+    static void RenderDuplicateAccordions(IRenderSink sink,
+        IEnumerable<IGrouping<string, (string Path, string FileName, string Kind, long Size)>> duplicates)
+    {
+        sink.Section("Duplicate Assemblies");
+        foreach (var dup in duplicates)
         {
-            sink.Section("Duplicate Assemblies");
-            foreach (var dup in duplicates)
-            {
-                sink.BeginDetails($"{dup.Key}  — {dup.Count()} copies", open: true);
-                var dupRows = dup.Select(m => new[] { m.Kind, DumpHelpers.FormatSize(m.Size), m.Path }).ToList();
-                sink.Table(["Kind", "Size", "Path"], dupRows);
-                sink.EndDetails();
-            }
+            sink.BeginDetails($"{dup.Key}  — {dup.Count()} copies", open: true);
+            var dupRows = dup.Select(m => new[] { m.Kind, DumpHelpers.FormatSize(m.Size), m.Path }).ToList();
+            sink.Table(["Kind", "Size", "Path"], dupRows);
+            sink.EndDetails();
         }
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // Classifies a module path as "GAC", "System", or "App".
     static string ModuleKind(string path)
     {
         if (IsGac(path))    return "GAC";
@@ -110,12 +123,15 @@ internal static class ModuleListCommand
         return "App";
     }
 
+    // Returns true for paths containing standard GAC directory segments.
     static bool IsGac(string path) =>
         path.Contains("\\GAC_MSIL\\",     StringComparison.OrdinalIgnoreCase) ||
         path.Contains("\\GAC_32\\",       StringComparison.OrdinalIgnoreCase) ||
         path.Contains("\\GAC_64\\",       StringComparison.OrdinalIgnoreCase) ||
         path.Contains("\\assembly\\GAC", StringComparison.OrdinalIgnoreCase);
 
+    // Returns true for files starting with System.*, mscorlib, netstandard, or
+    // loaded from well-known .NET runtime paths.
     static bool IsSystem(string path)
     {
         var fn = Path.GetFileName(path);

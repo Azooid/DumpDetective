@@ -6,6 +6,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Enumerates all pinned GC handles (GCHandle.Alloc(Pinned) and async-I/O variants).
+// Alerts on high pinned counts that cause heap fragmentation, and shows type
+// and generation distribution.
 internal static class PinnedObjectsCommand
 {
     private const string Help = """
@@ -38,13 +41,28 @@ internal static class PinnedObjectsCommand
             "Dump Detective — Pinned Objects",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
+        var items = ScanPinnedHandles(ctx);
+
+        sink.Section("Pinned Objects");
+        if (items.Count == 0) { sink.Alert(AlertLevel.Info, "No pinned GC handles found."); return; }
+
+        RenderSummary(sink, items);
+        RenderTypeBreakdown(sink, items);
+        RenderGenDistribution(sink, items);
+        RenderAddressDetail(sink, items, showAddr);
+    }
+
+    // Enumerates all pinned GC handles and materializes each into a PinnedItem with
+    // type name, address, size, generation, and whether it is an async-pinned variant.
+    static List<PinnedItem> ScanPinnedHandles(DumpContext ctx)
+    {
         var items = new List<PinnedItem>();
         foreach (var h in ctx.Runtime.EnumerateHandles())
         {
             if (!h.IsPinned || h.Object == 0) continue;
-            var obj  = ctx.Heap.GetObject(h.Object);
-            string gen  = GetGenLabel(ctx, h.Object);
-            bool async  = h.HandleKind != ClrHandleKind.Pinned;   // AsyncPinned or other pinned variant
+            var obj   = ctx.Heap.GetObject(h.Object);
+            string gen = GetGenLabel(ctx, h.Object);
+            bool async = h.HandleKind != ClrHandleKind.Pinned;   // AsyncPinned or other pinned variant
             items.Add(new PinnedItem(
                 obj.Type?.Name ?? "<unknown>",
                 h.Object,
@@ -52,16 +70,17 @@ internal static class PinnedObjectsCommand
                 gen,
                 async));
         }
+        return items;
+    }
 
-        sink.Section("Pinned Objects");
-        if (items.Count == 0) { sink.Alert(AlertLevel.Info, "No pinned GC handles found."); return; }
-
+    // Renders KVs, fragmentation-level alerts, and the byte[] specific advisory.
+    static void RenderSummary(IRenderSink sink, List<PinnedItem> items)
+    {
         int  pinnedCount      = items.Count(i => !i.IsAsyncPinned);
         int  asyncPinnedCount = items.Count(i =>  i.IsAsyncPinned);
         long totalSize        = items.Sum(i => i.Size);
         int  inSohCount       = items.Count(i => i.Gen is "Gen0" or "Gen1" or "Gen2");
 
-        // ── Summary key-values ────────────────────────────────────────────────
         sink.KeyValues([
             ("GCHandle.Pinned",         pinnedCount.ToString("N0")),
             ("Async-Pinned (I/O)",      asyncPinnedCount.ToString("N0")),
@@ -70,7 +89,6 @@ internal static class PinnedObjectsCommand
             ("In SOH (Gen0/Gen1/Gen2)", inSohCount.ToString("N0")),
         ]);
 
-        // ── Alerts ────────────────────────────────────────────────────────────
         if (items.Count >= 2000)
             sink.Alert(AlertLevel.Critical,
                 $"{items.Count:N0} pinned handles — severe fragmentation risk.",
@@ -93,8 +111,11 @@ internal static class PinnedObjectsCommand
                 $"{DumpHelpers.FormatSize(byteArraySize)} in pinned byte[] arrays.",
                 "Byte[] is the most common pinned type from socket/file I/O.",
                 "Use ArrayPool<byte>.Shared or PipeReader/PipeWriter to avoid pinning.");
+    }
 
-        // ── Type breakdown ────────────────────────────────────────────────────
+    // Renders pinned-object type breakdown table sorted by total size.
+    static void RenderTypeBreakdown(IRenderSink sink, List<PinnedItem> items)
+    {
         var typeRows = items
             .GroupBy(i => i.TypeName)
             .OrderByDescending(g => g.Sum(i => i.Size))
@@ -108,8 +129,11 @@ internal static class PinnedObjectsCommand
             })
             .ToList();
         sink.Table(["Type", "Count", "Total Size", "Async-Pinned", "GC-Pinned"], typeRows, "Pinned objects by type");
+    }
 
-        // ── Generation distribution ───────────────────────────────────────────
+    // Renders the generation distribution table for pinned handles.
+    static void RenderGenDistribution(IRenderSink sink, List<PinnedItem> items)
+    {
         var genRows = items
             .GroupBy(i => i.Gen)
             .OrderBy(g => GenSortKey(g.Key))
@@ -122,29 +146,34 @@ internal static class PinnedObjectsCommand
             .ToList();
         sink.Table(["Generation", "Count", "Total Size"], genRows,
             "Generation distribution — Gen0/Gen1/Gen2 pinning causes fragmentation");
+    }
 
-        // ── Address detail ────────────────────────────────────────────────────
-        if (showAddr)
+    // Renders per-type address accordions (up to 100 addresses each) when --addresses is set.
+    static void RenderAddressDetail(IRenderSink sink, List<PinnedItem> items, bool showAddr)
+    {
+        if (!showAddr) return;
+
+        foreach (var group in items.GroupBy(i => i.TypeName).OrderByDescending(g => g.Count()))
         {
-            foreach (var group in items.GroupBy(i => i.TypeName).OrderByDescending(g => g.Count()))
-            {
-                var addrRows = group
-                    .Take(100)
-                    .Select(i => new[]
-                    {
-                        $"0x{i.Addr:X16}",
-                        DumpHelpers.FormatSize(i.Size),
-                        i.Gen,
-                        i.IsAsyncPinned ? "Async" : "GC",
-                    })
-                    .ToList();
-                sink.BeginDetails($"{group.Key}  ({group.Count():N0} handle(s))", open: false);
-                sink.Table(["Address", "Size", "Gen", "Kind"], addrRows);
-                sink.EndDetails();
-            }
+            var addrRows = group
+                .Take(100)
+                .Select(i => new[]
+                {
+                    $"0x{i.Addr:X16}",
+                    DumpHelpers.FormatSize(i.Size),
+                    i.Gen,
+                    i.IsAsyncPinned ? "Async" : "GC",
+                })
+                .ToList();
+            sink.BeginDetails($"{group.Key}  ({group.Count():N0} handle(s))", open: false);
+            sink.Table(["Address", "Size", "Gen", "Kind"], addrRows);
+            sink.EndDetails();
         }
     }
 
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    // Returns "LOH" / "POH" / "Frozen" / "Gen0" / "Gen1" / "Gen2" / "?" for the address.
     private static string GetGenLabel(DumpContext ctx, ulong addr)
     {
         var seg = ctx.Heap.GetSegmentByAddress(addr);
@@ -159,6 +188,7 @@ internal static class PinnedObjectsCommand
         };
     }
 
+    // Determines the ephemeral sub-generation (Gen0/1/2) from segment sub-range data.
     private static string EphemeralGen(ClrSegment seg, ulong addr)
     {
         if (seg.Generation0.Contains(addr)) return "Gen0";
@@ -166,6 +196,7 @@ internal static class PinnedObjectsCommand
         return "Gen2";
     }
 
+    // Numeric sort key so that generation rows display in ascending Gen0 → Gen1 → Gen2 → LOH → POH order.
     private static int GenSortKey(string gen) => gen switch
     {
         "Gen0" => 0, "Gen1" => 1, "Gen2" => 2, "LOH" => 3, "POH" => 4, _ => 5

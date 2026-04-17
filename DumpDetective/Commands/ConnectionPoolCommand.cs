@@ -106,7 +106,7 @@ internal static partial class ConnectionPoolCommand
     static List<ConnectionInfo> ScanConnections(DumpContext ctx)
     {
         var connections = new List<ConnectionInfo>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning connection objects...", _ =>
+        CommandBase.RunStatus("Scanning connection objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
@@ -128,7 +128,7 @@ internal static partial class ConnectionPoolCommand
     static List<(string Type, string CommandText)> ScanCommands(DumpContext ctx)
     {
         var commandTexts = new List<(string Type, string CommandText)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning DbCommand objects...", _ =>
+        CommandBase.RunStatus("Scanning DbCommand objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
@@ -274,12 +274,12 @@ internal static partial class ConnectionPoolCommand
         }
 
         var cmdGroups = commandTexts
-            .GroupBy(c => c.CommandText.Length > 200 ? c.CommandText[..200] : c.CommandText)
+            .GroupBy(c => c.CommandText)
             .Select(g => new[]
             {
                 g.Count().ToString("N0"),
                 g.First().Type.Contains('.') ? g.First().Type[(g.First().Type.LastIndexOf('.') + 1)..] : g.First().Type,
-                g.Key.Length > 120 ? g.Key[..117] + "…" : g.Key,
+                g.Key,
             })
             .OrderByDescending(r => int.Parse(r[0].Replace(",", "")))
             .ToList();

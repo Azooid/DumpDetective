@@ -6,6 +6,9 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands;
 
+// Enumerates non-null static reference fields across all application domain modules.
+// Performs a BFS walk from each field to estimate the retained object-graph size,
+// highlighting collection fields that may hold unbounded state.
 internal static class StaticRefsCommand
 {
     private const string Help = """
@@ -44,14 +47,45 @@ internal static class StaticRefsCommand
             "Dump Detective — Static Reference Fields",
             $"{Path.GetFileName(ctx.DumpPath)}  |  {ctx.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {ctx.ClrVersion ?? "unknown"}");
 
-        // Enumerate via module type-def map — covers all types, even those with no live instances
-        // (unlike the old heap-object approach which missed never-instantiated static classes).
+        var (byDeclType, sizeByDeclType, total, totalSize) =
+            ScanStaticFields(ctx, filter, excludes, showAddr);
+
+        sink.Section("Non-Null Static Reference Fields");
+        if (total == 0) { sink.Text("No non-null static reference fields found."); return; }
+
+        sink.KeyValues([
+            ("Declaring types",        byDeclType.Count.ToString("N0")),
+            ("Static fields",          total.ToString("N0")),
+            ("Total retained size",    DumpHelpers.FormatSize(totalSize)),
+            ("Largest declaring type", sizeByDeclType.Count > 0
+                                            ? $"{sizeByDeclType.MaxBy(kv => kv.Value).Key.Split('.').Last()}  ({DumpHelpers.FormatSize(sizeByDeclType.MaxBy(kv => kv.Value).Value)})"
+                                            : "—"),
+            ("Collection fields",      byDeclType.Values.SelectMany(v => v).Count(r => r.Row[3] == "✓").ToString("N0")),
+        ]);
+
+        sink.Alert(AlertLevel.Info,
+            "Static object references are permanent GC roots — they keep entire object graphs alive for the process lifetime.",
+            advice: "Prefer scoped DI registrations over static state. Use WeakReference<T> for caches.");
+
+        RenderFieldAccordions(sink, byDeclType, sizeByDeclType, showAddr);
+    }
+
+    // Enumerates non-null static object-reference fields across all app-domain modules,
+    // computing retained size via BFS for each field value.
+    // Returns per-declaring-type field rows, accumulated sizes, total counts, and the grand total size.
+    static (Dictionary<string, List<(long Size, string[] Row)>> ByDeclType,
+            Dictionary<string, long> SizeByDeclType,
+            int Total, long TotalSize)
+        ScanStaticFields(DumpContext ctx, string? filter, HashSet<string>? excludes, bool showAddr)
+    {
         var byDeclType     = new Dictionary<string, List<(long Size, string[] Row)>>(StringComparer.Ordinal);
         var sizeByDeclType = new Dictionary<string, long>(StringComparer.Ordinal);
-        int total = 0;
+        int total     = 0;
         long totalSize = 0;
 
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning static fields...", _ =>
+        // Enumerate via module type-def map — covers all types, even those with no live instances
+        // (unlike the old heap-object approach which missed never-instantiated static classes).
+        CommandBase.RunStatus("Scanning static fields...", () =>
         {
             foreach (var appDomain in ctx.Runtime.AppDomains)
             {
@@ -107,23 +141,15 @@ internal static class StaticRefsCommand
             }
         });
 
-        sink.Section("Non-Null Static Reference Fields");
-        if (total == 0) { sink.Text("No non-null static reference fields found."); return; }
+        return (byDeclType, sizeByDeclType, total, totalSize);
+    }
 
-        sink.KeyValues([
-            ("Declaring types",        byDeclType.Count.ToString("N0")),
-            ("Static fields",          total.ToString("N0")),
-            ("Total retained size",    DumpHelpers.FormatSize(totalSize)),
-            ("Largest declaring type", sizeByDeclType.Count > 0
-                                            ? $"{sizeByDeclType.MaxBy(kv => kv.Value).Key.Split('.').Last()}  ({DumpHelpers.FormatSize(sizeByDeclType.MaxBy(kv => kv.Value).Value)})"
-                                            : "—"),
-            ("Collection fields",      byDeclType.Values.SelectMany(v => v).Count(r => r.Row[3] == "✓").ToString("N0")),
-        ]);
-
-        sink.Alert(AlertLevel.Info,
-            "Static object references are permanent GC roots — they keep entire object graphs alive for the process lifetime.",
-            advice: "Prefer scoped DI registrations over static state. Use WeakReference<T> for caches.");
-
+    // Renders per-declaring-type collapsible accordions with field tables sorted by retained size.
+    static void RenderFieldAccordions(IRenderSink sink,
+        Dictionary<string, List<(long Size, string[] Row)>> byDeclType,
+        Dictionary<string, long> sizeByDeclType,
+        bool showAddr)
+    {
         string[] headers = showAddr
             ? ["Field", "Value Type", "Size", "Collection?", "Address"]
             : ["Field", "Value Type", "Size", "Collection?"];
@@ -169,6 +195,8 @@ internal static class StaticRefsCommand
         return total;
     }
 
+    // Returns true for common generic collection types and arrays; used to flag
+    // fields that may hold unbounded state.
     static bool IsCollection(string typeName) =>
         typeName.Contains("List<",       StringComparison.Ordinal) ||
         typeName.Contains("Dictionary<", StringComparison.Ordinal) ||

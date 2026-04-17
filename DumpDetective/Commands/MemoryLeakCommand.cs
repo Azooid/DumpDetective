@@ -113,19 +113,253 @@ internal static class MemoryLeakCommand
             return;
         }
 
+        // Step 1 — dumpheap-stat equivalent (single heap walk, or fast path from snapshot)
+        var (allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal, totalObjs, typeCount) =
+            WalkHeap(ctx);
+        long totalHeap = allTypes.Sum(t => t.TotalSize);
+
+        sink.Section("Heap Snapshot");
+        RenderHeapSnapshot(sink, allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal,
+            totalObjs, typeCount, top, totalHeap);
+
+        // Step 2 — Suspect types (count-based AND size-based)
+        var (suspects, sizeSuspects) = ComputeSuspects(allTypes, minCount, inclSystem);
+
+        sink.Section("Step 2  —  Suspect Types");
+        RenderSuspects(sink, suspects, sizeSuspects, minCount, inclSystem);
+
+        // Step 3 — Common accumulation pattern checks
+        sink.Section("Step 3  —  Accumulation Pattern Checks");
+        RenderAccumulationPatterns(sink, allTypes);
+
+        // ── Findings summary ───────────────────────────────────────────────────
+        sink.Section("Findings");
+        EmitFindings(sink, suspects, sizeSuspects, gen2Total, lohTotal, totalHeap);
+
         // ══════════════════════════════════════════════════════════════════════════
-        //  STEP 1 ─ dumpheap -stat equivalent (single heap walk)
+        //  STEP 4 ─ GC root chains  (gcroot simulation)
         // ══════════════════════════════════════════════════════════════════════════
+        sink.Section("Step 4  —  GC Root Chains  (gcroot simulation)");
+        // Reserve up to 3 slots for count-based suspects, up to 2 for size-based,
+        // so a large-array suspect like System.Int64[] is never squeezed out.
+        var countCandidates = suspects.Take(3).ToList();
+        var sizeCandidates  = sizeSuspects
+            .Where(s => !countCandidates.Any(x => x.Name == s.Name))
+            .Take(2)
+            .ToList();
+        var rootCandidates  = countCandidates.Concat(sizeCandidates).ToList();
+
+        if (noRootTrace)
+        {
+            sink.Alert(AlertLevel.Info,
+                "Root tracing skipped (--no-root-trace).",
+                detail: "This is the most important diagnostic step — it reveals which static field, " +
+                        "GC handle, or thread stack is keeping your suspect objects alive, " +
+                        "just like 'gcroot <addr>' in dotnet-dump.",
+                advice: "Re-run without --no-root-trace to get full root chains. " +
+                        "For a single type: DumpDetective gc-roots <dump> --type \"<TypeName>\"");
+        }
+        else if (rootCandidates.Count == 0)
+        {
+            sink.Alert(AlertLevel.Info,
+                "No suspect types to trace — nothing above the Step 2 threshold.",
+                advice: "Lower --min-count to surface more candidates, or use --include-system.");
+        }
+        else
+        {
+            sink.Alert(AlertLevel.Info,
+                $"Tracing root chains for top {rootCandidates.Count} suspect type(s).",
+                detail: "The chain reads bottom-up: the last entry is the ROOT preventing GC collection. " +
+                        "A typical chain looks like: HandleTable → Object[] → Cache → List<T> → T[] → T. " +
+                        "The root type (static field, GC handle, or thread local) is where you need to act.");
+
+            RenderAllRootChains(ctx, sink, rootCandidates);
+        }
+
+        // ── Next steps ─────────────────────────────────────────────────────────
+        sink.Section("Next Steps");
+        sink.KeyValues([
+            ("Targeted root trace (single type)", "gc-roots <dump> --type \"<TypeName>\""),
+            ("All static field roots",            "static-refs <dump>"),
+            ("All instances of a type",           "type-instances <dump> --type \"<TypeName>\""),
+            ("Event handler leaks",               "event-analysis <dump>"),
+            ("Timer object leaks",                "timer-leaks <dump>"),
+            ("Finalizer queue backlog",           "finalizer-queue <dump>"),
+            ("Compare two dumps over time",       "trend-analysis <dump1> <dump2> --full"),
+        ]);
+    }
+
+    // Renders the Step 1 heap-snapshot KV block, gen2/LOH alerts, and the dumpheap-stat table.
+    private static void RenderHeapSnapshot(
+        IRenderSink sink,
+        List<TypeStat> allTypes,
+        long gen0Total, long gen1Total, long gen2Total, long lohTotal, long pohTotal,
+        int totalObjs, int typeCount,
+        int top, long totalHeap)
+    {
+        double gen2Pct = Pct(gen2Total, totalHeap);
+        sink.KeyValues([
+            ("Total managed heap",  DumpHelpers.FormatSize(totalHeap)),
+            ("Generation 0",        $"{DumpHelpers.FormatSize(gen0Total)}  ({Pct(gen0Total, totalHeap):F1}%)"),
+            ("Generation 1",        $"{DumpHelpers.FormatSize(gen1Total)}  ({Pct(gen1Total, totalHeap):F1}%)"),
+            ("Generation 2",        $"{DumpHelpers.FormatSize(gen2Total)}  ({gen2Pct:F1}%  of heap)"),
+            ("Large Object Heap",   $"{DumpHelpers.FormatSize(lohTotal)}  ({Pct(lohTotal, totalHeap):F1}%)"),
+            ("Pinned Object Heap",  DumpHelpers.FormatSize(pohTotal)),
+            ("Total live objects",  totalObjs.ToString("N0")),
+            ("Unique types",        typeCount.ToString("N0")),
+        ]);
+
+        if (gen2Pct > 60 && gen2Total > 20_000_000)
+            sink.Alert(AlertLevel.Warning,
+                $"Gen2 holds {gen2Pct:F0}% of the managed heap \u2014 a growing Gen2 is the primary sign of a managed memory leak.",
+                advice: "Take a second dump after a few minutes and run 'trend-analysis <dump1> <dump2>' to confirm growth.");
+        if (lohTotal > 50_000_000)
+            sink.Alert(AlertLevel.Critical,
+                $"Large Object Heap is {DumpHelpers.FormatSize(lohTotal)} \u2014 LOH is never compacted by default.",
+                advice: "Use ArrayPool<T> / MemoryPool<T> for large temporary buffers.");
+
+        sink.Section($"Step 1  \u2014  dumpheap -stat  (top {top} types by total size)");
+        sink.Alert(AlertLevel.Info,
+            "All managed types sorted by total retained size.",
+            detail: "Scan for application types (not System.*) with unexpectedly high Count or TotalSize. " +
+                    "Objects accumulating across GC cycles \u2014 especially in Gen2 or LOH \u2014 are the primary leak signal.");
+
+        sink.Table(
+            ["Method Table", "Count", "Total Size", "Class Name"],
+            allTypes.Take(top).Select(t => new[]
+            {
+                $"0x{t.MT:X16}",
+                t.Count.ToString("N0"),
+                DumpHelpers.FormatSize(t.TotalSize),
+                Truncate(t.Name, 72),
+            }).ToList(),
+            $"Total: {totalObjs:N0} objects  |  {typeCount:N0} unique types");
+    }
+
+    // Partitions allTypes into count-based and size-based suspect lists.
+    // Count-based: non-system (or all when inclSystem=true) types exceeding minCount instances or 1 MB.
+    // Size-based: any type ≥ 10 MB that is not already in the count-based list.
+    private static (List<TypeStat> Suspects, List<TypeStat> SizeSuspects)
+        ComputeSuspects(List<TypeStat> allTypes, int minCount, bool inclSystem)
+    {
+        var suspects = allTypes
+            .Where(t => inclSystem || !DumpHelpers.IsSystemType(t.Name))
+            .Where(t => t.Count >= minCount || t.TotalSize >= 1_048_576)
+            .OrderByDescending(t => t.Count)
+            .ThenByDescending(t => t.TotalSize)
+            .Take(20)
+            .ToList();
+
+        const long SizeSuspectMinBytes = 10_485_760; // 10 MB
+        var sizeSuspects = allTypes
+            .Where(t => t.TotalSize >= SizeSuspectMinBytes)
+            .Where(t => t.Count > 0)
+            .Where(t => !suspects.Any(s => s.Name == t.Name))
+            .OrderByDescending(t => t.TotalSize)
+            .Take(10)
+            .ToList();
+
+        return (suspects, sizeSuspects);
+    }
+
+    // Renders the Step 2 suspect tables: 2a count-based and 2b size-based.
+    private static void RenderSuspects(
+        IRenderSink sink,
+        List<TypeStat> suspects,
+        List<TypeStat> sizeSuspects,
+        int minCount,
+        bool inclSystem)
+    {
+        const long SizeSuspectMinBytes = 10_485_760;
+
+        sink.Alert(AlertLevel.Info,
+            "2a  High Instance Count  (count-based leak signal)",
+            detail: inclSystem
+                ? "All types shown (--include-system). Sorted by instance count descending."
+                : "Non-system types with the highest instance count. " +
+                  "A growing count across GC cycles is the classic managed-memory-leak pattern. " +
+                  "Use --include-system to also show framework types.");
+
+        if (suspects.Count == 0)
+            sink.Alert(AlertLevel.Info,
+                $"No types with \u2265 {minCount:N0} instances or \u2265 1 MB total size found.",
+                advice: "Lower the threshold with --min-count (e.g. --min-count 100), or add --include-system.");
+        else
+            sink.Table(
+                ["Type", "Count \u2193", "Total Size", "in Gen2", "in LOH"],
+                suspects.Select(t => new[]
+                {
+                    Truncate(t.Name, 65),
+                    t.Count.ToString("N0"),
+                    DumpHelpers.FormatSize(t.TotalSize),
+                    t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014",
+                    t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "\u2014",
+                }).ToList(),
+                "High count + Gen2 presence = not being collected = strong managed memory leak signal.");
+
+        sink.Alert(AlertLevel.Info,
+            "2b  Large Retained Size  (size-based leak signal)",
+            detail: "Types dominating the heap by TOTAL SIZE regardless of instance count. " +
+                    "A small number of very large objects (arrays, buffers, caches) can consume hundreds of MB " +
+                    "while never appearing in a count-based suspect list. Includes all types \u2014 system and application.");
+
+        if (sizeSuspects.Count == 0)
+            sink.Alert(AlertLevel.Info,
+                $"No additional types with \u2265 {DumpHelpers.FormatSize(SizeSuspectMinBytes)} total size found.");
+        else
+            sink.Table(
+                ["Type", "Total Size \u2193", "Count", "Avg / Instance", "in Gen2", "in LOH"],
+                sizeSuspects.Select(t =>
+                {
+                    long avg = t.Count > 0 ? t.TotalSize / t.Count : 0;
+                    return new[]
+                    {
+                        Truncate(t.Name, 60),
+                        DumpHelpers.FormatSize(t.TotalSize),
+                        t.Count.ToString("N0"),
+                        DumpHelpers.FormatSize(avg),
+                        t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014",
+                        t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "\u2014",
+                    };
+                }).ToList(),
+                "Few instances with huge average size = large-array or cache accumulation. LOH = never compacted by GC.");
+    }
+
+    // Walks the heap once accumulating per-type counts, sizes, and generation breakdowns (Step 1).
+    // Returns the sorted allTypes list, generation totals, object count, and unique type count.
+    // Fast path: when a shared HeapSnapshot is available (analyze --full), the cached data is
+    // used directly and no heap walk is performed.
+    private static (List<TypeStat> AllTypes,
+                    long Gen0Total, long Gen1Total, long Gen2Total, long LohTotal, long PohTotal,
+                    int TotalObjs, int TypeCount)
+        WalkHeap(DumpContext ctx)
+    {
+        // Fast path — reuse shared snapshot
+        if (ctx.Snapshot is { } snap)
+        {
+            var allTypesFast = snap.TypeStats.Values
+                .Select(a => new TypeStat(
+                    a.Name, a.MT,
+                    a.Count, a.Size,
+                    a.G0c, a.G0s,
+                    a.G1c, a.G1s,
+                    a.G2c, a.G2s,
+                    a.Lc,  a.Ls,
+                    a.SampleAddrs))
+                .OrderByDescending(t => t.TotalSize)
+                .ToList();
+            return (allTypesFast,
+                    snap.Gen0Total, snap.Gen1Total, snap.Gen2Total, snap.LohTotal, snap.PohTotal,
+                    (int)snap.TotalObjects, snap.TypeStats.Count);
+        }
+
+        // Slow path — standalone command run
         var typeMap = new Dictionary<string, TypeAccum>(StringComparer.Ordinal);
-        long totalHeap = 0, gen0Total = 0, gen1Total = 0,
-             gen2Total = 0, lohTotal  = 0, pohTotal  = 0;
+        long gen0Total = 0, gen1Total = 0, gen2Total = 0, lohTotal = 0, pohTotal = 0;
         int  totalObjs = 0;
 
         var sw = Stopwatch.StartNew();
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start("Step 1 / 4 — Walking heap (dumpheap -stat)…", status =>
+        CommandBase.RunStatus("Step 1 / 4 — Walking heap (dumpheap -stat)…", upd =>
             {
                 foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
@@ -153,7 +387,6 @@ internal static class MemoryLeakCommand
                     if (loh) { acc.Lc++;  acc.Ls  += size; }
                     if (acc.SampleAddrs.Count < 5) acc.SampleAddrs.Add(obj.Address);
 
-                    totalHeap += size;
                     if (g0)  gen0Total += size;
                     if (g1)  gen1Total += size;
                     if (g2)  gen2Total += size;
@@ -163,15 +396,16 @@ internal static class MemoryLeakCommand
 
                     if (sw.Elapsed.TotalSeconds >= 0.75)
                     {
-                        status.Status($"Step 1 / 4 — Walking heap — {totalObjs:N0} objects…");
+                        upd($"Step 1 / 4 — Walking heap — {totalObjs:N0} objects…");
                         sw.Restart();
                     }
                 }
             });
 
-        AnsiConsole.MarkupLine(
-            $"[dim]  Heap walk complete ({sw.Elapsed.TotalSeconds:F1}s  |  " +
-            $"{totalObjs:N0} objects  |  {typeMap.Count:N0} unique types)[/]");
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine(
+                $"[dim]  Heap walk complete ({sw.Elapsed.TotalSeconds:F1}s  |  " +
+                $"{totalObjs:N0} objects  |  {typeMap.Count:N0} unique types)[/]");
 
         // Build typed list sorted by TotalSize descending — same ordering as dumpheap -stat
         var allTypes = typeMap
@@ -186,132 +420,13 @@ internal static class MemoryLeakCommand
             .OrderByDescending(t => t.TotalSize)
             .ToList();
 
-        // ── Heap snapshot overview ─────────────────────────────────────────────
-        sink.Section("Heap Snapshot");
-        double gen2Pct = Pct(gen2Total, totalHeap);
-        sink.KeyValues([
-            ("Total managed heap",  DumpHelpers.FormatSize(totalHeap)),
-            ("Generation 0",        $"{DumpHelpers.FormatSize(gen0Total)}  ({Pct(gen0Total, totalHeap):F1}%)"),
-            ("Generation 1",        $"{DumpHelpers.FormatSize(gen1Total)}  ({Pct(gen1Total, totalHeap):F1}%)"),
-            ("Generation 2",        $"{DumpHelpers.FormatSize(gen2Total)}  ({gen2Pct:F1}%  of heap)"),
-            ("Large Object Heap",   $"{DumpHelpers.FormatSize(lohTotal)}  ({Pct(lohTotal, totalHeap):F1}%)"),
-            ("Pinned Object Heap",  DumpHelpers.FormatSize(pohTotal)),
-            ("Total live objects",  totalObjs.ToString("N0")),
-            ("Unique types",        typeMap.Count.ToString("N0")),
-        ]);
+        return (allTypes, gen0Total, gen1Total, gen2Total, lohTotal, pohTotal, totalObjs, typeMap.Count);
+    }
 
-        if (gen2Pct > 60 && gen2Total > 20_000_000)
-            sink.Alert(AlertLevel.Warning,
-                $"Gen2 holds {gen2Pct:F0}% of the managed heap — a growing Gen2 is the primary sign of a managed memory leak.",
-                advice: "Take a second dump after a few minutes and run 'trend-analysis <dump1> <dump2>' to confirm growth.");
-        if (lohTotal > 50_000_000)
-            sink.Alert(AlertLevel.Critical,
-                $"Large Object Heap is {DumpHelpers.FormatSize(lohTotal)} — LOH is never compacted by default.",
-                advice: "Use ArrayPool<T> / MemoryPool<T> for large temporary buffers.");
-
-        // ── Step 1: dumpheap -stat table ──────────────────────────────────────
-        sink.Section($"Step 1  —  dumpheap -stat  (top {top} types by total size)");
-        sink.Alert(AlertLevel.Info,
-            "All managed types sorted by total retained size.",
-            detail: "Scan for application types (not System.*) with unexpectedly high Count or TotalSize. " +
-                    "Objects accumulating across GC cycles — especially in Gen2 or LOH — are the primary leak signal.");
-
-        sink.Table(
-            ["Method Table", "Count", "Total Size", "Class Name"],
-            allTypes.Take(top).Select(t => new[]
-            {
-                $"0x{t.MT:X16}",
-                t.Count.ToString("N0"),
-                DumpHelpers.FormatSize(t.TotalSize),
-                Truncate(t.Name, 72),
-            }).ToList(),
-            $"Total: {totalObjs:N0} objects  |  {typeMap.Count:N0} unique types");
-
-        // ══════════════════════════════════════════════════════════════════════════
-        //  STEP 2 ─ Suspect types (count-based AND size-based)
-        // ══════════════════════════════════════════════════════════════════════════
-
-        // 2a — Count-based suspects: application types with many instances
-        var suspects = allTypes
-            .Where(t => inclSystem || !DumpHelpers.IsSystemType(t.Name))
-            .Where(t => t.Count >= minCount || t.TotalSize >= 1_048_576)
-            .OrderByDescending(t => t.Count)
-            .ThenByDescending(t => t.TotalSize)
-            .Take(20)
-            .ToList();
-
-        // 2b — Size-based suspects: ANY type (including system) with large retained size.
-        // Catches large arrays, pooled buffers, caches that balloon by SIZE not count.
-        const long SizeSuspectMinBytes = 10_485_760; // 10 MB
-        var sizeSuspects = allTypes
-            .Where(t => t.TotalSize >= SizeSuspectMinBytes)
-            .Where(t => t.Count > 0)
-            .Where(t => !suspects.Any(s => s.Name == t.Name))
-            .OrderByDescending(t => t.TotalSize)
-            .Take(10)
-            .ToList();
-
-        sink.Section("Step 2  —  Suspect Types");
-
-        // 2a table
-        sink.Alert(AlertLevel.Info,
-            "2a  High Instance Count  (count-based leak signal)",
-            detail: inclSystem
-                ? "All types shown (--include-system). Sorted by instance count descending."
-                : "Non-system types with the highest instance count. " +
-                  "A growing count across GC cycles is the classic managed-memory-leak pattern. " +
-                  "Use --include-system to also show framework types.");
-
-        if (suspects.Count == 0)
-            sink.Alert(AlertLevel.Info,
-                $"No types with ≥ {minCount:N0} instances or ≥ 1 MB total size found.",
-                advice: "Lower the threshold with --min-count (e.g. --min-count 100), or add --include-system.");
-        else
-            sink.Table(
-                ["Type", "Count ↓", "Total Size", "in Gen2", "in LOH"],
-                suspects.Select(t => new[]
-                {
-                    Truncate(t.Name, 65),
-                    t.Count.ToString("N0"),
-                    DumpHelpers.FormatSize(t.TotalSize),
-                    t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "—",
-                    t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "—",
-                }).ToList(),
-                "High count + Gen2 presence = not being collected = strong managed memory leak signal.");
-
-        // 2b table
-        sink.Alert(AlertLevel.Info,
-            "2b  Large Retained Size  (size-based leak signal)",
-            detail: "Types dominating the heap by TOTAL SIZE regardless of instance count. " +
-                    "A small number of very large objects (arrays, buffers, caches) can consume hundreds of MB " +
-                    "while never appearing in a count-based suspect list. Includes all types — system and application.");
-
-        if (sizeSuspects.Count == 0)
-            sink.Alert(AlertLevel.Info,
-                $"No additional types with ≥ {DumpHelpers.FormatSize(SizeSuspectMinBytes)} total size found.");
-        else
-            sink.Table(
-                ["Type", "Total Size ↓", "Count", "Avg / Instance", "in Gen2", "in LOH"],
-                sizeSuspects.Select(t =>
-                {
-                    long avg = t.Count > 0 ? t.TotalSize / t.Count : 0;
-                    return new[]
-                    {
-                        Truncate(t.Name, 60),
-                        DumpHelpers.FormatSize(t.TotalSize),
-                        t.Count.ToString("N0"),
-                        DumpHelpers.FormatSize(avg),
-                        t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "—",
-                        t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "—",
-                    };
-                }).ToList(),
-                "Few instances with huge average size = large-array or cache accumulation. LOH = never compacted by GC.");
-
-        // ══════════════════════════════════════════════════════════════════════════
-        //  STEP 3 ─ Common accumulation pattern checks
-        // ══════════════════════════════════════════════════════════════════════════
-        sink.Section("Step 3  —  Accumulation Pattern Checks");
-
+    // Renders the Step 3 accumulation-pattern detail blocks for any flagged patterns.
+    // Evaluates strings, byte arrays, collections, delegates, and async tasks.
+    private static void RenderAccumulationPatterns(IRenderSink sink, List<TypeStat> allTypes)
+    {
         // ── Gather data for all 5 patterns ────────────────────────────────────
         var strType = allTypes.FirstOrDefault(t => t.Name == "System.String");
         var byteArr = allTypes.FirstOrDefault(t => t.Name == "System.Byte[]");
@@ -485,62 +600,6 @@ internal static class MemoryLeakCommand
 
         if (!anyPatternFlag)
             sink.Alert(AlertLevel.Info, "All accumulation pattern checks passed — no flags raised.");
-
-        // ── Findings summary ───────────────────────────────────────────────────
-        sink.Section("Findings");
-        EmitFindings(sink, suspects, sizeSuspects, gen2Total, lohTotal, totalHeap);
-
-        // ══════════════════════════════════════════════════════════════════════════
-        //  STEP 4 ─ GC root chains  (gcroot simulation)
-        // ══════════════════════════════════════════════════════════════════════════
-        sink.Section("Step 4  —  GC Root Chains  (gcroot simulation)");
-        // Reserve up to 3 slots for count-based suspects, up to 2 for size-based,
-        // so a large-array suspect like System.Int64[] is never squeezed out.
-        var countCandidates = suspects.Take(3).ToList();
-        var sizeCandidates  = sizeSuspects
-            .Where(s => !countCandidates.Any(x => x.Name == s.Name))
-            .Take(2)
-            .ToList();
-        var rootCandidates  = countCandidates.Concat(sizeCandidates).ToList();
-
-        if (noRootTrace)
-        {
-            sink.Alert(AlertLevel.Info,
-                "Root tracing skipped (--no-root-trace).",
-                detail: "This is the most important diagnostic step — it reveals which static field, " +
-                        "GC handle, or thread stack is keeping your suspect objects alive, " +
-                        "just like 'gcroot <addr>' in dotnet-dump.",
-                advice: "Re-run without --no-root-trace to get full root chains. " +
-                        "For a single type: DumpDetective gc-roots <dump> --type \"<TypeName>\"");
-        }
-        else if (rootCandidates.Count == 0)
-        {
-            sink.Alert(AlertLevel.Info,
-                "No suspect types to trace — nothing above the Step 2 threshold.",
-                advice: "Lower --min-count to surface more candidates, or use --include-system.");
-        }
-        else
-        {
-            sink.Alert(AlertLevel.Info,
-                $"Tracing root chains for top {rootCandidates.Count} suspect type(s).",
-                detail: "The chain reads bottom-up: the last entry is the ROOT preventing GC collection. " +
-                        "A typical chain looks like: HandleTable → Object[] → Cache → List<T> → T[] → T. " +
-                        "The root type (static field, GC handle, or thread local) is where you need to act.");
-
-            RenderAllRootChains(ctx, sink, rootCandidates);
-        }
-
-        // ── Next steps ─────────────────────────────────────────────────────────
-        sink.Section("Next Steps");
-        sink.KeyValues([
-            ("Targeted root trace (single type)", "gc-roots <dump> --type \"<TypeName>\""),
-            ("All static field roots",            "static-refs <dump>"),
-            ("All instances of a type",           "type-instances <dump> --type \"<TypeName>\""),
-            ("Event handler leaks",               "event-analysis <dump>"),
-            ("Timer object leaks",                "timer-leaks <dump>"),
-            ("Finalizer queue backlog",           "finalizer-queue <dump>"),
-            ("Compare two dumps over time",       "trend-analysis <dump1> <dump2> --full"),
-        ]);
     }
 
     // ── Findings emitter ───────────────────────────────────────────────────────
@@ -631,71 +690,8 @@ internal static class MemoryLeakCommand
     // ── GC root chain renderer ─────────────────────────────────────────────────
     private static void RenderAllRootChains(DumpContext ctx, IRenderSink sink, List<TypeStat> suspects)
     {
-        // 4a: enumerate all GC roots once (lightweight — no heap walk)
-        var rootMap = new Dictionary<ulong, (string Kind, string? ObjType)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots)
-            .Start("Step 4a — Enumerating GC roots…", _ =>
-            {
-                foreach (var root in ctx.Heap.EnumerateRoots())
-                {
-                    if (root.Object == 0 || rootMap.ContainsKey(root.Object)) continue;
-                    string kind = root.RootKind switch
-                    {
-                        ClrRootKind.Stack             => "Stack (thread local)",
-                        ClrRootKind.StrongHandle      => "GC Handle — Strong",
-                        ClrRootKind.PinnedHandle      => "GC Handle — Pinned",
-                        ClrRootKind.AsyncPinnedHandle => "GC Handle — Async-Pinned",
-                        ClrRootKind.RefCountedHandle  => "GC Handle — RefCount",
-                        ClrRootKind.FinalizerQueue    => "Finalizer Queue",
-                        _                             => root.RootKind.ToString(),
-                    };
-                    var obj = ctx.Heap.GetObject(root.Object);
-                    rootMap[root.Object] = (kind, obj.IsValid ? obj.Type?.Name : null);
-                }
-            });
-        AnsiConsole.MarkupLine($"[dim]  {rootMap.Count:N0} GC roots indexed[/]");
-
-        // 4b: build a COMPLETE multi-parent inbound-reference map.
-        // We store up to MaxParents referrers per address so BFS can try alternative
-        // paths when one path cycles before reaching a root.
-        const int MaxParents = 8;
-        var allReferrers = new Dictionary<ulong, List<(ulong ParentAddr, string ParentType)>>();
-        var rSw = Stopwatch.StartNew();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots)
-            .Start("Step 4b — Building multi-parent referrer map (full heap walk)…", status =>
-            {
-                long scanned = 0;
-                foreach (var obj in ctx.Heap.EnumerateObjects())
-                {
-                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                    string pType = obj.Type.Name ?? "?";
-                    ulong  pAddr = obj.Address;
-                    try
-                    {
-                        foreach (var refAddr in obj.EnumerateReferenceAddresses(carefully: false))
-                        {
-                            if (refAddr == 0 || refAddr == pAddr) continue;
-                            if (allReferrers.TryGetValue(refAddr, out var existing))
-                            {
-                                if (existing.Count < MaxParents)
-                                    existing.Add((pAddr, pType));
-                            }
-                            else
-                            {
-                                allReferrers[refAddr] = new List<(ulong, string)>(2) { (pAddr, pType) };
-                            }
-                        }
-                    }
-                    catch { }
-                    scanned++;
-                    if (rSw.Elapsed.TotalSeconds >= 0.75)
-                    {
-                        status.Status($"Step 4b — Building referrer map — {scanned:N0} objects scanned…");
-                        rSw.Restart();
-                    }
-                }
-            });
-        AnsiConsole.MarkupLine($"[dim]  Referrer map: {allReferrers.Count:N0} entries ({rSw.Elapsed.TotalSeconds:F1}s)[/]");
+        var rootMap      = ScanGcRoots(ctx);
+        var allReferrers = BuildReferrerMap(ctx);
 
         // Render one collapsible section per suspect type
         foreach (var suspect in suspects)
@@ -735,6 +731,81 @@ internal static class MemoryLeakCommand
 
             sink.EndDetails();
         }
+    }
+
+    // Enumerates all GC roots from the heap and builds an address → (kind, object type) map.
+    // Lightweight — no heap object walk required.
+    private static Dictionary<ulong, (string Kind, string? ObjType)> ScanGcRoots(DumpContext ctx)
+    {
+        var rootMap = new Dictionary<ulong, (string Kind, string? ObjType)>();
+        CommandBase.RunStatus("Step 4a — Enumerating GC roots…", () =>
+            {
+                foreach (var root in ctx.Heap.EnumerateRoots())
+                {
+                    if (root.Object == 0 || rootMap.ContainsKey(root.Object)) continue;
+                    string kind = root.RootKind switch
+                    {
+                        ClrRootKind.Stack             => "Stack (thread local)",
+                        ClrRootKind.StrongHandle      => "GC Handle — Strong",
+                        ClrRootKind.PinnedHandle       => "GC Handle — Pinned",
+                        ClrRootKind.AsyncPinnedHandle => "GC Handle — Async-Pinned",
+                        ClrRootKind.RefCountedHandle  => "GC Handle — RefCount",
+                        ClrRootKind.FinalizerQueue    => "Finalizer Queue",
+                        _                             => root.RootKind.ToString(),
+                    };
+                    var obj = ctx.Heap.GetObject(root.Object);
+                    rootMap[root.Object] = (kind, obj.IsValid ? obj.Type?.Name : null);
+                }
+            });
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine($"[dim]  {rootMap.Count:N0} GC roots indexed[/]");
+        return rootMap;
+    }
+
+    // Full heap walk that builds a multi-parent inbound-reference map (up to 8 referrers per address).
+    // Used by BFS root-chain tracing so alternative paths are explored when one path cycles.
+    private static Dictionary<ulong, List<(ulong ParentAddr, string ParentType)>> BuildReferrerMap(
+        DumpContext ctx)
+    {
+        const int MaxParents = 8;
+        var allReferrers = new Dictionary<ulong, List<(ulong ParentAddr, string ParentType)>>();
+        var sw = Stopwatch.StartNew();
+        CommandBase.RunStatus("Step 4b — Building multi-parent referrer map (full heap walk)…", upd =>
+            {
+                long scanned = 0;
+                foreach (var obj in ctx.Heap.EnumerateObjects())
+                {
+                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    string pType = obj.Type.Name ?? "?";
+                    ulong  pAddr = obj.Address;
+                    try
+                    {
+                        foreach (var refAddr in obj.EnumerateReferenceAddresses(carefully: false))
+                        {
+                            if (refAddr == 0 || refAddr == pAddr) continue;
+                            if (allReferrers.TryGetValue(refAddr, out var existing))
+                            {
+                                if (existing.Count < MaxParents)
+                                    existing.Add((pAddr, pType));
+                            }
+                            else
+                            {
+                                allReferrers[refAddr] = new List<(ulong, string)>(2) { (pAddr, pType) };
+                            }
+                        }
+                    }
+                    catch { }
+                    scanned++;
+                    if (sw.Elapsed.TotalSeconds >= 0.75)
+                    {
+                        upd($"Step 4b — Building referrer map — {scanned:N0} objects scanned…");
+                        sw.Restart();
+                    }
+                }
+            });
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine($"[dim]  Referrer map: {allReferrers.Count:N0} entries ({sw.Elapsed.TotalSeconds:F1}s)[/]");
+        return allReferrers;
     }
 
     /// <summary>
@@ -803,12 +874,12 @@ internal static class MemoryLeakCommand
             if (isRoot)
             {
                 var ri = rootMap[cur];
-                string tp = ri.ObjType is not null ? $"  [{Truncate(ri.ObjType, 55)}]" : string.Empty;
+                string tp = ri.ObjType is not null ? $"  [{ri.ObjType}]" : string.Empty;
                 display = $"{ri.Kind}  @0x{cur:X16}{tp}";
             }
             else
             {
-                display = $"{Truncate(prev[cur].Type, 70)}  @0x{cur:X16}";
+                display = $"{prev[cur].Type}  @0x{cur:X16}";
             }
             pathNodes.Add((cur, display, isRoot));
 

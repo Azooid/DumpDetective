@@ -143,10 +143,7 @@ internal static class EventAnalysisCommand
     {
         var leaks = new List<LeakEntry>();
 
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start("Scanning for event leaks...", statusCtx =>
+        CommandBase.RunStatus("Scanning for event leaks...", upd =>
             {
                 var watch    = Stopwatch.StartNew();
                 long visited = 0;
@@ -196,7 +193,7 @@ internal static class EventAnalysisCommand
                     visited++;
                     if (watch.Elapsed.TotalSeconds >= 1)
                     {
-                        statusCtx.Status($"Scanning for event leaks — {visited:N0} objects scanned, {leaks.Count} leak(s) found");
+                        upd($"Scanning for event leaks — {visited:N0} objects scanned, {leaks.Count} leak(s) found");
                         watch.Restart();
                     }
                 }

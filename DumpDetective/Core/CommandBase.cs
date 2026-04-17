@@ -107,10 +107,34 @@ public static class CommandBase
 
     /// <summary>
     /// When <see langword="true"/>, per-command verbose console prints
-    /// (PrintAnalyzing, pass counters) are suppressed — used when rendering
-    /// embedded sub-reports inside full/trend combined reports.
+    /// (PrintAnalyzing, pass counters, Status spinners) are suppressed.
+    /// <c>[ThreadStatic]</c> so each parallel worker thread has its own flag.
     /// </summary>
-    public static bool SuppressVerbose { get; set; }
+    [ThreadStatic] private static bool _suppressVerbose;
+    public static bool SuppressVerbose { get => _suppressVerbose; set => _suppressVerbose = value; }
+
+    /// <summary>
+    /// Runs a spinner with <paramref name="message"/> and executes <paramref name="body"/>.
+    /// When <see cref="SuppressVerbose"/> is <see langword="true"/> (parallel worker threads)
+    /// the spinner is skipped and the body runs directly — preventing concurrent live renderable conflicts.
+    /// </summary>
+    public static void RunStatus(string message, Action body)
+    {
+        if (SuppressVerbose) { body(); return; }
+        AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
+            .Start(message, _ => body());
+    }
+
+    /// <summary>
+    /// Overload that provides a status-update callback to the body.
+    /// The callback updates the spinner text when live; it is a no-op when suppressed.
+    /// </summary>
+    public static void RunStatus(string message, Action<Action<string>> body)
+    {
+        if (SuppressVerbose) { body(_ => { }); return; }
+        AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
+            .Start(message, ctx => body(msg => ctx.Status(msg)));
+    }
 
     /// <summary>Writes a styled "Analyzing: path" header line to the console.</summary>
     public static void PrintAnalyzing(string dumpPath)

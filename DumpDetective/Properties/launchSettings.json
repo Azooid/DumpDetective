@@ -210,11 +210,15 @@
     },
     "trend-analysis (to html)": {
       "commandName": "Project",
-      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.html"
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_FULL_DUMP_AFTER_14_04_2026\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.html"
     },
     "trend-analysis (to json)": {
       "commandName": "Project",
       "commandLineArgs": "trend-analysis \"C:\\Program Files\\DebugDiag\\Logs\\Misc\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.json"
+    },
+    "trend-analysis profiler": {
+      "commandName": "Project",
+      "commandLineArgs": "trend-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --full --ignore-event \"SNINativeMethodWrapper\" --output trend.json"
     },
     "trend-analysis (from list file)": {
       "commandName": "Project",
