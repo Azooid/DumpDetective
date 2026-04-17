@@ -1,0 +1,34 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\DumpDetective.Core\DumpDetective.Core.csproj" />
+    <ProjectReference Include="..\DumpDetective.Analysis\DumpDetective.Analysis.csproj" />
+    <ProjectReference Include="..\DumpDetective.Reporting\DumpDetective.Reporting.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DumpDetective.Commands</RootNamespace>
+  </PropertyGroup>
+
+  <!-- Global usings so every command has the core types in scope without explicit using directives -->
+  <ItemGroup>
+    <Using Include="DumpDetective.Core.Interfaces" />
+    <Using Include="DumpDetective.Core.Models" />
+    <Using Include="DumpDetective.Core.Runtime" />
+    <Using Include="DumpDetective.Core.Utilities" />
+    <Using Include="DumpDetective.Analysis" />
+    <Using Include="DumpDetective.Analysis.Analyzers" />
+    <Using Include="DumpDetective.Core.Models.CommandData" />
+    <Using Include="DumpDetective.Reporting" />
+    <Using Include="DumpDetective.Reporting.Reports" />
+    <Using Include="DumpDetective.Reporting.Sinks" />
+    <Using Include="Microsoft.Diagnostics.Runtime" />
+    <Using Include="Spectre.Console" />
+    <Using Include="System.Runtime.InteropServices" />
+    <Using Include="System.Diagnostics" />
+  </ItemGroup>
+
+</Project>
