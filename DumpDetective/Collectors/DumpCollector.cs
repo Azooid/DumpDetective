@@ -54,7 +54,9 @@ public static class DumpCollector
     {
         var snapshot = CreateSnapshot(ctx.DumpPath, ctx.FileTime, full);
         snapshot.ClrVersion = ctx.ClrVersion;
-        return FinalizeSnapshot(ctx.Runtime, snapshot, full, progress);
+        CollectAll(ctx.Runtime, snapshot, full, progress, ctx);
+        GenerateFindings(snapshot);
+        return snapshot;
     }
 
     private static DumpSnapshot Collect(string dumpPath, bool full, Action<string>? progress = null)
@@ -90,8 +92,15 @@ public static class DumpCollector
         return snapshot;
     }
 
-    /// <summary>Core collection logic — works with any ClrRuntime instance.</summary>
-    private static void CollectAll(ClrRuntime runtime, DumpSnapshot snapshot, bool full, Action<string>? progress = null)
+    /// <summary>
+    /// Core collection logic. When <paramref name="ctx"/> is provided and
+    /// <paramref name="full"/> is <see langword="true"/>, a single combined heap walk
+    /// builds both the <see cref="DumpSnapshot"/> fields and the cached
+    /// <see cref="HeapSnapshot"/> in one pass, eliminating the second enumeration
+    /// that <c>EnsureSnapshot</c> would otherwise trigger.
+    /// </summary>
+    private static void CollectAll(ClrRuntime runtime, DumpSnapshot snapshot, bool full,
+                                   Action<string>? progress = null, DumpContext? ctx = null)
     {
         progress?.Invoke("Reading threads...");
         CollectThreads(runtime, snapshot);
@@ -107,7 +116,10 @@ public static class DumpCollector
             progress?.Invoke("Reading heap segments...");
             CollectSegmentLayout(heap, snapshot);
             progress?.Invoke("Walking heap objects...");
-            CollectHeapObjects(heap, snapshot, full, progress);
+            if (ctx is not null && full)
+                CollectHeapObjectsCombined(ctx, snapshot, progress);
+            else
+                CollectHeapObjects(heap, snapshot, full, progress);
             progress?.Invoke("Reading finalizer queue...");
             CollectFinalizerQueue(heap, snapshot);
         }
@@ -236,6 +248,288 @@ public static class DumpCollector
         s.TotalHeapBytes = s.Gen0Bytes + s.Gen1Bytes + s.Gen2Bytes
                          + s.LohBytes + s.PohBytes + s.FrozenBytes;
         // FragmentationPct is set in CollectHeapObjects to avoid a second full heap walk
+    }
+
+    // ── Combined heap walk (full mode + DumpContext) ──────────────────────────
+    // Single EnumerateObjects pass that fills DumpSnapshot AND pre-populates
+    // ctx.Snapshot (HeapSnapshot), so RenderEmbeddedReports gets a cache hit
+    // and never walks the heap a second time.
+
+    private static void CollectHeapObjectsCombined(DumpContext ctx, DumpSnapshot s, Action<string>? progress = null)
+    {
+        var heap = ctx.Heap;
+
+        long committed = 0;
+        foreach (var seg in heap.Segments)
+            committed += (long)seg.CommittedMemory.Length;
+
+        long freeBytes = 0, lohLiveBytes = 0;
+
+        // ── HeapSnapshot accumulators ─────────────────────────────────────────
+        var typeStats     = new Dictionary<string, DumpDetective.Core.TypeAgg>(capacity: 2048, StringComparer.Ordinal);
+        var inboundCounts = new Dictionary<ulong, int>(capacity: 65536);
+        var stringGroups  = new Dictionary<string, (int Count, long TotalSize)>(StringComparer.Ordinal);
+
+        long gen0 = 0, gen1 = 0, gen2 = 0, loh = 0, poh = 0;
+        long gen0c = 0, gen1c = 0, gen2c = 0;
+        long frozenObjCount = 0, frozenObjSize = 0;
+        long pohObjCount = 0, pohObjSize = 0;
+        long totalObjs = 0, totalRefs = 0;
+        long totalStringCount = 0, totalStringSize = 0;
+
+        // ── DumpSnapshot-specific accumulators ────────────────────────────────
+        var exCounts        = new Dictionary<string, int>(128,  StringComparer.Ordinal);
+        var asyncCounts     = new Dictionary<string, int>(512,  StringComparer.Ordinal);
+        var eventLeakTotals = new Dictionary<(string Publisher, string Field), int>(4096);
+        var typeMetaCache   = new Dictionary<ulong, HeapTypeMeta>(8192);
+
+        int timerCount = 0, wcfCount = 0, wcfFaulted = 0, connCount = 0, asyncBacklogTotal = 0;
+        long processedCount = 0;
+        var watch = Stopwatch.StartNew();
+
+        foreach (var obj in heap.EnumerateObjects())
+        {
+            processedCount++;
+            if (progress is not null && (processedCount & 0xFFFF) == 0 && watch.ElapsedMilliseconds >= 1000)
+            {
+                progress($"Walking heap objects — {processedCount:N0} processed");
+                watch.Restart();
+            }
+
+            if (!obj.IsValid || obj.Type is null)
+                continue;
+
+            var   type = obj.Type;
+            ulong mt   = type.MethodTable;
+            long  size = (long)obj.Size;
+
+            if (type.IsFree)
+            {
+                freeBytes += size;
+                continue;
+            }
+
+            // Type classification (business logic used only by DumpSnapshot)
+            if (!typeMetaCache.TryGetValue(mt, out var meta))
+            {
+                meta = BuildHeapTypeMeta(type, type.Name ?? string.Empty, includeDelegateFields: true);
+                typeMetaCache[mt] = meta;
+            }
+            string name = meta.Name;
+
+            // Generation classification (used by HeapSnapshot per-type breakdown)
+            var seg2 = heap.GetSegmentByAddress(obj.Address);
+            bool g0 = false, g1 = false, g2b = false, isL = false, isP = false, isFrozen = false;
+            switch (seg2?.Kind)
+            {
+                case GCSegmentKind.Generation0: g0   = true; break;
+                case GCSegmentKind.Generation1: g1   = true; break;
+                case GCSegmentKind.Generation2: g2b  = true; break;
+                case GCSegmentKind.Large:       isL  = true; break;
+                case GCSegmentKind.Pinned:      isP  = true; break;
+                case GCSegmentKind.Frozen:      isFrozen = true; break;
+                case GCSegmentKind.Ephemeral when seg2 is not null:
+                    if      (seg2.Generation0.Contains(obj.Address)) g0  = true;
+                    else if (seg2.Generation1.Contains(obj.Address)) g1  = true;
+                    else                                              g2b = true;
+                    break;
+                default: g2b = true; break;
+            }
+
+            // ── HeapSnapshot: per-type aggregation ───────────────────────────
+            if (!typeStats.TryGetValue(name, out var acc))
+            {
+                acc = new DumpDetective.Core.TypeAgg
+                {
+                    Name     = name,
+                    MT       = mt,
+                    GenLabel = g0 ? "Gen0" : g1 ? "Gen1" : g2b ? "Gen2" :
+                               isL ? "LOH"  : isP ? "POH"  : isFrozen ? "Frozen" : "Gen2",
+                };
+                typeStats[name] = acc;
+            }
+            acc.Count += 1; acc.Size += size;
+            if (g0)      { acc.G0c++; acc.G0s += size; }
+            if (g1)      { acc.G1c++; acc.G1s += size; }
+            if (g2b)     { acc.G2c++; acc.G2s += size; }
+            if (isL)     { acc.Lc++;  acc.Ls  += size; }
+            if (isP)     { acc.Pc++;  acc.Ps  += size; }
+            if (acc.SampleAddrs.Count < 5) acc.SampleAddrs.Add(obj.Address);
+
+            // ── HeapSnapshot: generation totals ──────────────────────────────
+            if (g0)      { gen0 += size; gen0c++; }
+            if (g1)      { gen1 += size; gen1c++; }
+            if (g2b)     { gen2 += size; gen2c++; }
+            if (isL)       loh  += size;
+            if (isP)     { poh  += size; pohObjCount++; pohObjSize += size; }
+            if (isFrozen){ frozenObjCount++; frozenObjSize += size; }
+            totalObjs++;
+
+            // ── DumpSnapshot: LOH (size-based threshold, same as original) ───
+            if (size >= 85_000)
+            {
+                s.LohObjectCount++;
+                lohLiveBytes += size;
+            }
+
+            // ── DumpSnapshot: business-logic classification ───────────────────
+            if (meta.IsException)
+            {
+                ref int ec = ref CollectionsMarshal.GetValueRefOrAddDefault(exCounts, name, out bool exExists);
+                ec = exExists ? ec + 1 : 1;
+            }
+
+            var asyncMethod = meta.AsyncMethod;
+            if (asyncMethod is not null)
+            {
+                ref int ac = ref CollectionsMarshal.GetValueRefOrAddDefault(asyncCounts, asyncMethod, out bool asyncExists);
+                ac = asyncExists ? ac + 1 : 1;
+                asyncBacklogTotal++;
+            }
+
+            if (meta.IsTimer) timerCount++;
+
+            if (meta.IsWcf)
+            {
+                wcfCount++;
+                if (TryReadIntField(obj, "_state", "_communicationState") == 5)
+                    wcfFaulted++;
+            }
+
+            if (meta.IsConnection) connCount++;
+
+            foreach (var field in meta.DelegateFields)
+            {
+                try
+                {
+                    var delVal = field.Field.ReadObject(obj.Address, false);
+                    if (delVal.IsNull || !delVal.IsValid) continue;
+                    int subs = CountSubscribers(delVal);
+                    if (subs > 0)
+                    {
+                        (string Publisher, string Field) key = (name, field.Name);
+                        ref int existing = ref CollectionsMarshal.GetValueRefOrAddDefault<(string, string), int>(eventLeakTotals, key, out bool leakExists);
+                        existing = leakExists ? existing + subs : subs;
+                    }
+                }
+                catch { }
+            }
+
+            // ── HeapSnapshot: inbound reference counts ────────────────────────
+            try
+            {
+                foreach (var refAddr in obj.EnumerateReferenceAddresses(carefully: false))
+                {
+                    if (refAddr == 0) continue;
+                    ref int c = ref CollectionsMarshal.GetValueRefOrAddDefault(inboundCounts, refAddr, out _);
+                    c++;
+                    totalRefs++;
+                }
+            }
+            catch { }
+
+            // ── Strings (shared for both DumpSnapshot and HeapSnapshot) ───────
+            if (name == "System.String")
+            {
+                totalStringCount++;
+                totalStringSize += size;
+                s.StringTotalBytes += size;
+                try
+                {
+                    var val = obj.AsString(maxLength: 512) ?? string.Empty;
+                    ref var sg = ref CollectionsMarshal.GetValueRefOrAddDefault(stringGroups, val, out bool sgExisted);
+                    if (sgExisted) sg = (sg.Count + 1, sg.TotalSize + size);
+                    else           sg = (1, size);
+                }
+                catch { }
+            }
+        }
+
+        // ── Post-loop: fill DumpSnapshot ──────────────────────────────────────
+        s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
+        s.HeapFreeBytes    = freeBytes;
+        s.LohLiveBytes     = lohLiveBytes;
+        s.TotalObjectCount = totalObjs;
+
+        // TopTypes derived from unified typeStats (same sort as original)
+        var topTypes = new List<TypeStat>(typeStats.Count);
+        foreach (var kv in typeStats)
+            topTypes.Add(new TypeStat(kv.Value.Name, kv.Value.Count, kv.Value.Size));
+        topTypes.Sort(static (a, b) => b.TotalBytes.CompareTo(a.TotalBytes));
+        if (topTypes.Count > 30)
+            topTypes.RemoveRange(30, topTypes.Count - 30);
+        s.TopTypes = topTypes;
+
+        var exceptionCounts = new List<(string Type, int Count)>(exCounts.Count);
+        foreach (var kv in exCounts) exceptionCounts.Add((kv.Key, kv.Value));
+        exceptionCounts.Sort(static (a, b) => b.Count.CompareTo(a.Count));
+        s.ExceptionCounts = exceptionCounts;
+
+        s.AsyncBacklogTotal = asyncBacklogTotal;
+        var topAsyncMethods = new List<(string Method, int Count)>(asyncCounts.Count);
+        foreach (var kv in asyncCounts) topAsyncMethods.Add((kv.Key, kv.Value));
+        topAsyncMethods.Sort(static (a, b) => b.Count.CompareTo(a.Count));
+        if (topAsyncMethods.Count > 10)
+            topAsyncMethods.RemoveRange(10, topAsyncMethods.Count - 10);
+        s.TopAsyncMethods = topAsyncMethods;
+
+        s.TimerCount      = timerCount;
+        s.WcfObjectCount  = wcfCount;
+        s.WcfFaultedCount = wcfFaulted;
+        s.ConnectionCount = connCount;
+
+        // String duplicates from shared stringGroups
+        s.UniqueStringCount = stringGroups.Count;
+        int duplicateGroups = 0;
+        long wastedBytes = 0;
+        var duplicateStats = new List<StringDuplicateStat>();
+        foreach (var kv in stringGroups)
+        {
+            if (kv.Value.Count < 2) continue;
+            duplicateGroups++;
+            long perCopy = kv.Value.TotalSize / kv.Value.Count;
+            long wasted  = perCopy * (kv.Value.Count - 1);
+            wastedBytes += wasted;
+            duplicateStats.Add(new StringDuplicateStat(kv.Key, kv.Value.Count, wasted));
+        }
+        s.StringDuplicateGroups = duplicateGroups;
+        s.StringWastedBytes     = wastedBytes;
+        duplicateStats.Sort(static (a, b) => b.WastedBytes.CompareTo(a.WastedBytes));
+        if (duplicateStats.Count > 10)
+            duplicateStats.RemoveRange(10, duplicateStats.Count - 10);
+        s.TopStringDuplicates = duplicateStats;
+
+        if (eventLeakTotals.Count > 0)
+        {
+            var grouped = new List<EventLeakStat>(eventLeakTotals.Count);
+            foreach (var kv in eventLeakTotals)
+                grouped.Add(new EventLeakStat(kv.Key.Publisher, kv.Key.Field, kv.Value));
+            grouped.Sort(static (a, b) => b.Subscribers.CompareTo(a.Subscribers));
+
+            int eventSubscriberTotal = 0, eventLeakMaxOnField = 0;
+            foreach (var item in grouped)
+            {
+                eventSubscriberTotal += item.Subscribers;
+                if (item.Subscribers > eventLeakMaxOnField)
+                    eventLeakMaxOnField = item.Subscribers;
+            }
+            s.EventLeakFieldCount  = grouped.Count;
+            s.EventSubscriberTotal = eventSubscriberTotal;
+            s.EventLeakMaxOnField  = eventLeakMaxOnField;
+            if (grouped.Count > 10)
+                grouped.RemoveRange(10, grouped.Count - 10);
+            s.TopEventLeaks = grouped;
+        }
+
+        // ── Pre-populate ctx.Snapshot so EnsureSnapshot() is a no-op later ───
+        ctx.PreloadSnapshot(HeapSnapshot.Create(
+            typeStats, inboundCounts, stringGroups,
+            gen0, gen1, gen2, loh, poh,
+            gen0c, gen1c, gen2c,
+            frozenObjCount, frozenObjSize,
+            pohObjCount, pohObjSize,
+            totalObjs, totalRefs,
+            totalStringCount, totalStringSize));
     }
 
     // ── Main heap object walk ─────────────────────────────────────────────────

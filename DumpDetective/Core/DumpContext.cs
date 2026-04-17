@@ -40,6 +40,13 @@ public sealed class DumpContext : IDisposable
         return _snapshot;
     }
 
+    /// <summary>
+    /// Injects a <see cref="HeapSnapshot"/> built externally during a combined collection walk,
+    /// so subsequent calls to <see cref="EnsureSnapshot"/> return it immediately without a
+    /// second heap enumeration.
+    /// </summary>
+    internal void PreloadSnapshot(HeapSnapshot snap) => _snapshot ??= snap;
+
     private DumpContext(string path, DataTarget dt, ClrRuntime rt, string? archWarning)
     {
         DumpPath    = path;

@@ -124,14 +124,21 @@ internal static class AnalyzeCommand
 
     internal static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink)
     {
-        // Walk the heap exactly once and share the result across all 23 sub-commands.
+        // When CollectFull(DumpContext) was used, the combined walk already built and
+        // cached the HeapSnapshot — EnsureSnapshot() returns it instantly (no heap walk).
+        // Otherwise (standalone analyze command) we build it here for the first time.
         var snapSw = Stopwatch.StartNew();
-        CommandBase.RunStatus("Building shared heap snapshot for sub-reports...", () => ctx.EnsureSnapshot());
+        bool alreadyBuilt = ctx.Snapshot is not null;
+        if (!alreadyBuilt)
+            CommandBase.RunStatus("Building shared heap snapshot for sub-reports...", () => ctx.EnsureSnapshot());
+        else
+            ctx.EnsureSnapshot(); // no-op, just ensures non-null for the lines below
         AnsiConsole.MarkupLine(
             $"[dim]  Snapshot: {ctx.Snapshot!.TotalObjects:N0} objects, " +
             $"{ctx.Snapshot.TypeStats.Count:N0} types, " +
-            $"{ctx.Snapshot.InboundCounts.Count:N0} referenced addrs  " +
-            $"({snapSw.Elapsed.TotalSeconds:F1}s)[/]");
+            $"{ctx.Snapshot.InboundCounts.Count:N0} referenced addrs" +
+            (alreadyBuilt ? "  (built during primary collection)" :
+             $"  ({snapSw.Elapsed.TotalSeconds:F1}s)") + "[/]");
 
         // Define each sub-report as a (label, render action) pair.
         // All 23 run in parallel — each writes to its own CaptureSink so there

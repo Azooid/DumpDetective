@@ -82,6 +82,29 @@ internal sealed class HeapSnapshot
     }
 
     /// <summary>
+    /// Creates a <see cref="HeapSnapshot"/> from pre-built data collected by
+    /// <see cref="DumpDetective.Collectors.DumpCollector"/> during its combined heap walk.
+    /// Avoids a second heap enumeration when data was already gathered.
+    /// </summary>
+    internal static HeapSnapshot Create(
+        Dictionary<string, TypeAgg>             typeStats,
+        Dictionary<ulong, int>                  inboundCounts,
+        Dictionary<string, (int, long)>         stringGroups,
+        long gen0, long gen1, long gen2, long loh, long poh,
+        long gen0c, long gen1c, long gen2c,
+        long frozenObjCount, long frozenObjSize,
+        long pohObjCount,    long pohObjSize,
+        long totalObjs,  long totalRefs,
+        long totalStringCount, long totalStringSize)
+        => new(typeStats, inboundCounts, stringGroups,
+               gen0, gen1, gen2, loh, poh,
+               gen0c, gen1c, gen2c,
+               frozenObjCount, frozenObjSize,
+               pohObjCount, pohObjSize,
+               totalObjs, totalRefs,
+               totalStringCount, totalStringSize);
+
+    /// <summary>
     /// Walks every live object on the heap exactly once and populates all caches.
     /// Called by <see cref="DumpContext.EnsureSnapshot"/>; not intended to be called directly.
     /// </summary>
