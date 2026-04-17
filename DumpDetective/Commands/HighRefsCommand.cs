@@ -152,7 +152,7 @@ internal static class HighRefsCommand
         long totalRefs = 0, totalObjs = 0;
 
         var sw1 = Stopwatch.StartNew();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Pass 1/2 — counting inbound references...", statusCtx =>
+        CommandBase.RunStatus("Pass 1/2 — counting inbound references...", upd =>
         {
             var watch = Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
@@ -170,7 +170,7 @@ internal static class HighRefsCommand
 
                 if (watch.Elapsed.TotalSeconds >= 1)
                 {
-                    statusCtx.Status($"Pass 1/2 — {totalObjs:N0} objects, {totalRefs:N0} refs counted...");
+                    upd($"Pass 1/2 — {totalObjs:N0} objects, {totalRefs:N0} refs counted...");
                     watch.Restart();
                 }
             }
@@ -191,7 +191,7 @@ internal static class HighRefsCommand
             referencingTypes[a] = new Dictionary<string, int>(32, StringComparer.Ordinal);
 
         var sw2 = Stopwatch.StartNew();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Pass 2/2 — profiling referencing types...", statusCtx =>
+        CommandBase.RunStatus("Pass 2/2 — profiling referencing types...", upd =>
         {
             var watch = Stopwatch.StartNew();
             long processed = 0;
@@ -212,7 +212,7 @@ internal static class HighRefsCommand
 
                 if (watch.Elapsed.TotalSeconds >= 1)
                 {
-                    statusCtx.Status($"Pass 2/2 — {processed:N0} objects analysed...");
+                    upd($"Pass 2/2 — {processed:N0} objects analysed...");
                     watch.Restart();
                 }
             }

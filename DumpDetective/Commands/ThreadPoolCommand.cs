@@ -69,7 +69,7 @@ internal static class ThreadPoolCommand
         };
         var workItems = new Dictionary<string, int>(StringComparer.Ordinal);
 
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning work items and tasks...", _ =>
+        CommandBase.RunStatus("Scanning work items and tasks...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

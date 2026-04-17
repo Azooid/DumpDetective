@@ -77,7 +77,7 @@ internal static class HeapFragmentationCommand
 
         // Pass 3: walk heap to split live vs. free bytes per segment
         var freeType = ctx.Heap.FreeType;
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Measuring fragmentation...", _ =>
+        CommandBase.RunStatus("Measuring fragmentation...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

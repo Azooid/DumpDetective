@@ -114,7 +114,7 @@ internal static class StringDuplicatesCommand
         var groups = new Dictionary<string, (int Count, long TotalSize)>(StringComparer.Ordinal);
         long totalStrings = 0, totalSize = 0;
 
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning strings...", statusCtx =>
+        CommandBase.RunStatus("Scanning strings...", upd =>
         {
             var watch = Stopwatch.StartNew();
 
@@ -131,7 +131,7 @@ internal static class StringDuplicatesCommand
 
                 if (watch.Elapsed.TotalSeconds >= 1)
                 {
-                    statusCtx.Status($"Scanning strings — {totalStrings:N0} scanned, {groups.Count:N0} unique values...");
+                    upd($"Scanning strings — {totalStrings:N0} scanned, {groups.Count:N0} unique values...");
                     watch.Restart();
                 }
             }

@@ -85,7 +85,7 @@ internal static class HttpRequestsCommand
         ScanHttpObjects(DumpContext ctx)
     {
         var found = new List<(string Type, ulong Addr, long Size, string Method, string Uri, int StatusCode)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning HTTP objects...", _ =>
+        CommandBase.RunStatus("Scanning HTTP objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

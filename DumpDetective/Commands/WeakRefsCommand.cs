@@ -72,7 +72,7 @@ internal static class WeakRefsCommand
     static List<(string TypeParam, int Entries)> ScanConditionalWeakTables(DumpContext ctx)
     {
         var cwtInstances = new List<(string TypeParam, int Entries)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning for ConditionalWeakTable...", _ =>
+        CommandBase.RunStatus("Scanning for ConditionalWeakTable...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

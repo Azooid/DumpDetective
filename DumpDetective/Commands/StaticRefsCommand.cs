@@ -85,7 +85,7 @@ internal static class StaticRefsCommand
 
         // Enumerate via module type-def map — covers all types, even those with no live instances
         // (unlike the old heap-object approach which missed never-instantiated static classes).
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning static fields...", _ =>
+        CommandBase.RunStatus("Scanning static fields...", () =>
         {
             foreach (var appDomain in ctx.Runtime.AppDomains)
             {

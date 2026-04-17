@@ -99,7 +99,7 @@ internal static class FinalizerQueueCommand
         var disposeCache = new Dictionary<ulong, bool>();  // MethodTable → has Dispose()
         var critCache    = new Dictionary<ulong, bool>();  // MethodTable → is CriticalFinalizer
 
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Reading finalizer queue...", _ =>
+        CommandBase.RunStatus("Reading finalizer queue...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateFinalizableObjects())
             {

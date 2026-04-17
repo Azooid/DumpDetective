@@ -359,10 +359,7 @@ internal static class MemoryLeakCommand
         int  totalObjs = 0;
 
         var sw = Stopwatch.StartNew();
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start("Step 1 / 4 — Walking heap (dumpheap -stat)…", status =>
+        CommandBase.RunStatus("Step 1 / 4 — Walking heap (dumpheap -stat)…", upd =>
             {
                 foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
@@ -399,15 +396,16 @@ internal static class MemoryLeakCommand
 
                     if (sw.Elapsed.TotalSeconds >= 0.75)
                     {
-                        status.Status($"Step 1 / 4 — Walking heap — {totalObjs:N0} objects…");
+                        upd($"Step 1 / 4 — Walking heap — {totalObjs:N0} objects…");
                         sw.Restart();
                     }
                 }
             });
 
-        AnsiConsole.MarkupLine(
-            $"[dim]  Heap walk complete ({sw.Elapsed.TotalSeconds:F1}s  |  " +
-            $"{totalObjs:N0} objects  |  {typeMap.Count:N0} unique types)[/]");
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine(
+                $"[dim]  Heap walk complete ({sw.Elapsed.TotalSeconds:F1}s  |  " +
+                $"{totalObjs:N0} objects  |  {typeMap.Count:N0} unique types)[/]");
 
         // Build typed list sorted by TotalSize descending — same ordering as dumpheap -stat
         var allTypes = typeMap
@@ -740,8 +738,7 @@ internal static class MemoryLeakCommand
     private static Dictionary<ulong, (string Kind, string? ObjType)> ScanGcRoots(DumpContext ctx)
     {
         var rootMap = new Dictionary<ulong, (string Kind, string? ObjType)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots)
-            .Start("Step 4a — Enumerating GC roots…", _ =>
+        CommandBase.RunStatus("Step 4a — Enumerating GC roots…", () =>
             {
                 foreach (var root in ctx.Heap.EnumerateRoots())
                 {
@@ -760,7 +757,8 @@ internal static class MemoryLeakCommand
                     rootMap[root.Object] = (kind, obj.IsValid ? obj.Type?.Name : null);
                 }
             });
-        AnsiConsole.MarkupLine($"[dim]  {rootMap.Count:N0} GC roots indexed[/]");
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine($"[dim]  {rootMap.Count:N0} GC roots indexed[/]");
         return rootMap;
     }
 
@@ -772,8 +770,7 @@ internal static class MemoryLeakCommand
         const int MaxParents = 8;
         var allReferrers = new Dictionary<ulong, List<(ulong ParentAddr, string ParentType)>>();
         var sw = Stopwatch.StartNew();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots)
-            .Start("Step 4b — Building multi-parent referrer map (full heap walk)…", status =>
+        CommandBase.RunStatus("Step 4b — Building multi-parent referrer map (full heap walk)…", upd =>
             {
                 long scanned = 0;
                 foreach (var obj in ctx.Heap.EnumerateObjects())
@@ -801,12 +798,13 @@ internal static class MemoryLeakCommand
                     scanned++;
                     if (sw.Elapsed.TotalSeconds >= 0.75)
                     {
-                        status.Status($"Step 4b — Building referrer map — {scanned:N0} objects scanned…");
+                        upd($"Step 4b — Building referrer map — {scanned:N0} objects scanned…");
                         sw.Restart();
                     }
                 }
             });
-        AnsiConsole.MarkupLine($"[dim]  Referrer map: {allReferrers.Count:N0} entries ({sw.Elapsed.TotalSeconds:F1}s)[/]");
+        if (!CommandBase.SuppressVerbose)
+            AnsiConsole.MarkupLine($"[dim]  Referrer map: {allReferrers.Count:N0} entries ({sw.Elapsed.TotalSeconds:F1}s)[/]");
         return allReferrers;
     }
 

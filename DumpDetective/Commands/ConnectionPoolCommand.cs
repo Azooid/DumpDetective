@@ -106,7 +106,7 @@ internal static partial class ConnectionPoolCommand
     static List<ConnectionInfo> ScanConnections(DumpContext ctx)
     {
         var connections = new List<ConnectionInfo>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning connection objects...", _ =>
+        CommandBase.RunStatus("Scanning connection objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
@@ -128,7 +128,7 @@ internal static partial class ConnectionPoolCommand
     static List<(string Type, string CommandText)> ScanCommands(DumpContext ctx)
     {
         var commandTexts = new List<(string Type, string CommandText)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning DbCommand objects...", _ =>
+        CommandBase.RunStatus("Scanning DbCommand objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

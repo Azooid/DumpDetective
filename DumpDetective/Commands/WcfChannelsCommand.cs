@@ -55,7 +55,7 @@ internal static class WcfChannelsCommand
         ScanWcfObjects(DumpContext ctx)
     {
         var objects = new List<(string Type, ulong Addr, string State, string Endpoint, string Binding, string FaultReason)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning WCF objects...", _ =>
+        CommandBase.RunStatus("Scanning WCF objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

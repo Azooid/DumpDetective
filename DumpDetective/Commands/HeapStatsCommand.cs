@@ -102,7 +102,7 @@ internal static class HeapStatsCommand
         var mtToGen = new Dictionary<ulong, string>();
         var stats   = new Dictionary<string, (long Count, long Size, string Gen)>(StringComparer.Ordinal);
 
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Walking heap...", statusCtx =>
+        CommandBase.RunStatus("Walking heap...", upd =>
         {
             var watch  = Stopwatch.StartNew();
             long count = 0;
@@ -143,7 +143,7 @@ internal static class HeapStatsCommand
                 count++;
                 if (watch.Elapsed.TotalSeconds >= 1)
                 {
-                    statusCtx.Status($"Walking heap — {count:N0} objects scanned, {stats.Count:N0} types...");
+                    upd($"Walking heap — {count:N0} objects scanned, {stats.Count:N0} types...");
                     watch.Restart();
                 }
             }

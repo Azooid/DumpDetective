@@ -92,7 +92,7 @@ internal static class LargeObjectsCommand
         ScanLargeObjects(DumpContext ctx, long minSize, string? filter)
     {
         var tuples = new List<(string Type, string ElemType, long Size, string Seg, string Addr)>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start($"Finding objects ≥ {DumpHelpers.FormatSize(minSize)}...", _ =>
+        CommandBase.RunStatus($"Finding objects ≥ {DumpHelpers.FormatSize(minSize)}...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

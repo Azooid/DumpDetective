@@ -93,7 +93,7 @@ internal static class GenSummaryCommand
 
         // Slow path — standalone command run
         long gen0c = 0, gen1c = 0, gen2c = 0;
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Counting objects per generation...", _ =>
+        CommandBase.RunStatus("Counting objects per generation...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

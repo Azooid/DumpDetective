@@ -78,7 +78,7 @@ internal static class TimerLeaksCommand
     static List<TimerInfo> ScanTimers(DumpContext ctx)
     {
         var timers = new List<TimerInfo>();
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).Start("Scanning timer objects...", _ =>
+        CommandBase.RunStatus("Scanning timer objects...", () =>
         {
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {

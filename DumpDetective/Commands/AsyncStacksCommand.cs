@@ -79,37 +79,35 @@ internal static class AsyncStacksCommand
     {
         var entries = new List<StateMachineEntry>();
 
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .Start("Scanning async state machines...", statusCtx =>
+        CommandBase.RunStatus("Scanning async state machines...", upd =>
+        {
+            var watch    = Stopwatch.StartNew();
+            long scanned = 0;
+
+            foreach (var obj in ctx.Heap.EnumerateObjects())
             {
-                var watch    = Stopwatch.StartNew();
-                long scanned = 0;
+                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                var name = obj.Type.Name ?? string.Empty;
+                // Compiler-generated state machine types embed the async method name
+                // between angle-brackets followed by d__ or D__ (C# vs VB naming).
+                if (!name.Contains(">d__", StringComparison.Ordinal) &&
+                    !name.Contains(">D__", StringComparison.Ordinal)) continue;
 
-                foreach (var obj in ctx.Heap.EnumerateObjects())
+                var method = ExtractMethod(name);
+                if (filter != null && !method.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
+
+                // Read <>1__state: -2=initial, -1=completed/faulted, >=0=suspended at await N
+                string stateLabel = ReadStateLabel(obj);
+                entries.Add(new StateMachineEntry(method, stateLabel, obj.Address));
+
+                scanned++;
+                if (watch.Elapsed.TotalSeconds >= 1)
                 {
-                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                    var name = obj.Type.Name ?? string.Empty;
-                    // Compiler-generated state machine types embed the async method name
-                    // between angle-brackets followed by d__ or D__ (C# vs VB naming).
-                    if (!name.Contains(">d__", StringComparison.Ordinal) &&
-                        !name.Contains(">D__", StringComparison.Ordinal)) continue;
-
-                    var method = ExtractMethod(name);
-                    if (filter != null && !method.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
-
-                    // Read <>1__state: -2=initial, -1=completed/faulted, >=0=suspended at await N
-                    string stateLabel = ReadStateLabel(obj);
-                    entries.Add(new StateMachineEntry(method, stateLabel, obj.Address));
-
-                    scanned++;
-                    if (watch.Elapsed.TotalSeconds >= 1)
-                    {
-                        statusCtx.Status($"Scanning async state machines — {scanned:N0} found...");
-                        watch.Restart();
-                    }
+                    upd($"Scanning async state machines — {scanned:N0} found...");
+                    watch.Restart();
                 }
-            });
+            }
+        });
 
         return entries;
     }
