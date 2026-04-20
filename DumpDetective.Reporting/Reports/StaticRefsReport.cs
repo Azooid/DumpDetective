@@ -11,15 +11,19 @@ public sealed class StaticRefsReport
         sink.Section("Non-Null Static Reference Fields");
         if (data.Total == 0) { sink.Text("No non-null static reference fields found."); return; }
 
-        int collections = data.Fields.Count(f => f.IsCollection);
-        var largest     = data.Fields.MaxBy(f => f.RetainedSize);
+        int  collections    = data.Fields.Count(f => f.IsCollection);
+        var  sizeByDeclType = data.Fields.GroupBy(f => f.DeclType)
+                                         .ToDictionary(g => g.Key, g => g.Sum(f => f.RetainedSize));
+        int  declTypeCount  = sizeByDeclType.Count;
+        var  largestDecl    = sizeByDeclType.Count > 0 ? sizeByDeclType.MaxBy(kv => kv.Value) : default;
 
         sink.KeyValues([
-            ("Static fields found",    data.Total.ToString("N0")),
+            ("Declaring types",        declTypeCount.ToString("N0")),
+            ("Static fields",          data.Total.ToString("N0")),
             ("Total retained size",    DumpHelpers.FormatSize(data.TotalSize)),
+            ("Largest declaring type", largestDecl.Key is null ? "—"
+                : $"{largestDecl.Key.Split('.').Last()}  ({DumpHelpers.FormatSize(largestDecl.Value)})"),
             ("Collection fields",      collections.ToString("N0")),
-            ("Largest field",          largest is null ? "—"
-                : $"{largest.FieldName} on {largest.DeclType.Split('.').Last()}  ({DumpHelpers.FormatSize(largest.RetainedSize)})"),
         ]);
 
         sink.Alert(AlertLevel.Info,
@@ -39,9 +43,12 @@ public sealed class StaticRefsReport
 
         foreach (var group in byDeclaringType)
         {
-            long groupSize = group.Sum(f => f.RetainedSize);
-            sink.BeginDetails($"{group.Key}  ({group.Count()} fields  |  {DumpHelpers.FormatSize(groupSize)} retained)",
-                open: groupSize > 1024 * 1024);
+            long groupSize     = group.Sum(f => f.RetainedSize);
+            bool hasCollection = group.Any(f => f.IsCollection);
+            sink.BeginDetails(
+                $"{group.Key}  —  {group.Count()} field(s)  {DumpHelpers.FormatSize(groupSize)}"
+                + (hasCollection ? "  ⚠ has collection" : ""),
+                open: hasCollection || group.Count() > 5);
 
             var rows = group
                 .OrderByDescending(f => f.RetainedSize)
@@ -49,17 +56,18 @@ public sealed class StaticRefsReport
                 {
                     var row = new List<string>
                     {
-                        f.FieldName, f.FieldType.Split('<')[0].Split('.').Last(),
+                        f.FieldName,
+                        f.FieldType,
                         DumpHelpers.FormatSize(f.RetainedSize),
-                        f.IsCollection ? "✓" : "",
+                        f.IsCollection ? "✓" : "—",
                     };
                     if (showAddr) row.Add($"0x{f.Addr:X16}");
                     return row.ToArray();
                 }).ToList();
 
             var headers = showAddr
-                ? new[] { "Field", "Type", "Retained Size", "Collection?", "Address" }
-                : new[] { "Field", "Type", "Retained Size", "Collection?" };
+                ? new[] { "Field", "Value Type", "Size", "Collection?", "Address" }
+                : new[] { "Field", "Value Type", "Size", "Collection?" };
 
             sink.Table(headers, rows);
             sink.EndDetails();

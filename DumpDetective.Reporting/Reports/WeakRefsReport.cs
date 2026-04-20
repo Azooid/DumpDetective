@@ -92,19 +92,20 @@ public sealed class WeakRefsReport
             .Take(20)
             .Select(g => new[]
             {
-                g.Key.Length > 0 ? g.Key : "<unparameterized>",
+                g.Key.Length > 0 ? g.Key : "<unknown type params>",
                 g.Count().ToString("N0"),
                 g.Sum(c => c.Entries).ToString("N0"),
             })
             .ToList();
         sink.Table(["Type Parameters", "Instances", "Total Entries"], rows,
-            "Large entry counts may indicate per-object metadata leaks");
+            "ConditionalWeakTable instances by type parameter combination");
 
-        int largeCount = data.ConditionalWeakTables.Count(c => c.Entries > 10000);
-        if (largeCount > 0)
+        int totalEntries = data.ConditionalWeakTables.Sum(c => c.Entries);
+        if (totalEntries > 100_000)
             sink.Alert(AlertLevel.Warning,
-                $"{largeCount} ConditionalWeakTable instance(s) with > 10,000 entries.",
-                "Very large CWT tables can indicate metadata is accumulating per object instance.",
-                "Audit usages that store per-object data in static CWT fields.");
+                $"{totalEntries:N0} total entries across {data.ConditionalWeakTables.Count} ConditionalWeakTable instance(s).",
+                "ConditionalWeakTable is commonly used for per-object metadata (e.g., by frameworks and aspect libraries).",
+                "Large entry counts may indicate a leak in framework-level metadata attachment. " +
+                "Keys are held weakly, but values are kept alive as long as the key is reachable.");
     }
 }

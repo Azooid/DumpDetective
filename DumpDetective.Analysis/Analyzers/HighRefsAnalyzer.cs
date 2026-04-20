@@ -33,7 +33,7 @@ public sealed class HighRefsAnalyzer
             .ToHashSet();
 
         if (topAddrs.Count == 0)
-            return new HighRefsData([], totalObjs, totalRefs, inboundCounts.Count);
+            return new HighRefsData([], totalObjs, totalRefs, inboundCounts.Count, []);
 
         var refTypes = BuildReferencingTypes(ctx, topAddrs);
         var candidates = new List<HighRefEntry>(topAddrs.Count);
@@ -64,7 +64,23 @@ public sealed class HighRefsAnalyzer
         }
 
         candidates.Sort(static (a, b) => b.InboundRefs.CompareTo(a.InboundRefs));
-        return new HighRefsData(candidates, totalObjs, totalRefs, inboundCounts.Count);
+
+        // Pre-compute ref-count histogram (all objects >= 10 inbound refs)
+        (string Label, int Lo, int Hi)[] buckets =
+        [
+            ("10 – 49",        10,    49),
+            ("50 – 99",        50,    99),
+            ("100 – 499",     100,   499),
+            ("500 – 999",     500,   999),
+            ("1 000 – 9 999", 1_000, 9_999),
+            ("≥ 10 000",      10_000, int.MaxValue),
+        ];
+        var histogram = buckets
+            .Select(b => (b.Label, Count: inboundCounts.Values.Count(v => v >= b.Lo && v <= b.Hi)))
+            .Where(row => row.Count > 0)
+            .ToList();
+
+        return new HighRefsData(candidates, totalObjs, totalRefs, inboundCounts.Count, histogram);
     }
 
     private static (Dictionary<ulong, int>, long, long) BuildInboundCounts(DumpContext ctx)

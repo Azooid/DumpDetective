@@ -50,9 +50,9 @@ public sealed class AsyncStacksReport
                 kv.Key.State == "Awaiting" ? ClassifyAwait(kv.Key.Method) : "",
             }).ToList();
 
-        sink.Section($"Top {rows.Count} State Machines");
+        sink.Section($"Top {rows.Count} State Machines by Method + State");
         sink.Table(["Method", "State", "Count", "%", "Await Hint"], rows,
-            $"{rows.Count} of {counts.Count} unique (method, state) combinations");
+            $"Top {rows.Count} of {counts.Count} unique (method, state) combinations");
     }
 
     private static void RenderStateBreakdown(IRenderSink sink,
@@ -78,31 +78,38 @@ public sealed class AsyncStacksReport
 
     private static string ClassifyAwait(string method)
     {
-        if (method.Contains("Http", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Request", StringComparison.OrdinalIgnoreCase) ||
+        if (method.Contains("Http",        StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Request",     StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Rest",        StringComparison.OrdinalIgnoreCase) ||
             method.StartsWith("System.Net", StringComparison.OrdinalIgnoreCase))
             return "HTTP/Network";
-        if (method.Contains("Sql", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Query", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Database", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("DbContext", StringComparison.OrdinalIgnoreCase))
+        if (method.Contains("Sql",         StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Query",       StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Database",    StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("DbContext",   StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Execute",     StringComparison.OrdinalIgnoreCase) ||
+            (method.Contains("Db",         StringComparison.OrdinalIgnoreCase) &&
+             !method.Contains("Debug",     StringComparison.OrdinalIgnoreCase)))
             return "Database";
-        if (method.Contains("Redis", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Cache", StringComparison.OrdinalIgnoreCase))
+        if (method.Contains("Redis",       StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Cache",       StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Memcache",    StringComparison.OrdinalIgnoreCase))
             return "Cache";
-        if (method.Contains("Queue", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("ServiceBus", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Kafka", StringComparison.OrdinalIgnoreCase))
+        if (method.Contains("Queue",       StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("ServiceBus",  StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Kafka",       StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Message",     StringComparison.OrdinalIgnoreCase))
             return "Messaging";
-        if (method.Contains("File", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Stream", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Read", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Write", StringComparison.OrdinalIgnoreCase))
+        if (method.Contains("File",        StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Stream",      StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Read",        StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Write",       StringComparison.OrdinalIgnoreCase))
             return "File/I/O";
-        if (method.Contains("Semaphore", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Lock", StringComparison.OrdinalIgnoreCase) ||
-            method.Contains("Mutex", StringComparison.OrdinalIgnoreCase))
-            return "Synchronization";
-        return "Unknown";
+        if (method.Contains("Semaphore",   StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Lock",        StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("Mutex",       StringComparison.OrdinalIgnoreCase) ||
+            method.Contains("WaitAsync",   StringComparison.OrdinalIgnoreCase))
+            return "Lock/Sync";
+        return "";
     }
 }

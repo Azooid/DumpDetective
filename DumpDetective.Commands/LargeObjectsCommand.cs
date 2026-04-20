@@ -44,7 +44,7 @@ public sealed class LargeObjectsCommand : ICommand
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
-        RenderWith(ctx, sink, 50, 85_000, null, false, false);
+        RenderWith(ctx, sink, 100, 85_000, null, false, false);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,

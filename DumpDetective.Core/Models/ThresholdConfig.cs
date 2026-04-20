@@ -92,12 +92,65 @@ public sealed class ScoringThresholds
 
 public sealed class TrendThresholds
 {
-    public double HeapGrowthWarnPct   { get; set; } = 20;
-    public double HeapGrowthCritPct   { get; set; } = 50;
-    public double FragGrowthWarnPct   { get; set; } = 5;
-    public double Gen2GrowthWarnPct   { get; set; } = 10;
-    public int    AsyncGrowthWarn     { get; set; } = 50;
-    public int    BlockedGrowthWarn   { get; set; } = 3;
-    public int    ScoreDropWarn       { get; set; } = 10;
-    public int    ScoreDropCrit       { get; set; } = 25;
+    // Health score thresholds for the trend signal table (lower score = worse)
+    public double ScoreWarn          { get; set; } = 70;
+    public double ScoreCrit          { get; set; } = 40;
+
+    // Heap size (MB)
+    public double HeapWarnMb         { get; set; } = 512;
+    public double HeapCritMb         { get; set; } = 1024;
+
+    // LOH (MB)
+    public double LohWarnMb          { get; set; } = 100;
+    public double LohCritMb          { get; set; } = 500;
+
+    // Fragmentation free bytes (MB)
+    public double FragWarnMb         { get; set; } = 50;
+    public double FragCritMb         { get; set; } = 200;
+
+    // Threads
+    public double BlockedWarn        { get; set; } = 5;
+    public double BlockedCrit        { get; set; } = 20;
+    public double AsyncWarn          { get; set; } = 50;
+    public double AsyncCrit          { get; set; } = 200;
+    public double ExceptionWarn      { get; set; } = 1;
+    public double ExceptionCrit      { get; set; } = 5;
+
+    // Finalizer queue
+    public double FinalizerWarn      { get; set; } = 100;
+    public double FinalizerCrit      { get; set; } = 1000;
+
+    // Timers
+    public double TimerWarn          { get; set; } = 500;
+    public double TimerCrit          { get; set; } = 2000;
+
+    // WCF
+    public double WcfWarn            { get; set; } = 1;
+    public double WcfCrit            { get; set; } = 5;
+
+    // DB connections
+    public double DbWarn             { get; set; } = 50;
+    public double DbCrit             { get; set; } = 200;
+
+    // Pinned handles
+    public double PinnedWarn         { get; set; } = 50;
+    public double PinnedCrit         { get; set; } = 200;
+
+    // Event subscribers
+    public double EventWarn          { get; set; } = 1000;
+    public double EventCrit          { get; set; } = 10000;
+
+    // String waste (MB)
+    public double StringWasteWarnMb  { get; set; } = 10;
+    public double StringWasteCritMb  { get; set; } = 50;
+
+    // Growth-based thresholds (used for secondary escalation)
+    public double HeapGrowthWarnPct  { get; set; } = 20;
+    public double HeapGrowthCritPct  { get; set; } = 50;
+    public double FragGrowthWarnPct  { get; set; } = 5;
+    public double Gen2GrowthWarnPct  { get; set; } = 10;
+    public int    AsyncGrowthWarn    { get; set; } = 50;
+    public int    BlockedGrowthWarn  { get; set; } = 3;
+    public int    ScoreDropWarn      { get; set; } = 10;
+    public int    ScoreDropCrit      { get; set; } = 25;
 }

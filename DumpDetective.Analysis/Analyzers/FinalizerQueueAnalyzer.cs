@@ -15,7 +15,8 @@ public sealed class FinalizerQueueAnalyzer
         long totalSize = stats.Values.Sum(v => v.Size);
         int resurrect  = CountResurrectionCandidates(ctx);
 
-        return new FinalizerQueueData(stats, total, totalSize, finBlocked, finFrames, resurrect);
+        return new FinalizerQueueData(stats, total, totalSize, finBlocked, finFrames, resurrect,
+            finThread?.ManagedThreadId ?? 0, finThread?.OSThreadId ?? 0);
     }
 
     private static (ClrThread? Thread, IReadOnlyList<string> Frames, bool Blocked)

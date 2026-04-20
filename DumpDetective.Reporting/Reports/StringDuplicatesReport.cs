@@ -75,8 +75,8 @@ public sealed class StringDuplicatesReport
         sink.Section("Interning Candidates");
         sink.Alert(AlertLevel.Info,
             $"{internCandidates.Count} short string(s) duplicated 100+ times — prime candidates for string.Intern().",
-            "string.Intern() returns a single canonical instance, eliminating duplicates.",
-            "Use sparingly: interned strings live until AppDomain unload.");
+            "string.Intern() returns a single canonical instance from an intern pool, eliminating duplicates.",
+            "Use sparingly: interned strings live until AppDomain unload. Prefer compile-time constants for fixed identifiers.");
         var rows = internCandidates.Select(r =>
         {
             string display = r.Value.Length > 60 ? r.Value[..60] + "…" : r.Value;
@@ -85,7 +85,8 @@ public sealed class StringDuplicatesReport
             return new[] { r.Count.ToString("N0"), DumpHelpers.FormatSize(r.Wasted), r.Len.ToString("N0"),
                 alreadyInterned ? "Yes — BCL constant" : "", $"\"{display}\"" };
         }).ToList();
-        sink.Table(["Copies", "Wasted", "Length", "CLR Interned", "Value"], rows);
+        sink.Table(["Copies", "Wasted", "Length", "CLR Interned", "Value"], rows,
+            "Short strings duplicated \u2265 100 times \u2014 'CLR Interned' means already in the intern pool");
     }
 
     private static string ClassifyString(string s)

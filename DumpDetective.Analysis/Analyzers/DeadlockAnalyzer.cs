@@ -14,7 +14,7 @@ public sealed class DeadlockAnalyzer
         var blocked     = ScanBlockedThreads(threads, threadNames);
         var groups      = BuildGroups(blocked, minThreads);
 
-        return new DeadlockData(blocked, groups, threads.Count);
+        return new DeadlockData(blocked, groups, threads.Count, NamedThreadCount: threadNames.Count);
     }
 
     private static List<BlockedThreadEntry> ScanBlockedThreads(

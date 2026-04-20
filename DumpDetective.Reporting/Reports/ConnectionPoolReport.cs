@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -11,97 +12,148 @@ public sealed class ConnectionPoolReport
     {
         if (data.Connections.Count == 0) { sink.Text("No database connection objects found."); return; }
 
-        var groups = data.Connections
-            .GroupBy(c => (c.TypeName, c.ConnStr))
+        var poolGroups = BuildPoolGroups(data.Connections);
+
+        RenderSummary(sink, data.Connections, poolGroups);
+        RenderTypeStateTable(sink, data);
+        RenderPoolUtilization(sink, poolGroups);
+        RenderConnectionStrings(sink, data);
+        if (showAddr) RenderAddresses(sink, data);
+        RenderCommands(sink, data);
+    }
+
+    private static List<(string TypeKey, string ConnKey, int Active, int Total, double UtilPct)>
+        BuildPoolGroups(IReadOnlyList<ConnectionInfo> connections) =>
+        connections
+            .GroupBy(c => (c.TypeName, c.ConnStr.Length > 0 ? c.ConnStr : "<no-connstr>"))
             .Select(g =>
             {
                 int active = g.Count(c => c.State is "Open" or "Executing" or "Fetching");
-                return (TypeKey: g.Key.TypeName, ConnKey: MaskPassword(g.Key.ConnStr),
-                    Active: active, Total: g.Count(),
-                    UtilPct: active * 100.0 / DefaultMaxPool);
+                int total  = g.Count();
+                return (g.Key.TypeName, g.Key.Item2, active, total, active * 100.0 / DefaultMaxPool);
             })
-            .OrderByDescending(g => g.UtilPct)
+            .OrderByDescending(p => p.Item5)
             .ToList();
 
-        int totalActive = groups.Sum(g => g.Active);
-        int totalConns  = data.Connections.Count;
-
+    private static void RenderSummary(IRenderSink sink,
+        IReadOnlyList<ConnectionInfo> connections,
+        IReadOnlyList<(string TypeKey, string ConnKey, int Active, int Total, double UtilPct)> poolGroups)
+    {
         sink.Section("Summary");
+        long totalSize = connections.Sum(c => c.Size);
+
         sink.KeyValues([
-            ("Total connection objects", totalConns.ToString("N0")),
-            ("Active connections",       totalActive.ToString("N0")),
-            ("Assumed MaxPoolSize",       DefaultMaxPool.ToString("N0")),
-            ("Distinct connection strings", groups.Count.ToString("N0")),
+            ("Total connection objects",   connections.Count.ToString("N0")),
+            ("Total size",                 DumpHelpers.FormatSize(totalSize)),
+            ("Pool groups (type+connstr)", poolGroups.Count.ToString("N0")),
         ]);
 
-        var exhausted = groups.Where(g => g.UtilPct >= 80).ToList();
-        if (exhausted.Count > 0)
-            sink.Alert(AlertLevel.Critical, $"{exhausted.Count} pool(s) at ≥ 80% utilization.",
-                "Near-exhausted connection pools cause request timeouts waiting for a free connection.",
-                "Increase MaxPoolSize, fix connection leaks, or reduce concurrent database load.");
-
-        RenderTypeStateTable(sink, data);
-        RenderPoolUtilization(sink, groups);
-        RenderConnectionStrings(sink, data);
-        if (showAddr) RenderAddresses(sink, data);
+        if (connections.Count > 50)
+            sink.Alert(AlertLevel.Critical, $"{connections.Count:N0} DB connection objects on heap.",
+                advice: "Wrap connections in 'using'. Verify connection pool MaxPoolSize. Do not store DbContext in static fields.");
+        else if (connections.Count > 10)
+            sink.Alert(AlertLevel.Warning, $"{connections.Count:N0} DB connection objects on heap.");
     }
 
     private static void RenderTypeStateTable(IRenderSink sink, ConnectionPoolData data)
     {
-        sink.Section("Connections by Type and State");
         var rows = data.Connections
             .GroupBy(c => (c.TypeName, c.State))
-            .Select(g => new[] { g.Key.TypeName, g.Key.State, g.Count().ToString("N0") })
-            .OrderBy(r => r[0]).ThenBy(r => r[1])
+            .OrderByDescending(g => g.Count())
+            .Select(g => new[]
+            {
+                g.Key.TypeName,
+                g.Key.State.Length > 0 ? g.Key.State : "—",
+                g.Count().ToString("N0"),
+                DumpHelpers.FormatSize(g.Sum(c => c.Size)),
+            })
             .ToList();
-        sink.Table(["Type", "State", "Count"], rows);
+        sink.Table(["Type", "State", "Count", "Size"], rows, "Type × State breakdown");
     }
 
     private static void RenderPoolUtilization(IRenderSink sink,
-        IEnumerable<(string TypeKey, string ConnKey, int Active, int Total, double UtilPct)> groups)
+        IReadOnlyList<(string TypeKey, string ConnKey, int Active, int Total, double UtilPct)> poolGroups)
     {
-        sink.Section("Pool Utilization");
-        var rows = groups.Select(g => new[]
+        if (poolGroups.Count == 0) return;
+
+        var rows = poolGroups.Select(p => new[]
         {
-            g.TypeKey.Split('.').Last(),
-            g.ConnKey.Length > 60 ? g.ConnKey[..57] + "…" : g.ConnKey,
-            g.Active.ToString("N0"),
-            g.Total.ToString("N0"),
-            $"{g.UtilPct:F1}% of {DefaultMaxPool}",
+            p.TypeKey.Contains('.') ? p.TypeKey[(p.TypeKey.LastIndexOf('.') + 1)..] : p.TypeKey,
+            p.ConnKey.Length > 60 ? p.ConnKey[..57] + "…" : p.ConnKey,
+            p.Total.ToString("N0"),
+            p.Active.ToString("N0"),
+            $"{p.UtilPct:F0}% of {DefaultMaxPool}",
         }).ToList();
-        sink.Table(["Type", "Connection String (masked)", "Active", "Total", "Utilization"], rows,
-            $"Assumed MaxPoolSize = {DefaultMaxPool};  active = Open/Executing/Fetching");
+        sink.Table(
+            ["Type", "Connection String", "Total", "Active", "Pool Utilization"],
+            rows,
+            $"Pool utilization vs default MaxPoolSize={DefaultMaxPool}");
+
+        var highUtil = poolGroups.Where(p => p.UtilPct >= 80).ToList();
+        if (highUtil.Count > 0)
+            sink.Alert(AlertLevel.Critical,
+                $"{highUtil.Count} connection pool(s) at ≥80% utilization.",
+                "Near-full pools cause connection wait timeouts and request queuing.",
+                "Increase MaxPoolSize, reduce connection lifetime, or audit for unreleased connections.");
     }
 
     private static void RenderConnectionStrings(IRenderSink sink, ConnectionPoolData data)
     {
-        var distinct = data.Connections
+        var connStrGroups = data.Connections
             .Where(c => c.ConnStr.Length > 0)
-            .Select(c => MaskPassword(c.ConnStr))
-            .Distinct()
+            .GroupBy(c => c.ConnStr)
+            .OrderByDescending(g => g.Count())
+            .Take(10)
+            .Select(g => new[] { g.Key, g.Count().ToString("N0") })
             .ToList();
-        if (distinct.Count == 0) return;
-
-        sink.Section("Connection Strings (passwords masked)");
-        sink.Table(["Connection String"], distinct.Select(s => new[] { s }).ToList());
+        if (connStrGroups.Count > 0)
+            sink.Table(["Connection String (masked)", "Count"], connStrGroups,
+                "Distinct connection strings (passwords masked)");
     }
 
     private static void RenderAddresses(IRenderSink sink, ConnectionPoolData data)
     {
-        sink.Section("Connection Objects (up to 200)");
-        var rows = data.Connections.Take(200)
-            .Select(c => new[] { c.TypeName, $"0x{c.Addr:X16}", c.State,
-                c.Size > 0 ? $"{c.Size:N0} B" : "—" }).ToList();
-        sink.Table(["Type", "Address", "State", "Size"], rows);
+        sink.Section("Per-Connection Addresses");
+        var rows = data.Connections.Take(200).Select(c => new[]
+        {
+            $"0x{c.Addr:X16}",
+            c.TypeName,
+            c.State.Length > 0 ? c.State : "—",
+            DumpHelpers.FormatSize(c.Size),
+            c.ConnStr.Length > 0 ? c.ConnStr : "—",
+        }).ToList();
+        sink.Table(["Address", "Type", "State", "Size", "Connection String (masked)"], rows);
+
+        if (data.Connections.Count > 200)
+            sink.Alert(AlertLevel.Info, $"Showing first 200 of {data.Connections.Count:N0} connection objects.");
     }
 
-    private static string MaskPassword(string connStr)
+    private static void RenderCommands(IRenderSink sink, ConnectionPoolData data)
     {
-        if (string.IsNullOrEmpty(connStr)) return connStr;
-        // Replace common password tokens
-        return System.Text.RegularExpressions.Regex.Replace(
-            connStr,
-            @"(?i)(password|pwd|pass)\s*=\s*[^;]+",
-            m => m.Groups[1].Value + "=***");
+        sink.Section("Active SQL Commands");
+        if (data.Commands.Count == 0)
+        {
+            sink.Text("No DbCommand objects with readable command text found.");
+            return;
+        }
+
+        var cmdGroups = data.Commands
+            .GroupBy(c => c.CommandText)
+            .Select(g =>
+            {
+                string typeName  = g.First().TypeName;
+                string shortType = typeName.Contains('.') ? typeName[(typeName.LastIndexOf('.') + 1)..] : typeName;
+                return new[] { g.Count().ToString("N0"), shortType, g.Key };
+            })
+            .OrderByDescending(r => int.Parse(r[0].Replace(",", "")))
+            .ToList();
+        sink.Table(["Count", "Type", "Command Text"], cmdGroups,
+            $"{data.Commands.Count:N0} DbCommand object(s) with command text — {cmdGroups.Count} distinct queries");
+
+        if (data.Commands.Count > 20)
+            sink.Alert(AlertLevel.Warning,
+                $"{data.Commands.Count:N0} DbCommand objects with command text found on heap.",
+                "Commands should be created, executed, and disposed promptly — not cached on the heap.",
+                "Use parameterized queries and dispose SqlCommand objects after use.");
     }
 }

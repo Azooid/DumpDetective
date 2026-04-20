@@ -60,8 +60,9 @@ public sealed class HeapStatsReport
             sink.Section("Generic Type Specialization Bloat");
             sink.Alert(AlertLevel.Info,
                 $"{groups.Count} generic type(s) with 5+ distinct closed-type specializations.",
-                "Each distinct specialization generates a separate JIT compilation — contributes to code-size bloat.",
-                "Prefer interfaces or base types for generic constraints where possible.");
+                "Each distinct generic specialization (e.g., List<int>, List<string>) generates a separate JIT compilation, " +
+                "contributing to code-size bloat and increased startup time.",
+                "Prefer interfaces or base types for generic constraints where the concrete type doesn't affect performance.");
             sink.Table(["Open Generic", "Specializations", "Total Objects", "Total Size"], groups,
                 "Generic types with ≥ 5 distinct closed specializations");
         }

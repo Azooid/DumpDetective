@@ -44,7 +44,7 @@ public sealed class HeapStatsCommand : ICommand
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
-        RenderWith(ctx, sink, 50, 0, "size", null, null);
+        RenderWith(ctx, sink, 100, 0, "size", null, null);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,

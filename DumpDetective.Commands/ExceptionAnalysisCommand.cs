@@ -41,13 +41,13 @@ public sealed class ExceptionAnalysisCommand : ICommand
             (ctx, sink) => RenderWith(ctx, sink, top, filter, showAddr, showStack));
     }
 
-    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, 20, null, false, false);
+    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, 50, null, false, true);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,
         int top, string? filter, bool showAddr, bool showStack)
     {
-        CommandBase.RenderHeader("Exception Analysis", ctx, sink);
+        CommandBase.PrintAnalyzing(ctx.DumpPath);
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
@@ -60,6 +60,8 @@ public sealed class ExceptionAnalysisCommand : ICommand
         }
 
         var data = _analyzer.Analyze(ctx);
+        sink.Header("Dump Detective — Exception Analysis",
+            $"{Path.GetFileName(ctx.DumpPath)}  |  {data.TotalAll:N0} exception object(s)  |  {activeByAddr.Count} active");
         _report.Render(data, sink, activeByAddr, top, filter, showAddr, showStack);
     }
 }

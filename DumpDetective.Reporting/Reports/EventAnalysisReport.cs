@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -15,55 +16,148 @@ public sealed class EventAnalysisReport
             return;
         }
 
-        int totalSubs   = data.Groups.Sum(g => g.Subscribers);
-        int leakGroups  = data.Groups.Count(g => g.Subscribers > 5);
-
-        sink.KeyValues([
-            ("Publisher / field pairs with subscribers", data.Groups.Count.ToString("N0")),
-            ("Total live subscribers", totalSubs.ToString("N0")),
-            ("Fields with > 5 subscribers (potential leaks)", leakGroups.ToString("N0")),
-        ]);
-
-        if (leakGroups > 0)
-            sink.Alert(AlertLevel.Warning, $"{leakGroups} event field(s) with > 5 subscribers.",
-                "Event handlers that are never unsubscribed hold the subscriber alive.",
-                "Ensure your subscribers call -= or implement IDisposable.");
+        int totalSubs  = data.Groups.Sum(g => g.Subscribers);
+        int leakGroups = data.Groups.Count(g => g.Subscribers > 5);
 
         RenderSummaryTable(sink, data, top);
-        RenderPublisherBreakdown(sink, data, top);
+        RenderSubscriberBreakdown(sink, data, top);
+        RenderTopMethods(sink, data, top);
     }
 
     private static void RenderSummaryTable(IRenderSink sink, EventAnalysisData data, int top)
     {
-        var rows = data.Groups
-            .Take(top)
-            .Select(g => new[]
+        var rows = data.Groups.Take(top).Select(g =>
+        {
+            string sev = g.IsStaticPublisher ? "⚡ CRITICAL" : g.HasStaticSubs ? "⚠ WARNING" : "—";
+            return new[]
             {
-                g.Publisher,
-                g.Field,
+                g.Publisher, g.Field,
+                g.InstanceCount > 0 ? g.InstanceCount.ToString("N0") : "1",
                 g.Subscribers.ToString("N0"),
-                g.Subscribers > 100 ? "High" : g.Subscribers > 10 ? "Medium" : "Low",
-            }).ToList();
+                DumpHelpers.FormatSize(g.RetainedBytes),
+                sev,
+            };
+        }).ToList();
 
-        sink.Table(["Publisher Type", "Event Field", "Subscriber Count", "Severity"], rows,
-            $"Top {rows.Count} of {data.Groups.Count} publisher/field pairs  |  sorted by subscriber count");
+        sink.Table(
+            ["Publisher Type", "Event Field", "Instances", "Subscribers", "Retained", "Severity"],
+            rows,
+            $"{data.Groups.Count} unique event field(s) across {data.PublisherInstanceCount:N0} publisher instance(s)");
     }
 
-    private static void RenderPublisherBreakdown(IRenderSink sink, EventAnalysisData data, int top)
+    private static void RenderSubscriberBreakdown(IRenderSink sink, EventAnalysisData data, int top)
     {
-        sink.Section("2. Publisher Type Breakdown");
-        var publisherRows = data.Groups
-            .GroupBy(g => g.Publisher)
-            .Select(g => new[]
+        sink.Section("2. Subscriber Breakdown");
+        foreach (var g in data.Groups.Take(top))
+        {
+            string sev = g.IsStaticPublisher ? "⚡ CRITICAL" : g.HasStaticSubs ? "⚠ WARNING" : "—";
+            sink.BeginDetails(
+                $"{g.Publisher}.{g.Field}  ({g.Subscribers:N0} subscribers  |  {DumpHelpers.FormatSize(g.RetainedBytes)} retained  |  {sev})",
+                open: g.IsStaticPublisher);
+
+            if (g.AllSubs is { Count: > 0 } allSubs)
             {
-                g.Key,
-                g.Count().ToString("N0"),
-                g.Sum(x => x.Subscribers).ToString("N0"),
-            })
-            .OrderByDescending(r => int.Parse(r[2].Replace(",", "")))
+                var bySubType = allSubs
+                    .GroupBy(s => (s.TargetType, s.MethodName))
+                    .Select(tg => (
+                        Type:      tg.Key.TargetType,
+                        Method:    tg.Key.MethodName,
+                        Count:     tg.Count(),
+                        Size:      tg.Sum(s => s.Size),
+                        HasStatic: tg.Any(s => s.IsStaticRooted),
+                        IsLambda:  tg.All(s => s.IsLambda)))
+                    .OrderByDescending(t => t.Count)
+                    .Take(10)
+                    .ToList();
+
+                sink.Table(
+                    ["Subscriber Type", "Subscribed Method", "Count", "Size", "Static?", "Lambda?"],
+                    bySubType.Select(t => new[]
+                    {
+                        t.Type, t.Method, t.Count.ToString("N0"),
+                        DumpHelpers.FormatSize(t.Size),
+                        t.HasStatic ? "⚠ yes" : "—",
+                        t.IsLambda  ? "λ yes" : "—",
+                    }).ToList());
+            }
+            else
+            {
+                sink.KeyValues([("Subscribers", g.Subscribers.ToString("N0"))]);
+            }
+
+            if (g.DuplicateCount > 0)
+                sink.Alert(AlertLevel.Warning,
+                    $"{g.DuplicateCount} duplicate subscription(s) on '{g.Field}'.",
+                    advice: "Ensure += is not called multiple times without a matching -=.");
+            if (g.IsStaticPublisher)
+                sink.Alert(AlertLevel.Critical,
+                    $"Static publisher: subscribers on '{g.Field}' will NEVER be garbage collected.",
+                    advice: $"publisher.{g.Field} -= OnHandler;  // call in Dispose()");
+            else if (g.HasStaticSubs)
+                sink.Alert(AlertLevel.Warning,
+                    $"Long-lived subscribers on '{g.Field}' are kept alive by static roots.",
+                    advice: $"publisher.{g.Field} -= OnHandler;  // call in Dispose()");
+
+            sink.EndDetails();
+        }
+    }
+
+    private static void RenderTopMethods(IRenderSink sink, EventAnalysisData data, int top)
+    {
+        var allSubs = data.Groups
+            .Where(g => g.AllSubs is not null)
+            .SelectMany(g => g.AllSubs!)
+            .ToList();
+        if (allSubs.Count == 0) return;
+
+        sink.Section("3. Top Subscribed Methods");
+        var methodStats = allSubs
+            .GroupBy(s => s.MethodName)
+            .Select(mg => (
+                Method:   mg.Key,
+                Count:    mg.Count(),
+                Size:     mg.Sum(s => s.Size),
+                IsLambda: mg.Any(s => s.IsLambda)))
+            .OrderByDescending(m => m.Count)
             .Take(top)
             .ToList();
 
-        sink.Table(["Publisher Type", "Fields", "Total Subscribers"], publisherRows);
+        sink.Table(
+            ["Subscribed Method", "Total Subscriptions", "Retained", "Lambda?"],
+            methodStats.Select(m => new[]
+            {
+                m.Method, m.Count.ToString("N0"),
+                DumpHelpers.FormatSize(m.Size),
+                m.IsLambda ? "λ yes" : "—",
+            }).ToList(),
+            "Methods sorted by subscription count across all events");
+
+        // Footer: severity alert + key-value summary (matches old RenderFooter)
+        int   totalSubs     = data.Groups.Sum(g => g.Subscribers);
+        long  totalRetained = data.Groups.Sum(g => g.RetainedBytes);
+        int   criticalCount = data.Groups.Count(g => g.IsStaticPublisher);
+        int   warningCount  = data.Groups.Count(g => !g.IsStaticPublisher && g.HasStaticSubs);
+        int   totalLambdas  = data.Groups.Sum(g => g.LambdaCount);
+        int   totalDupes    = data.Groups.Sum(g => g.DuplicateCount);
+        int   publisherInstCount = data.PublisherInstanceCount;
+
+        if (criticalCount > 0)
+            sink.Alert(AlertLevel.Critical,
+                $"{criticalCount} static publisher(s) — subscribers are permanently rooted and will never be collected.");
+        else if (totalSubs > 1000)
+            sink.Alert(AlertLevel.Critical, $"High subscriber count: {totalSubs:N0} total event subscriptions.",
+                advice: "Unsubscribe event handlers when the subscriber is disposed (-= handler).");
+        else if (totalSubs > 200 || warningCount > 0)
+            sink.Alert(AlertLevel.Warning, $"{totalSubs:N0} event subscriptions found.");
+
+        sink.KeyValues([
+            ("Unique event fields",      data.Groups.Count.ToString("N0")),
+            ("Publisher instances",      publisherInstCount.ToString("N0")),
+            ("Total subscribers",        totalSubs.ToString("N0")),
+            ("Lambda/closure subs",      totalLambdas.ToString("N0")),
+            ("Duplicate subscriptions",  totalDupes.ToString("N0")),
+            ("Total retained memory",    DumpHelpers.FormatSize(totalRetained)),
+            ("Static publishers",        criticalCount.ToString("N0")),
+        ]);
     }
 }

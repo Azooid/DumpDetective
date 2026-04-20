@@ -11,7 +11,7 @@ public sealed class DeadlockReport
         sink.KeyValues([
             ("Threads total",        data.TotalThreadsByRuntime.ToString("N0")),
             ("Blocked threads",      data.Blocked.Count.ToString("N0")),
-            ("Contention groups",    data.Groups.Count.ToString("N0")),
+            ("Named threads found",  data.NamedThreadCount.ToString("N0")),
             ("Unique blocking types",data.Blocked.Select(b => b.BlockType).Distinct().Count().ToString("N0")),
         ]);
 

@@ -73,7 +73,7 @@ public sealed class StaticRefsAnalyzer
         return new StaticRefsData(fields, fields.Count, totalSz);
     }
 
-    // BFS to approximate retained size, capped at 1000 objects to stay fast.
+    // BFS to compute retained size by walking the full object graph.
     private static long EstimateRetained(ClrHeap heap, ClrObject root)
     {
         if (!root.IsValid || root.IsNull) return 0;
@@ -81,8 +81,7 @@ public sealed class StaticRefsAnalyzer
         var  visited = new HashSet<ulong> { root.Address };
         var  queue   = new Queue<ClrObject>();
         queue.Enqueue(root);
-        int cap = 1000;
-        while (queue.Count > 0 && cap-- > 0)
+        while (queue.Count > 0)
         {
             var obj = queue.Dequeue();
             try

@@ -34,7 +34,26 @@ public sealed class LargeObjectsAnalyzer
         var segments = BuildSegmentBreakdown(ctx.Heap, objects);
         long total   = objects.Sum(o => o.Size);
 
-        return new LargeObjectsData(objects, total, segments);
+        // LOH free space analysis (second walk, LOH objects only)
+        long lohCommitted = 0, lohFree = 0, lohLive = 0;
+        var  freeType     = ctx.Heap.FreeType;
+        foreach (var seg in ctx.Heap.Segments.Where(s => s.Kind == GCSegmentKind.Large))
+            lohCommitted += (long)seg.CommittedMemory.Length;
+
+        if (lohCommitted > 0)
+        {
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid) continue;
+                var lohSeg = ctx.Heap.GetSegmentByAddress(obj.Address);
+                if (lohSeg?.Kind != GCSegmentKind.Large) continue;
+                long sz = (long)obj.Size;
+                if (obj.Type == freeType) lohFree += sz;
+                else                      lohLive += sz;
+            }
+        }
+
+        return new LargeObjectsData(objects, total, segments, lohCommitted, lohLive, lohFree, minSize);
     }
 
     private static string DetermineSeg(ClrHeap heap, ulong addr)

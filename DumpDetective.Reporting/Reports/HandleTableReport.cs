@@ -11,32 +11,12 @@ public sealed class HandleTableReport
         sink.Section("Handle Summary");
         if (data.Total == 0) { sink.Text("No GC handles found."); return; }
 
-        long totalSize    = data.ByKind.Values.Sum(k => k.TotalSize);
-        int  strongCount  = data.ByKind.TryGetValue("Strong",  out var sc) ? sc.Count : 0;
-        int  pinnedCount  = data.ByKind.TryGetValue("Pinned",  out var pc) ? pc.Count : 0;
-        long strongSize   = sc?.TotalSize ?? 0;
-        long pinnedSize   = pc?.TotalSize ?? 0;
-
-        sink.KeyValues([
-            ("Total GC handles",       data.Total.ToString("N0")),
-            ("Estimated size (all)",   DumpHelpers.FormatSize(totalSize)),
-            ("Strong handles",         $"{strongCount:N0}  ({DumpHelpers.FormatSize(strongSize)})"),
-            ("Pinned handles",         $"{pinnedCount:N0}  ({DumpHelpers.FormatSize(pinnedSize)})"),
-        ]);
-
-        if (strongSize > 200 * 1024 * 1024)
-            sink.Alert(AlertLevel.Warning, $"Strong handles holding {DumpHelpers.FormatSize(strongSize)} — may indicate long-lived pinned or interop references.");
-
-        if (pinnedCount > 200)
-            sink.Alert(AlertLevel.Warning, $"{pinnedCount} pinned handles — excessive pinning can cause GC heap fragmentation.");
-
         RenderSummaryTable(sink, data);
         RenderPerKindBreakdown(sink, data, topN);
     }
 
     private static void RenderSummaryTable(IRenderSink sink, HandleTableData data)
     {
-        long grandSize = data.ByKind.Values.Sum(k => k.TotalSize);
         var rows = data.ByKind
             .OrderByDescending(kv => kv.Value.Count)
             .Select(kv => new[]
@@ -44,27 +24,38 @@ public sealed class HandleTableReport
                 kv.Key,
                 kv.Value.Count.ToString("N0"),
                 DumpHelpers.FormatSize(kv.Value.TotalSize),
-                $"{kv.Value.Count * 100.0 / Math.Max(1, data.Total):F1}%",
             }).ToList();
-        sink.Table(["Handle Kind", "Count", "Est. Size", "% of All"], rows,
+        sink.Table(["Handle Kind", "Count", "Referenced Size"], rows,
             $"{data.Total:N0} total handles");
+        sink.KeyValues([("Total handles", data.Total.ToString("N0"))]);
+
+        if (data.ByKind.TryGetValue("Strong", out var strongInfo) && strongInfo.TotalSize > 500 * 1024 * 1024L)
+            sink.Alert(AlertLevel.Critical,
+                $"Strong handles reference {DumpHelpers.FormatSize(strongInfo.TotalSize)} of live objects.",
+                advice: "Review GCHandle.Alloc(obj, GCHandleType.Normal) usage — these prevent GC of the entire retained graph.");
     }
 
     private static void RenderPerKindBreakdown(IRenderSink sink, HandleTableData data, int topN)
     {
-        sink.Section($"Top {topN} Types per Handle Kind");
+        sink.Section("Per-Kind Type Breakdown");
         foreach (var (kind, info) in data.ByKind.OrderByDescending(kv => kv.Value.Count))
         {
             if (info.Types.Count == 0) continue;
-            sink.BeginDetails($"{kind}  ({info.Count:N0} handles  |  {DumpHelpers.FormatSize(info.TotalSize)})", open: false);
+            sink.BeginDetails(
+                $"{kind}  —  {info.Count:N0} handle(s)  |  {DumpHelpers.FormatSize(info.TotalSize)}",
+                open: kind is "Strong" or "Pinned");
             var rows = info.Types
-                .OrderByDescending(kv => kv.Value.Size)
+                .OrderByDescending(kv => kv.Value.Count)
                 .Take(topN)
                 .Select(kv => new[]
                 {
                     kv.Key, kv.Value.Count.ToString("N0"), DumpHelpers.FormatSize(kv.Value.Size),
                 }).ToList();
-            sink.Table(["Object Type", "Count", "Size"], rows);
+            if (rows.Count > 0)
+                sink.Table(["Object Type", "Count", "Size"], rows,
+                    $"Top {rows.Count} types under {kind} handles");
+            else
+                sink.Text("  (no object type info available)");
             sink.EndDetails();
         }
     }

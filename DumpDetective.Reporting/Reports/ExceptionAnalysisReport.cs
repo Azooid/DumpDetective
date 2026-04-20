@@ -116,7 +116,7 @@ public sealed class ExceptionAnalysisReport
             .OrderByDescending(r => int.Parse(r[2].Replace(",", "")))
             .ToList();
         if (hresultRows.Count > 0)
-            sink.Table(["HResult", "Meaning", "Count", "Types"], hresultRows, "HResult distribution");
+            sink.Table(["HResult", "Meaning", "Count", "Exception Types"], hresultRows, "HResult distribution");
     }
 
     private static void RenderThrowStacks(IRenderSink sink, ExceptionAnalysisData data,
@@ -148,7 +148,7 @@ public sealed class ExceptionAnalysisReport
             if (sample.StackFrames.Count > 0)
                 sink.Table(["Stack Frame"], sample.StackFrames.Select(f => new[] { f }).ToList());
             else
-                sink.Text("  (no stack trace — exception may not have been thrown yet)");
+                sink.Text("  (no stack trace available — exception may not have been thrown yet)");
             sink.EndDetails();
         }
     }
@@ -173,20 +173,28 @@ public sealed class ExceptionAnalysisReport
 
     private static string KnownHResult(int hr) => hr switch
     {
-        unchecked((int)0x80004003) => "E_POINTER",
+        unchecked((int)0x80004005) => "E_FAIL (general failure)",
         unchecked((int)0x80070005) => "E_ACCESSDENIED",
-        unchecked((int)0x8007000E) => "E_OUTOFMEMORY",
         unchecked((int)0x80070057) => "E_INVALIDARG",
+        unchecked((int)0x8007000E) => "E_OUTOFMEMORY",
         unchecked((int)0x80131500) => "COR_E_EXCEPTION",
-        unchecked((int)0x80131501) => "COR_E_SYSTEM",
-        unchecked((int)0x80131502) => "COR_E_ARGUMENTOUTOFRANGE",
-        unchecked((int)0x80131503) => "COR_E_INDEXOUTOFRANGE",
-        unchecked((int)0x80131508) => "COR_E_INVALIDOPERATION",
-        unchecked((int)0x80131509) => "COR_E_APPLICATION",
-        unchecked((int)0x8013150C) => "COR_E_IO",
-        unchecked((int)0x80131515) => "COR_E_STACKOVERFLOW",
-        unchecked((int)0x8013153D) => "COR_E_OUTOFMEMORY",
-        unchecked((int)0x8007000B) => "E_ABORT",
+        unchecked((int)0x80131501) => "COR_E_ARITHMETIC",
+        unchecked((int)0x80131502) => "COR_E_ARRAYTYPEMISMATCH",
+        unchecked((int)0x80131503) => "COR_E_BADIMAGEFORMAT",
+        unchecked((int)0x80131509) => "COR_E_INVALIDOPERATION",
+        unchecked((int)0x8013150A) => "COR_E_IO",
+        unchecked((int)0x80131517) => "COR_E_NULLREFERENCE",
+        unchecked((int)0x8013152D) => "COR_E_STACKOVERFLOW",
+        unchecked((int)0x80131535) => "COR_E_TIMEOUT",
+        unchecked((int)0x80131539) => "COR_E_UNAUTHORIZEDACCESS",
+        unchecked((int)0x80131620) => "COR_E_THREADABORT",
+        unchecked((int)0x80070006) => "E_HANDLE",
+        unchecked((int)0x8007001F) => "ERROR_GEN_FAILURE",
+        unchecked((int)0x800700B7) => "ERROR_ALREADY_EXISTS",
+        unchecked((int)0x8007045A) => "ERROR_GRACEFUL_DISCONNECT",
+        unchecked((int)0x80072EE7) => "WININET_E_NAME_NOT_RESOLVED",
+        unchecked((int)0x80072EFE) => "WININET_E_CONNECTION_ABORTED",
+        unchecked((int)0x80072EFF) => "WININET_E_CONNECTION_RESET",
         _ => "",
     };
 }

@@ -9,7 +9,7 @@ public sealed class LargeObjectsReport
     public void Render(LargeObjectsData data, IRenderSink sink,
         int top = 50, bool showAddr = false, bool typeBreakdown = false)
     {
-        if (data.Objects.Count == 0) { sink.Text("No large objects found."); return; }
+        if (data.Objects.Count == 0) { sink.Text($"No objects \u2265 {DumpHelpers.FormatSize(data.MinSize)} found."); return; }
 
         sink.KeyValues([
             ("Objects found",   data.Objects.Count.ToString("N0")),
@@ -25,6 +25,7 @@ public sealed class LargeObjectsReport
         RenderTypeAggregate(sink, data, top);
         if (!typeBreakdown) RenderIndividualObjects(sink, data, top, showAddr);
         RenderSegmentBreakdown(sink, data);
+        RenderLohFreeSpace(sink, data);
     }
 
     private static void RenderTypeAggregate(IRenderSink sink, LargeObjectsData data, int top)
@@ -32,23 +33,26 @@ public sealed class LargeObjectsReport
         sink.Section("Type Aggregate");
         var typeAgg = data.Objects
             .GroupBy(o => o.Type)
-            .Select(g => (Type: g.Key, Count: g.Count(), Size: g.Sum(o => o.Size)))
+            .Select(g => (Type: g.Key, ElemType: g.First().ElemType, Count: g.Count(), Size: g.Sum(o => o.Size)))
             .OrderByDescending(t => t.Size)
             .Take(top)
             .ToList();
         var rows = typeAgg.Select(t => new[]
         {
-            t.Type, t.Count.ToString("N0"), DumpHelpers.FormatSize(t.Size),
-            $"{t.Size * 100.0 / Math.Max(1, data.TotalSize):F1}%",
+            t.Type,
+            t.ElemType.Length > 0 ? t.ElemType : "\u2014",
+            t.Count.ToString("N0"),
+            DumpHelpers.FormatSize(t.Size),
+            data.TotalSize > 0 ? $"{t.Size * 100.0 / data.TotalSize:F1}%" : "?",
         }).ToList();
-        sink.Table(["Type", "Count", "Total Size", "% of Total"], rows,
-            $"Top {rows.Count} types  |  sorted by total size");
+        sink.Table(["Type", "Element Type", "Count", "Total Size", "% of LOH+"], rows,
+            $"Top {rows.Count} types \u2265 {DumpHelpers.FormatSize(data.MinSize)}");
     }
 
     private static void RenderIndividualObjects(IRenderSink sink, LargeObjectsData data,
         int top, bool showAddr)
     {
-        sink.Section($"Top {Math.Min(top, data.Objects.Count)} Individual Objects");
+        sink.Section($"Top {Math.Min(top, data.Objects.Count)} Largest Individual Objects");
         var rows = data.Objects.Take(top).Select(o =>
         {
             var row = new List<string> { o.Type, DumpHelpers.FormatSize(o.Size), o.Segment };
@@ -60,19 +64,43 @@ public sealed class LargeObjectsReport
         var headers = new List<string> { "Type", "Size", "Segment" };
         if (data.Objects.Any(o => !string.IsNullOrEmpty(o.ElemType))) headers.Insert(1, "Element Type");
         if (showAddr) headers.Add("Address");
-        sink.Table(headers.ToArray(), rows);
+        sink.Table(headers.ToArray(), rows,
+            $"Top {rows.Count} of {data.Objects.Count:N0} objects \u2265 {DumpHelpers.FormatSize(data.MinSize)}");
     }
 
     private static void RenderSegmentBreakdown(IRenderSink sink, LargeObjectsData data)
     {
         if (data.Segments.Count == 0) return;
-        sink.Section("Heap Segments");
+        // No section call — renders under the current section (Top N Largest Individual Objects),
+        // matching old LargeObjectsCommand.RenderSegmentBreakdown behavior.
         var rows = data.Segments.Select(s => new[]
         {
             s.Kind, s.ObjectCount.ToString("N0"),
             DumpHelpers.FormatSize(s.Used),
-            DumpHelpers.FormatSize(s.Reserved),
         }).ToList();
-        sink.Table(["Kind", "Objects Found", "Used", "Reserved"], rows);
+        sink.Table(["Segment", "Objects", "Total Size"], rows, "By segment");
+    }
+
+    private static void RenderLohFreeSpace(IRenderSink sink, LargeObjectsData data)
+    {
+        if (data.LohCommitted <= 0) return;
+
+        sink.Section("LOH Free Space Analysis");
+        double lohFragPct = data.LohCommitted > 0 ? data.LohFree * 100.0 / data.LohCommitted : 0;
+        sink.KeyValues([
+            ("LOH committed",     DumpHelpers.FormatSize(data.LohCommitted)),
+            ("LOH live objects",  DumpHelpers.FormatSize(data.LohLive)),
+            ("LOH free (holes)",  DumpHelpers.FormatSize(data.LohFree)),
+            ("LOH fragmentation", $"{lohFragPct:F1}%"),
+        ]);
+        if (lohFragPct >= 50)
+            sink.Alert(AlertLevel.Critical,
+                $"LOH is {lohFragPct:F0}% fragmented. Reuse of large arrays is being prevented by holes.",
+                "LOH is not compacted by default. Fragmented LOH wastes virtual address space.",
+                "Use ArrayPool<T>.Shared, MemoryPool<T>, or enable GCSettings.LargeObjectHeapCompactionMode.");
+        else if (lohFragPct >= 25)
+            sink.Alert(AlertLevel.Warning,
+                $"LOH fragmentation at {lohFragPct:F0}%. Monitor for growth.",
+                advice: "Consider ArrayPool<byte>.Shared for large temporary buffers.");
     }
 }

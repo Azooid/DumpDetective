@@ -4,7 +4,8 @@ public sealed record HighRefsData(
     IReadOnlyList<HighRefEntry> Candidates,
     long TotalObjs,
     long TotalRefs,
-    int  UniqueReferencedAddrs);
+    int  UniqueReferencedAddrs,
+    IReadOnlyList<(string Label, int Count)> RefHistogram);
 
 public sealed record HighRefEntry(
     string                          Type,

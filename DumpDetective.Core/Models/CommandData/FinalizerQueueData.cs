@@ -6,7 +6,9 @@ public sealed record FinalizerQueueData(
     long                                            TotalSize,
     bool                                            FinalizerThreadBlocked,
     IReadOnlyList<string>                           FinalizerFrames,
-    int                                             ResurrectionCount);
+    int                                             ResurrectionCount,
+    int                                             FinalizerThreadId = 0,
+    uint                                            FinalizerThreadOSId = 0);
 
 public sealed record FinalizerTypeStats(
     int                   Count,

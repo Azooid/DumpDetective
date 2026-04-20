@@ -16,7 +16,8 @@ public static class CommandRegistry
         // ── orchestrator ──────────────────────────────────────────────────────
         new AnalyzeCommand(),
 
-        // ── heap / memory ─────────────────────────────────────────────────────
+        // ── full-analyze order matches original canonical sequence ─────────────
+        // heap / memory
         new HeapStatsCommand(
             new HeapStatsAnalyzer(),
             new HeapStatsReport()),
@@ -24,18 +25,6 @@ public static class CommandRegistry
         new GenSummaryCommand(
             new GenSummaryAnalyzer(),
             new GenSummaryReport()),
-
-        new HighRefsCommand(
-            new HighRefsAnalyzer(),
-            new HighRefsReport()),
-
-        new StringDuplicatesCommand(
-            new StringDuplicatesAnalyzer(),
-            new StringDuplicatesReport()),
-
-        new MemoryLeakCommand(
-            new MemoryLeakAnalyzer(),
-            new MemoryLeakReport()),
 
         new HeapFragmentationCommand(
             new HeapFragmentationAnalyzer(),
@@ -45,31 +34,15 @@ public static class CommandRegistry
             new LargeObjectsAnalyzer(),
             new LargeObjectsReport()),
 
-        new PinnedObjectsCommand(
-            new PinnedObjectsAnalyzer(),
-            new PinnedObjectsReport()),
+        new HighRefsCommand(
+            new HighRefsAnalyzer(),
+            new HighRefsReport()),
 
-        new GcRootsCommand(
-            new GcRootsAnalyzer(),
-            new GcRootsReport()),
+        // threads / concurrency
+        new ExceptionAnalysisCommand(
+            new ExceptionAnalysisAnalyzer(),
+            new ExceptionAnalysisReport()),
 
-        new FinalizerQueueCommand(
-            new FinalizerQueueAnalyzer(),
-            new FinalizerQueueReport()),
-
-        new HandleTableCommand(
-            new HandleTableAnalyzer(),
-            new HandleTableReport()),
-
-        new StaticRefsCommand(
-            new StaticRefsAnalyzer(),
-            new StaticRefsReport()),
-
-        new WeakRefsCommand(
-            new WeakRefsAnalyzer(),
-            new WeakRefsReport()),
-
-        // ── threads / concurrency ─────────────────────────────────────────────
         new ThreadAnalysisCommand(
             new ThreadAnalysisAnalyzer(),
             new ThreadAnalysisReport()),
@@ -78,43 +51,76 @@ public static class CommandRegistry
             new ThreadPoolAnalyzer(),
             new ThreadPoolReport()),
 
-        new ThreadPoolStarvationCommand(
-            new ThreadPoolStarvationAnalyzer(),
-            new ThreadPoolStarvationReport()),
+        new AsyncStacksCommand(
+            new AsyncStacksAnalyzer(),
+            new AsyncStacksReport()),
 
         new DeadlockDetectionCommand(
             new DeadlockAnalyzer(),
             new DeadlockReport()),
 
-        new AsyncStacksCommand(
-            new AsyncStacksAnalyzer(),
-            new AsyncStacksReport()),
+        // gc / handles / leaks
+        new FinalizerQueueCommand(
+            new FinalizerQueueAnalyzer(),
+            new FinalizerQueueReport()),
 
-        // ── exceptions / diagnostics ──────────────────────────────────────────
-        new ExceptionAnalysisCommand(
-            new ExceptionAnalysisAnalyzer(),
-            new ExceptionAnalysisReport()),
+        new HandleTableCommand(
+            new HandleTableAnalyzer(),
+            new HandleTableReport()),
+
+        new PinnedObjectsCommand(
+            new PinnedObjectsAnalyzer(),
+            new PinnedObjectsReport()),
+
+        new WeakRefsCommand(
+            new WeakRefsAnalyzer(),
+            new WeakRefsReport()),
+
+        new StaticRefsCommand(
+            new StaticRefsAnalyzer(),
+            new StaticRefsReport()),
+
+        new TimerLeaksCommand(
+            new TimerLeaksAnalyzer(),
+            new TimerLeaksReport()),
 
         new EventAnalysisCommand(
             new EventAnalysisAnalyzer(),
             new EventAnalysisReport()),
 
-        // ── infrastructure / networking ───────────────────────────────────────
-        new HttpRequestsCommand(
-            new HttpRequestsAnalyzer(),
-            new HttpRequestsReport()),
+        new StringDuplicatesCommand(
+            new StringDuplicatesAnalyzer(),
+            new StringDuplicatesReport()),
+
+        // infrastructure / networking
+        new WcfChannelsCommand(
+            new WcfChannelsAnalyzer(),
+            new WcfChannelsReport()),
 
         new ConnectionPoolCommand(
             new ConnectionPoolAnalyzer(),
             new ConnectionPoolReport()),
 
-        new WcfChannelsCommand(
-            new WcfChannelsAnalyzer(),
-            new WcfChannelsReport()),
+        new HttpRequestsCommand(
+            new HttpRequestsAnalyzer(),
+            new HttpRequestsReport()),
 
-        new TimerLeaksCommand(
-            new TimerLeaksAnalyzer(),
-            new TimerLeaksReport()),
+        new MemoryLeakCommand(
+            new MemoryLeakAnalyzer(),
+            new MemoryLeakReport()),
+
+        new ModuleListCommand(
+            new ModuleListAnalyzer(),
+            new ModuleListReport()),
+
+        // ── not included in full-analyze ──────────────────────────────────────
+        new GcRootsCommand(
+            new GcRootsAnalyzer(),
+            new GcRootsReport()),
+
+        new ThreadPoolStarvationCommand(
+            new ThreadPoolStarvationAnalyzer(),
+            new ThreadPoolStarvationReport()),
 
         // ── targeted / interactive ────────────────────────────────────────────
         new TypeInstancesCommand(
@@ -122,10 +128,6 @@ public static class CommandRegistry
             new TypeInstancesReport()),
 
         new ObjectInspectCommand(),
-
-        new ModuleListCommand(
-            new ModuleListAnalyzer(),
-            new ModuleListReport()),
 
         // ── trend ─────────────────────────────────────────────────────────────
         new TrendAnalysisCommand(),

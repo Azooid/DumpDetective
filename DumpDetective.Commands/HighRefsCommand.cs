@@ -40,12 +40,12 @@ public sealed class HighRefsCommand : ICommand
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
-        RenderWith(ctx, sink, 30, 10, false);
+        RenderWith(ctx, sink, 50, 5, false);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink, int top, int minRefs, bool showAddr)
     {
-        CommandBase.RenderHeader("High-Reference Objects", ctx, sink);
+        CommandBase.RenderHeader("Highly Referenced Object Analysis", ctx, sink);
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 

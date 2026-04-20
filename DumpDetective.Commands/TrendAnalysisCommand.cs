@@ -138,7 +138,7 @@ public sealed class TrendAnalysisCommand : ICommand
                         var cap = new CaptureSink();
                         cap.Header(
                             $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
-                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100");
+                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}");
                         AnalyzeReport.RenderReport(snap, cap, includeHeader: false);
                         AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap);
                         capturedSubReports[i] = cap.GetDoc();

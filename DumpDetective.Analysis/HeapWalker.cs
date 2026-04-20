@@ -153,14 +153,18 @@ public static class HeapWalker
 
     private static string? ExtractAsyncMethod(string typeName)
     {
+        // Match the old DumpCollector algorithm exactly:
+        // LastIndexOf('<') first, then search forward for ">d__" from that position.
+        // When the type has a trailing generic suffix (e.g., +<Bar>d__N<T>), LastIndexOf finds the
+        // trailing '<T>' rather than the method '<Bar>', so gt is not found — fall back to the full
+        // type name, which exactly matches old behavior (separate row per specialisation).
         int lt = typeName.LastIndexOf('<');
-        int gt = typeName.IndexOf(">d__", StringComparison.Ordinal);
-        if (gt < 0) gt = typeName.IndexOf(">D__", StringComparison.Ordinal);
-        if (lt < 0 || gt < 0 || gt <= lt) return null;
+        int gt = typeName.IndexOf(">d__", lt < 0 ? 0 : lt, StringComparison.Ordinal);
+        if (lt < 0 || gt < 0) return typeName;   // fallback: use full name as key (old behavior)
 
-        string methodPart = typeName[..lt];
-        int lastDot = methodPart.LastIndexOf('.');
-        return lastDot >= 0 ? typeName[(lastDot + 1)..(gt + 1)] + '>' : typeName[..(gt + 1)] + '>';
+        string declaring = typeName[..lt].TrimEnd('+');
+        string method    = typeName[(lt + 1)..gt];
+        return $"{declaring} .{method}";
     }
 
     private static bool IsDelegate(ClrType type)

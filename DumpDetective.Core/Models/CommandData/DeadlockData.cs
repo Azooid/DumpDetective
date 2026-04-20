@@ -3,7 +3,8 @@ namespace DumpDetective.Core.Models.CommandData;
 public sealed record DeadlockData(
     IReadOnlyList<BlockedThreadEntry> Blocked,
     IReadOnlyList<ContentionGroup>    Groups,
-    int                               TotalThreadsByRuntime);
+    int                               TotalThreadsByRuntime,
+    int                               NamedThreadCount = 0);
 
 public sealed record BlockedThreadEntry(
     int                   ManagedId,

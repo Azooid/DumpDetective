@@ -41,7 +41,7 @@ public sealed class ThreadAnalysisCommand : ICommand
             (ctx, sink) => RenderWith(ctx, sink, showStacks, blockedOnly, nameFilter, stateFilter));
     }
 
-    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, false, false, null, null);
+    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, true, false, null, null);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,

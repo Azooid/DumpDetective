@@ -55,7 +55,10 @@ public sealed class CaptureSink : IRenderSink
         {
             Title    = title,
             Subtitle = subtitle,
-            NavLevel = navLevel > 0 ? navLevel : CommandBase.SuppressVerbose ? 2 : 1,
+            NavLevel = navLevel > 0 ? navLevel :
+                CommandBase.SuppressVerbose
+                    ? (title.StartsWith("Per-Dump Report", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
+                    : 1,
         };
         _section = null;
         _doc.Chapters.Add(_chapter);

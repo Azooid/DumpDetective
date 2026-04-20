@@ -81,7 +81,8 @@ internal static class HeapObjectCollector
         ctx.SetAnalysis(connAnalyzer.Result!);
         ctx.SetAnalysis(exAnalyzer.Result!);
         ctx.SetAnalysis(asyncAnalyzer.Result!);
-        ctx.SetAnalysis(eventAnalyzer.Result!);
+        // Note: EventAnalysisData is NOT pre-cached here because the consumer-based quick-count
+        // lacks per-subscriber detail. EventAnalysisAnalyzer.Analyze() will do the full scan.
 
         // ── String duplicate stats ────────────────────────────────────────────
         SnapshotPopulator.ApplyStringDuplicates(s, strings.StringGroups);

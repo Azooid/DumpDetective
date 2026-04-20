@@ -18,7 +18,7 @@ public sealed class HeapStatsAnalyzer
         {
             var rows = new List<HeapStatRow>(snap.TypeStats.Count);
             foreach (var (name, a) in snap.TypeStats)
-                rows.Add(new HeapStatRow(name, a.Count, a.Size, a.GenLabel));
+                rows.Add(new HeapStatRow(name, a.Count, a.Size, a.GenLabel, a.MT));
             return new HeapStatsData(rows, rows.Sum(r => r.Size), rows.Sum(r => r.Count));
         }
 

@@ -1,7 +1,9 @@
 namespace DumpDetective.Core.Models.CommandData;
 
 /// <summary>Raw data collected by <c>ConnectionPoolAnalyzer</c>.</summary>
-public sealed record ConnectionPoolData(IReadOnlyList<ConnectionInfo> Connections);
+public sealed record ConnectionPoolData(
+    IReadOnlyList<ConnectionInfo> Connections,
+    IReadOnlyList<DbCommandEntry> Commands);
 
 public sealed record ConnectionInfo(
     string TypeName,
@@ -9,3 +11,7 @@ public sealed record ConnectionInfo(
     long   Size,
     string State,
     string ConnStr);
+
+public sealed record DbCommandEntry(
+    string TypeName,
+    string CommandText);

@@ -42,7 +42,7 @@ public sealed class StringDuplicatesCommand : ICommand
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
-        RenderWith(ctx, sink, 50, 2, 0, null);
+        RenderWith(ctx, sink, 100, 2, 0, null);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,

@@ -38,7 +38,7 @@ public sealed class AsyncStacksCommand : ICommand
             (ctx, sink) => RenderWith(ctx, sink, top, showAddr));
     }
 
-    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, 50, false);
+    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, 100, false);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink, int top, bool showAddr)

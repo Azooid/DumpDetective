@@ -64,7 +64,7 @@ public static class TrendAnalysisReport
             var incidentCols = new[] { "Signal" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray();
             var incidentRows = new List<string[]>();
 
-            var st = ThresholdLoader.Current.Scoring;
+            var tt = ThresholdLoader.Current.Trend;
 
             void IR(string name, Func<DumpSnapshot, (double val, string display)> proj,
                     double warnAt, double critAt, bool higherIsBad = true)
@@ -76,49 +76,49 @@ public static class TrendAnalysisReport
 
             IR("Health Score",
                 s => (s.HealthScore, $"{s.HealthScore}/100 {ScoreLabel(s.HealthScore)}"),
-                warnAt: 40, critAt: 20, higherIsBad: false);
+                warnAt: tt.ScoreWarn, critAt: tt.ScoreCrit, higherIsBad: false);
             IR("Heap Total",
                 s => (s.TotalHeapBytes / 1048576.0, DumpHelpers.FormatSize(s.TotalHeapBytes)),
-                st.HeapWarnMb, st.HeapCritGb * 1024.0);
+                tt.HeapWarnMb, tt.HeapCritMb);
             IR("LOH Size",
                 s => (s.LohBytes / 1048576.0, DumpHelpers.FormatSize(s.LohBytes)),
-                st.LohWarnMb, st.LohWarnMb * 2);
+                tt.LohWarnMb, tt.LohCritMb);
             IR("Fragmentation",
                 s => (s.HeapFreeBytes / 1048576.0, $"{s.FragmentationPct:F1}% ({DumpHelpers.FormatSize(s.HeapFreeBytes)})"),
-                warnAt: 200, critAt: 500);
+                tt.FragWarnMb, tt.FragCritMb);
             IR("Blocked Threads",
                 s => (s.BlockedThreadCount, s.BlockedThreadCount.ToString("N0")),
-                st.BlockedWarn, st.BlockedCrit);
+                tt.BlockedWarn, tt.BlockedCrit);
             IR("Async Backlog",
                 s => (s.AsyncBacklogTotal, s.AsyncBacklogTotal.ToString("N0")),
-                st.AsyncWarn, st.AsyncCrit);
+                tt.AsyncWarn, tt.AsyncCrit);
             IR("Active Exceptions",
                 s => (s.ExceptionThreadCount, s.ExceptionThreadCount.ToString("N0")),
-                st.ExceptionWarn, st.ExceptionWarn * 4);
+                tt.ExceptionWarn, tt.ExceptionCrit);
             IR("Finalizer Queue",
                 s => (s.FinalizerQueueDepth, s.FinalizerQueueDepth.ToString("N0")),
-                st.FinalizerWarn, st.FinalizerCrit);
+                tt.FinalizerWarn, tt.FinalizerCrit);
             IR("Timer Objects",
                 s => (s.TimerCount, s.TimerCount.ToString("N0")),
-                warnAt: 500, critAt: 2000);
+                tt.TimerWarn, tt.TimerCrit);
             if (snaps.Any(s => s.WcfObjectCount > 0))
                 IR("WCF Faulted Channels",
                     s => (s.WcfFaultedCount, s.WcfFaultedCount == 0 ? "—" : s.WcfFaultedCount.ToString("N0")),
-                    warnAt: 1, critAt: 5);
+                    tt.WcfWarn, tt.WcfCrit);
             if (snaps.Any(s => s.ConnectionCount > 0))
                 IR("DB Connections",
                     s => (s.ConnectionCount, s.ConnectionCount.ToString("N0")),
-                    st.DbConnectionWarn, st.DbConnectionCrit);
+                    tt.DbWarn, tt.DbCrit);
             IR("Pinned Handles",
                 s => (s.PinnedHandleCount, s.PinnedHandleCount.ToString("N0")),
-                st.PinnedWarn, st.PinnedWarn * 2);
+                tt.PinnedWarn, tt.PinnedCrit);
             IR("Event Subscribers",
                 s => (s.EventSubscriberTotal, s.EventSubscriberTotal.ToString("N0")),
-                st.EventTotalWarn, st.EventTotalWarn * 4);
+                tt.EventWarn, tt.EventCrit);
             if (snaps.Any(s => s.StringWastedBytes > 0))
                 IR("String Waste",
                     s => (s.StringWastedBytes / 1048576.0, DumpHelpers.FormatSize(s.StringWastedBytes)),
-                    st.StringWasteWarnMb, st.StringWasteWarnMb * 3);
+                    tt.StringWasteWarnMb, tt.StringWasteCritMb);
 
             // Memory leak signal
             {
@@ -184,23 +184,37 @@ public static class TrendAnalysisReport
                 else if (st2 == "⚠") warnings.Add(name);
             }
 
-            CheckSignal("Health Score",      sN.HealthScore,                warnAt: 40,              critAt: 20,              higherIsBad: false);
-            CheckSignal("Heap Total",        sN.TotalHeapBytes / 1048576.0, st.HeapWarnMb,           st.HeapCritGb * 1024.0);
-            CheckSignal("LOH Size",          sN.LohBytes / 1048576.0,       st.LohWarnMb,            st.LohWarnMb * 2);
-            CheckSignal("Fragmentation",     sN.HeapFreeBytes / 1048576.0,  warnAt: 200,             critAt: 500);
-            CheckSignal("Blocked Threads",   sN.BlockedThreadCount,         st.BlockedWarn,          st.BlockedCrit);
-            CheckSignal("Async Backlog",     sN.AsyncBacklogTotal,          st.AsyncWarn,            st.AsyncCrit);
-            CheckSignal("Active Exceptions", sN.ExceptionThreadCount,       st.ExceptionWarn,        st.ExceptionWarn * 4);
-            CheckSignal("Finalizer Queue",   sN.FinalizerQueueDepth,        st.FinalizerWarn,        st.FinalizerCrit);
-            CheckSignal("Timer Objects",     sN.TimerCount,                 warnAt: 500,             critAt: 2000);
+            CheckSignal("Health Score",      sN.HealthScore,                warnAt: tt.ScoreWarn,        critAt: tt.ScoreCrit,        higherIsBad: false);
+            CheckSignal("Heap Total",        sN.TotalHeapBytes / 1048576.0, tt.HeapWarnMb,              tt.HeapCritMb);
+            CheckSignal("LOH Size",          sN.LohBytes / 1048576.0,       tt.LohWarnMb,               tt.LohCritMb);
+            CheckSignal("Fragmentation",     sN.HeapFreeBytes / 1048576.0,  tt.FragWarnMb,              tt.FragCritMb);
+            CheckSignal("Blocked Threads",   sN.BlockedThreadCount,         tt.BlockedWarn,             tt.BlockedCrit);
+            CheckSignal("Async Backlog",     sN.AsyncBacklogTotal,          tt.AsyncWarn,               tt.AsyncCrit);
+            CheckSignal("Active Exceptions", sN.ExceptionThreadCount,       tt.ExceptionWarn,           tt.ExceptionCrit);
+            CheckSignal("Finalizer Queue",   sN.FinalizerQueueDepth,        tt.FinalizerWarn,           tt.FinalizerCrit);
+            CheckSignal("Timer Objects",     sN.TimerCount,                 tt.TimerWarn,               tt.TimerCrit);
             if (snaps.Any(s => s.WcfObjectCount > 0))
-                CheckSignal("WCF Faulted Channels", sN.WcfFaultedCount,    warnAt: 1,               critAt: 5);
+                CheckSignal("WCF Faulted Channels", sN.WcfFaultedCount,    tt.WcfWarn,                 tt.WcfCrit);
             if (snaps.Any(s => s.ConnectionCount > 0))
-                CheckSignal("DB Connections",       sN.ConnectionCount,    st.DbConnectionWarn,     st.DbConnectionCrit);
-            CheckSignal("Pinned Handles",    sN.PinnedHandleCount,          st.PinnedWarn,           st.PinnedWarn * 2);
-            CheckSignal("Event Subscribers", sN.EventSubscriberTotal,       st.EventTotalWarn,       st.EventTotalWarn * 4);
+                CheckSignal("DB Connections",       sN.ConnectionCount,    tt.DbWarn,                  tt.DbCrit);
+            CheckSignal("Pinned Handles",    sN.PinnedHandleCount,          tt.PinnedWarn,              tt.PinnedCrit);
+            CheckSignal("Event Subscribers", sN.EventSubscriberTotal,       tt.EventWarn,               tt.EventCrit);
             if (snaps.Any(s => s.StringWastedBytes > 0))
-                CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0, st.StringWasteWarnMb, st.StringWasteWarnMb * 3);
+                CheckSignal("String Waste",  sN.StringWastedBytes / 1048576.0, tt.StringWasteWarnMb,   tt.StringWasteCritMb);
+
+            // Memory leak signal — same logic as the per-dump table row
+            {
+                double gen2PctN      = sN.TotalHeapBytes > 0 ? sN.Gen2Bytes * 100.0 / sN.TotalHeapBytes : 0;
+                bool   hasNewTypeN   = sN.TopTypes.Any(t => t.Count >= 500 && s0.TopTypes.All(b => b.Name != t.Name));
+                bool   hasExplosiveN = sN.TopTypes.Any(t =>
+                {
+                    var b = s0.TopTypes.FirstOrDefault(x => x.Name == t.Name);
+                    return b is not null && b.Count > 0 &&
+                           (t.Count - b.Count) * 100.0 / b.Count > 50 && t.Count >= 500;
+                });
+                if      (gen2PctN > 50 || hasNewTypeN)    criticals.Add("Memory Leak Suspects");
+                else if (gen2PctN > 30 || hasExplosiveN)  warnings.Add("Memory Leak Suspects");
+            }
 
             var newFindings = sN.Findings
                 .Where(f => !s0.Findings.Any(x => x.Category == f.Category && x.Headline == f.Headline))
@@ -840,21 +854,21 @@ public static class TrendAnalysisReport
 
         static string FallbackAdvice(string key) => key switch
         {
-            "Memory|heap"          => "Investigate large object allocations. Consider reviewing allocation patterns.",
-            "Memory|loh"           => "LOH is not compacted by default. Avoid frequent large allocations.",
-            "Memory|fragmentation" => "High fragmentation reduces allocation efficiency.",
-            "Memory|finalizer"     => "Ensure IDisposable is implemented and Dispose() is called.",
-            "Memory|pinned"        => "Reduce GCHandle.Alloc(Pinned) usage. Prefer Memory<T>/Span<T> for interop.",
-            "Memory|string"        => "Intern repeated strings with string.Intern() or use a shared lookup table.",
+            "Memory|heap"          => "Investigate large object allocations. Consider increasing GC LOH threshold or reviewing allocation patterns.",
+            "Memory|loh"           => "LOH is not compacted by default. Avoid frequent large allocations. Consider GCSettings.LargeObjectHeapCompactionMode.",
+            "Memory|fragmentation" => "High fragmentation reduces allocation efficiency. Consider running GC.Collect(2, GCCollectionMode.Forced, true, true) during low-traffic periods.",
+            "Memory|finalizer"     => "Ensure IDisposable is implemented and Dispose() is called. Use 'using' statements to prevent finalizer queue buildup.",
+            "Memory|pinned"        => "Reduce GCHandle.Alloc(Pinned) usage. Prefer Memory<T>/Span<T> for interop. Unpin handles as soon as the native call completes.",
+            "Memory|string"        => "Intern repeated strings with string.Intern() or consolidate via a shared dictionary/lookup table.",
             "MemoryLeak|gen2"      => "Identify types accumulating in Gen2. Run: gc-roots <dump> to trace retaining roots.",
-            "Async|backlog"        => "A downstream dependency is blocking async continuations. Check for synchronous blocking calls.",
-            "Threading|tpsat"      => "Thread pool is saturated. Reduce blocking calls inside async methods.",
-            "Threading|blocked"    => "Threads are blocked. Run: deadlock-detection <dump> to identify contention chains.",
-            "Connections|db"       => "SQL connections are not being returned to the pool. Ensure SqlConnection is disposed.",
-            "Leaks|event"          => "Unsubscribe event handlers when objects are disposed.",
-            "Leaks|timer"          => "Dispose System.Threading.Timer instances when no longer needed.",
-            "Exceptions|active"    => "Frequent active exceptions degrade throughput. Review catch/rethrow patterns.",
-            "WCF|faulted"          => "Faulted WCF channels must be aborted. Call channel.Abort() in the catch block.",
+            "Async|backlog"        => "A downstream dependency is blocking async continuations. Profile the thread pool and check for synchronous blocking calls.",
+            "Threading|tpsat"      => "Thread pool is saturated. Reduce blocking calls inside async methods. Consider increasing thread pool min threads.",
+            "Threading|blocked"    => "Threads are blocked waiting on locks or I/O. Run: deadlock-detection <dump> to identify contention chains.",
+            "Connections|db"       => "SQL connections are not being returned to the pool. Ensure SqlConnection is wrapped in using or explicitly disposed.",
+            "Leaks|event"          => "Unsubscribe event handlers when objects are disposed. Use weak event patterns or WeakReference<T> for publisher/subscriber decoupling.",
+            "Leaks|timer"          => "Dispose System.Threading.Timer and System.Timers.Timer instances when no longer needed. Leaked timers keep closures alive.",
+            "Exceptions|active"    => "Frequent active exceptions degrade throughput. Review catch/rethrow patterns and eliminate exception-as-control-flow usage.",
+            "WCF|faulted"          => "Faulted WCF channels must be aborted (not closed). Call channel.Abort() in the catch block before recreating the channel.",
             _ when key.StartsWith("MemoryLeak|") => $"Run: memory-leak <dump> to trace GC root chains for {key["MemoryLeak|".Length..]}.",
             _ => "Investigate using the relevant per-dump analyzer command.",
         };

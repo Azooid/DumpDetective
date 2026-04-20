@@ -9,14 +9,25 @@ public sealed class ThreadAnalysisReport
         bool showStacks = false, bool blockedOnly = false,
         string? nameFilter = null, string? stateFilter = null)
     {
+        int gcCoop = data.Threads.Count(t => t.GcMode == "Cooperative");
         sink.Section("Thread Summary");
         sink.KeyValues([
             ("Total threads",   data.TotalCount.ToString("N0")),
             ("Alive",           data.AliveCount.ToString("N0")),
             ("Likely blocked",  data.BlockedCount.ToString("N0")),
             ("With exception",  data.WithExceptionCount.ToString("N0")),
+            ("GC cooperative",  gcCoop.ToString("N0")),
             ("Named threads",   data.NamedCount.ToString("N0")),
         ]);
+
+        // Category breakdown table (matches original ThreadAnalysisCommand.RenderSummary)
+        var categories = data.Threads
+            .GroupBy(t => t.Category)
+            .OrderByDescending(g => g.Count())
+            .Select(g => new[] { g.Key, g.Count().ToString("N0") })
+            .ToList();
+        if (categories.Count > 1)
+            sink.Table(["Category", "Count"], categories, "Thread categories");
 
         if (data.BlockedCount >= data.TotalCount / 2 && data.TotalCount > 4)
             sink.Alert(AlertLevel.Critical, $"{data.BlockedCount} of {data.TotalCount} threads are blocked.",
@@ -77,7 +88,7 @@ public sealed class ThreadAnalysisReport
                 sink.Table(["#", "Frame"],
                     t.StackFrames.Select((f, i) => new[] { i.ToString(), f }).ToList());
             else
-                sink.Text("  (no managed frames captured — re-run with --stacks)");
+                sink.Text("  (no managed frames)");
 
             sink.EndDetails();
         }

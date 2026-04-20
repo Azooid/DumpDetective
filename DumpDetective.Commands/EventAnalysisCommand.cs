@@ -39,7 +39,7 @@ public sealed class EventAnalysisCommand : ICommand
 
     private void RenderWith(DumpContext ctx, IRenderSink sink, int top)
     {
-        CommandBase.RenderHeader("Event Analysis", ctx, sink);
+        CommandBase.RenderHeader("Event Analysis Report", ctx, sink);
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
