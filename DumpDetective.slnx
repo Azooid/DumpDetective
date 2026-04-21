@@ -3,6 +3,7 @@
   <Project Path="DumpDetective.Cli/DumpDetective.Cli.csproj" />
   <Project Path="DumpDetective.Commands/DumpDetective.Commands.csproj" />
   <Project Path="DumpDetective.Core/DumpDetective.Core.csproj" />
+  <Project Path="DumpDetective.DiagnosticScenarios/DumpDetective.DiagnosticScenarios.csproj" Id="ef17e490-8ac6-416f-ac1c-71a4baf9726e" />
   <Project Path="DumpDetective.Reporting/DumpDetective.Reporting.csproj" />
   <Project Path="DumpDetective.Tests/DumpDetective.Tests.csproj" />
   <Project Path="DumpDetective/DumpDetective.csproj" />

@@ -1,0 +1,199 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DumpDetective — Windows Debug Diagnostic 2.x Rule Set
+  ======================================================
+  Import via:  DebugDiag 2.x  →  Tools  →  Import Rules  →  select this file
+  Or run:      .\Setup-DebugDiagRules.ps1  (auto-registers via COM)
+
+  Target process : DumpDetective.DiagnosticScenarios.exe
+  Default port   : http://localhost:5121
+  Dump output    : C:\DumpDetective\Dumps\<ScenarioName>\
+
+  One rule per DumpDetective command.  Every rule fires 3 sequential dumps
+  so you get a before/during/after snapshot usable with `trend-analysis`.
+-->
+<DebugDiagRuleSet Version="2.2">
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       GROUP 1 — Memory Threshold Rules
+       Trigger: Private Bytes of the target process crosses a threshold.
+       Relevant commands: memory-leak, heap-stats, gen-summary,
+                          large-objects, heap-fragmentation, string-duplicates
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <Rule RuleType="Performance" RuleId="1a2b3c4d-0001-0001-0001-000000000001">
+    <RuleName>DiagScenarios — Memory Leak (300 MB)</RuleName>
+    <Enabled>true</Enabled>
+    <UserComment>Fires the first dump when private bytes hit 300 MB.
+    Trigger via: GET /api/diagscenario/memory-leak  (call 3+ times)
+    Analyze with: DumpDetective memory-leak, heap-stats, gen-summary</UserComment>
+    <Processes>
+      <Process>
+        <Name>DumpDetective.DiagnosticScenarios</Name>
+        <MatchType>Exact</MatchType>
+      </Process>
+    </Processes>
+    <DumpLocation>C:\DumpDetective\Dumps\memory-leak\</DumpLocation>
+    <MaxDumps>3</MaxDumps>
+    <DumpType>Full</DumpType>
+    <SecondsBetweenDumps>30</SecondsBetweenDumps>
+    <PerfTriggers>
+      <PerfTrigger>
+        <!-- Counter path — replace the instance name if the process index differs -->
+        <Counter>\Process(DumpDetective.DiagnosticScenarios)\Private Bytes</Counter>
+        <ThresholdBytes>314572800</ThresholdBytes>  <!-- 300 MB -->
+        <Comparison>GreaterThan</Comparison>
+      </PerfTrigger>
+    </PerfTriggers>
+  </Rule>
+
+  <Rule RuleType="Performance" RuleId="1a2b3c4d-0001-0001-0001-000000000002">
+    <RuleName>DiagScenarios — Large Object Heap Pressure (500 MB)</RuleName>
+    <Enabled>true</Enabled>
+    <UserComment>Fires when private bytes exceed 500 MB — signals LOH / fragmentation.
+    Trigger via: GET /api/diagscenario/large-objects
+                 GET /api/diagscenario/heap-fragmentation
+    Analyze with: DumpDetective large-objects, heap-fragmentation, pinned-objects</UserComment>
+    <Processes>
+      <Process>
+        <Name>DumpDetective.DiagnosticScenarios</Name>
+        <MatchType>Exact</MatchType>
+      </Process>
+    </Processes>
+    <DumpLocation>C:\DumpDetective\Dumps\large-objects\</DumpLocation>
+    <MaxDumps>3</MaxDumps>
+    <DumpType>Full</DumpType>
+    <SecondsBetweenDumps>30</SecondsBetweenDumps>
+    <PerfTriggers>
+      <PerfTrigger>
+        <Counter>\Process(DumpDetective.DiagnosticScenarios)\Private Bytes</Counter>
+        <ThresholdBytes>524288000</ThresholdBytes>  <!-- 500 MB -->
+        <Comparison>GreaterThan</Comparison>
+      </PerfTrigger>
+    </PerfTriggers>
+  </Rule>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       GROUP 2 — Thread Count Rules
+       Trigger: Total thread count of the process exceeds a threshold.
+       Relevant commands: thread-pool, thread-pool-starvation, thread-analysis
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <Rule RuleType="Performance" RuleId="1a2b3c4d-0002-0002-0002-000000000001">
+    <RuleName>DiagScenarios — Thread Pool Saturation (&gt;80 threads)</RuleName>
+    <Enabled>true</Enabled>
+    <UserComment>Fires when the process has more than 80 threads.
+    Trigger via: GET /api/diagscenario/thread-pool
+                 GET /api/diagscenario/thread-pool-starvation
+    Analyze with: DumpDetective thread-pool, thread-pool-starvation, thread-analysis</UserComment>
+    <Processes>
+      <Process>
+        <Name>DumpDetective.DiagnosticScenarios</Name>
+        <MatchType>Exact</MatchType>
+      </Process>
+    </Processes>
+    <DumpLocation>C:\DumpDetective\Dumps\thread-pool\</DumpLocation>
+    <MaxDumps>3</MaxDumps>
+    <DumpType>Full</DumpType>
+    <SecondsBetweenDumps>15</SecondsBetweenDumps>
+    <PerfTriggers>
+      <PerfTrigger>
+        <Counter>\Process(DumpDetective.DiagnosticScenarios)\Thread Count</Counter>
+        <ThresholdCount>80</ThresholdCount>
+        <Comparison>GreaterThan</Comparison>
+      </PerfTrigger>
+    </PerfTriggers>
+  </Rule>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       GROUP 3 — Crash / First-Chance Exception Rules
+       Trigger: A CLR exception is thrown inside the target process.
+       Relevant commands: exception-analysis, async-stacks
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <Rule RuleType="Crash" RuleId="1a2b3c4d-0003-0003-0003-000000000001">
+    <RuleName>DiagScenarios — CLR First-Chance Exception</RuleName>
+    <Enabled>true</Enabled>
+    <UserComment>Dumps on any first-chance CLR exception (code 0xe0434352).
+    Trigger via: GET /api/diagscenario/exception-analysis
+    Analyze with: DumpDetective exception-analysis</UserComment>
+    <Processes>
+      <Process>
+        <Name>DumpDetective.DiagnosticScenarios</Name>
+        <MatchType>Exact</MatchType>
+      </Process>
+    </Processes>
+    <DumpLocation>C:\DumpDetective\Dumps\exception-analysis\</DumpLocation>
+    <MaxDumps>5</MaxDumps>
+    <DumpType>Full</DumpType>
+    <ExceptionFilters>
+      <!-- 0xe0434352 = managed CLR exception -->
+      <ExceptionFilter>
+        <ExceptionCode>0xe0434352</ExceptionCode>
+        <ChanceType>FirstChance</ChanceType>
+        <DumpType>Full</DumpType>
+        <ActionType>CollectDump</ActionType>
+      </ExceptionFilter>
+      <!-- 0xC0000005 = access violation — catches native crashes too -->
+      <ExceptionFilter>
+        <ExceptionCode>0xC0000005</ExceptionCode>
+        <ChanceType>SecondChance</ChanceType>
+        <DumpType>Full</DumpType>
+        <ActionType>CollectDump</ActionType>
+      </ExceptionFilter>
+    </ExceptionFilters>
+  </Rule>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       GROUP 4 — Hang / Unresponsive Process Rules
+       Trigger: HTTP request exceeds the timeout OR process CPU drops to ~0.
+       Relevant commands: deadlock-detection, thread-pool-starvation, async-stacks
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <Rule RuleType="Hang" RuleId="1a2b3c4d-0004-0004-0004-000000000001">
+    <RuleName>DiagScenarios — Process Hang / Deadlock (&gt;30 s)</RuleName>
+    <Enabled>true</Enabled>
+    <UserComment>Dumps after the process appears hung for 30+ seconds.
+    Trigger via: GET /api/diagscenario/deadlock-detection
+                 GET /api/diagscenario/thread-pool-starvation
+    Analyze with: DumpDetective deadlock-detection, async-stacks, thread-pool-starvation</UserComment>
+    <Processes>
+      <Process>
+        <Name>DumpDetective.DiagnosticScenarios</Name>
+        <MatchType>Exact</MatchType>
+      </Process>
+    </Processes>
+    <DumpLocation>C:\DumpDetective\Dumps\deadlock\</DumpLocation>
+    <MaxDumps>3</MaxDumps>
+    <DumpType>Full</DumpType>
+    <HangTimeoutSeconds>30</HangTimeoutSeconds>
+    <HttpPort>5121</HttpPort>
+    <HttpPingUrl>http://localhost:5121/api/diagscenario/status</HttpPingUrl>
+  </Rule>
+
+  <!-- ═══════════════════════════════════════════════════════════════════════
+       GROUP 5 — Process Startup / Attach Rule
+       Fires once when the process first starts so you have a clean baseline.
+       Relevant commands: module-list, heap-stats (baseline)
+       ═══════════════════════════════════════════════════════════════════════ -->
+
+  <Rule RuleType="Crash" RuleId="1a2b3c4d-0005-0005-0005-000000000001">
+    <RuleName>DiagScenarios — Baseline on Process Start</RuleName>
+    <Enabled>true</Enabled>
+    <UserComment>Takes a single full dump 10 seconds after the process launches.
+    Useful as a clean baseline for trend-analysis and module-list.
+    Analyze with: DumpDetective module-list, heap-stats (baseline comparison)</UserComment>
+    <Processes>
+      <Process>
+        <Name>DumpDetective.DiagnosticScenarios</Name>
+        <MatchType>Exact</MatchType>
+      </Process>
+    </Processes>
+    <DumpLocation>C:\DumpDetective\Dumps\baseline\</DumpLocation>
+    <MaxDumps>1</MaxDumps>
+    <DumpType>Full</DumpType>
+    <TriggerOnStart>true</TriggerOnStart>
+    <StartDelaySeconds>10</StartDelaySeconds>
+  </Rule>
+
+</DebugDiagRuleSet>
