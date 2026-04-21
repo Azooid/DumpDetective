@@ -1,3 +1,9 @@
 <Solution>
+  <Project Path="DumpDetective.Analysis/DumpDetective.Analysis.csproj" />
+  <Project Path="DumpDetective.Cli/DumpDetective.Cli.csproj" />
+  <Project Path="DumpDetective.Commands/DumpDetective.Commands.csproj" />
+  <Project Path="DumpDetective.Core/DumpDetective.Core.csproj" />
+  <Project Path="DumpDetective.Reporting/DumpDetective.Reporting.csproj" />
+  <Project Path="DumpDetective.Tests/DumpDetective.Tests.csproj" />
   <Project Path="DumpDetective/DumpDetective.csproj" />
 </Solution>

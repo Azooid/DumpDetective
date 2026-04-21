@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DumpDetective.Cli": {
+      "commandName": "Project",
+      "commandLineArgs": "analyze --help --debug"
+    }
+  }
+}
