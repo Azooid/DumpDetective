@@ -33,7 +33,9 @@ public sealed class ProgressLogger
     public void SectionHeader(string title)
     {
         FinishLive();
-        int w      = Console.WindowWidth > 20 ? Console.WindowWidth - 1 : 100;
+        int w;
+        try   { w = Console.WindowWidth > 20 ? Console.WindowWidth - 1 : 100; }
+        catch { w = 100; }
         int dashes = Math.Max(4, w - title.Length - 4);
         AnsiConsole.MarkupLine($"[bold]── {Markup.Escape(title)} {new string('─', dashes)}[/]");
     }

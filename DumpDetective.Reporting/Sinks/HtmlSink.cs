@@ -577,8 +577,24 @@ public sealed class HtmlSink : IRenderSink
         /* ── Nav filter ───────────────────────────────────────────────── */
         function filterNav(q){
           q = q.toLowerCase();
-          document.querySelectorAll('#nav-list a').forEach(function(a){
-            a.style.display = (!q || a.textContent.toLowerCase().includes(q)) ? '' : 'none';
+          const allLinks = document.querySelectorAll('#nav-list a');
+          if(!q){
+            // Clear all inline overrides — CSS class controls visibility again
+            allLinks.forEach(function(a){ a.style.display = ''; });
+            document.querySelectorAll('.nav-sub-chapters').forEach(function(sc){ sc.style.display = ''; });
+            document.querySelectorAll('.nav-subreports').forEach(function(t){ t.style.display = ''; });
+            return;
+          }
+          allLinks.forEach(function(a){
+            a.style.display = a.textContent.toLowerCase().includes(q) ? '' : 'none';
+          });
+          // Auto-expand sub-chapter containers whose children match; hide toggle if none match
+          document.querySelectorAll('.nav-sub-chapters').forEach(function(sc){
+            const anyVis = Array.from(sc.querySelectorAll('a')).some(function(a){ return a.style.display !== 'none'; });
+            sc.style.display = anyVis ? 'block' : 'none';
+            const toggle = sc.previousElementSibling;
+            if(toggle && toggle.classList.contains('nav-subreports'))
+              toggle.style.display = anyVis ? '' : 'none';
           });
         }
 

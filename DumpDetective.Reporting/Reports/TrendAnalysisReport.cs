@@ -51,6 +51,7 @@ public static class TrendAnalysisReport
 
         // ── 1. Incident Summary ───────────────────────────────────────────────
         sink.Section("1. Incident Summary");
+
         {
             static string Status(double val, double warnAt, double critAt, bool higherIsBad = true)
             {
@@ -919,6 +920,66 @@ public static class TrendAnalysisReport
             .ThenBy(r => r.category)
             .ThenBy(r => r.title)
             .ToList();
+
+        // ── Plain-English description ──────────────────────────────────────
+        sink.Text(
+            "This section summarises the health findings across all captured snapshots. " +
+            "Each row in the table below tracks one diagnosed issue — severity, evidence per dump, and a recommended action. " +
+            "CRITICAL rows require immediate attention; WARNING rows should be monitored.");
+
+        int scoreDelta2 = sN.HealthScore - s0.HealthScore;
+        string healthSentence = scoreDelta2 >= 10
+            ? $"Overall health improved from {s0.HealthScore}/100 ({ScoreLabel(s0.HealthScore)}) to {sN.HealthScore}/100 ({ScoreLabel(sN.HealthScore)}) across the observed period."
+            : scoreDelta2 <= -10
+            ? $"Overall health degraded from {s0.HealthScore}/100 ({ScoreLabel(s0.HealthScore)}) to {sN.HealthScore}/100 ({ScoreLabel(sN.HealthScore)}) across the observed period."
+            : $"Health score remained roughly stable at {sN.HealthScore}/100 ({ScoreLabel(sN.HealthScore)}) throughout the observed period.";
+        sink.Text(healthSentence);
+
+        var allCategories = snaps
+            .SelectMany(s => s.Findings.Select(f => f.Category))
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(c => c)
+            .ToList();
+
+        foreach (var category in allCategories)
+        {
+            var presence = snaps
+                .Select((s, i) => (label: labels[i], has: s.Findings.Any(f => f.Category == category)))
+                .ToList();
+
+            bool inFirst  = presence[0].has;
+            bool inLast   = presence[^1].has;
+            bool inAll    = presence.All(x => x.has);
+            var  withList = presence.Where(x => x.has).Select(x => x.label).ToList();
+
+            string sentence;
+            if (inAll)
+                sentence = $"{category}: issue present in all {snaps.Count} snapshots — has not resolved.";
+            else if (!inFirst && inLast)
+                sentence = $"{category}: newly detected in {withList[0]}, not present in the baseline.";
+            else if (inFirst && !inLast)
+                sentence = withList.Count == 1
+                    ? $"{category}: issue was detected in {withList[0]} and appears resolved in subsequent snapshots."
+                    : $"{category}: detected in {withList[0]}, last seen in {withList[^1]} — appears resolved by {presence.First(x => !x.has && labels.ToList().IndexOf(x.label) > labels.ToList().IndexOf(withList[^1])).label}.";
+            else
+                sentence = $"{category}: detected in {string.Join(", ", withList)}.";
+
+            sink.Text("• " + sentence);
+        }
+
+        if (allCategories.Count == 0)
+            sink.Text("• No health findings recorded across any snapshot.");
+
+        var critTitles = dedupedRows.Where(r => r.severity == FindingSeverity.Critical).Select(r => r.title).ToList();
+        var warnTitles = dedupedRows.Where(r => r.severity == FindingSeverity.Warning).Select(r => r.title).ToList();
+        if (critTitles.Count > 0)
+            sink.Text($"⚠ As of the latest snapshot, {critTitles.Count} finding(s) are at critical severity: {string.Join(", ", critTitles)}. Immediate investigation is recommended.");
+        else if (warnTitles.Count > 0)
+            sink.Text($"⚠ As of the latest snapshot, {warnTitles.Count} finding(s) are at warning severity: {string.Join(", ", warnTitles)}.");
+        else
+            sink.Text("✓ All findings are within acceptable thresholds in the latest snapshot.");
+
+        sink.BlankLine();
 
         if (dedupedRows.Count == 0)
         {

@@ -106,7 +106,7 @@ public static class AnalyzeReport
 
     // ── Scored summary renderer ───────────────────────────────────────────────
 
-    public static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true)
+    public static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true, DumpContext? ctx = null)
     {
         if (includeHeader)
             sink.Header(
@@ -115,37 +115,86 @@ public static class AnalyzeReport
 
         // Findings
         sink.Section("Findings");
-        foreach (var f in s.Findings)
-        {
-            var lvl = f.Severity switch
-            {
-                FindingSeverity.Critical => AlertLevel.Critical,
-                FindingSeverity.Warning  => AlertLevel.Warning,
-                _                        => AlertLevel.Info,
-            };
-            sink.Alert(lvl, $"[{f.Category}] {f.Headline}", f.Detail, f.Advice);
-        }
         sink.KeyValues(
         [
             ("Health score", $"{s.HealthScore}/100  [{ScoreLabel(s.HealthScore)}]"),
             ("Mode",         s.IsFullMode ? "Full" : "Lightweight"),
         ]);
 
-        var breakdownRows = s.Findings
-            .Where(f => f.Deduction > 0)
-            .OrderByDescending(f => f.Deduction)
-            .Select(f => new[]
-            {
-                f.Category,
-                f.Headline.Length > 65 ? f.Headline[..62] + "…" : f.Headline,
-                $"-{f.Deduction}",
-            })
-            .ToList();
-        if (breakdownRows.Count > 0)
+        if (s.Findings.Count > 0)
         {
-            int totalDeducted = 100 - s.HealthScore;
-            sink.Table(["Category", "Finding", "Pts Deducted"], breakdownRows,
-                $"Score breakdown: {s.HealthScore}/100 (−{totalDeducted} total)");
+            // Build evidence string from snapshot data for each finding
+            static string Evidence(Finding f, DumpSnapshot s)
+            {
+                string h = f.Headline.ToLowerInvariant();
+                return f.Category switch
+                {
+                    "Memory" when h.Contains("finalizer") =>
+                        s.TopFinalizerTypes.Count > 0
+                            ? string.Join("; ", s.TopFinalizerTypes.Take(3).Select(t => $"{t.Name.Split('.').Last()} ×{t.Count:N0}"))
+                            : $"{s.FinalizerQueueDepth:N0} objects queued",
+                    "Memory" when h.Contains("heap") || h.Contains("large") =>
+                        $"Gen0: {FormatSize(s.Gen0Bytes)}  Gen1: {FormatSize(s.Gen1Bytes)}  Gen2: {FormatSize(s.Gen2Bytes)}  LOH: {FormatSize(s.LohBytes)}",
+                    "Memory" when h.Contains("loh") =>
+                        $"LOH: {FormatSize(s.LohBytes)}  |  {s.LohObjectCount:N0} objects  |  frag: {s.LohFragmentationPct:F1}%",
+                    "Memory" when h.Contains("fragment") =>
+                        $"{s.FragmentationPct:F1}% free  ({FormatSize(s.HeapFreeBytes)} of {FormatSize(s.TotalHeapBytes)})",
+                    "Memory" when h.Contains("pinned") =>
+                        $"{s.PinnedHandleCount:N0} pinned handles",
+                    "Memory" when h.Contains("string") =>
+                        $"{FormatSize(s.StringWastedBytes)} wasted  |  {s.UniqueStringCount:N0} unique strings",
+                    "Memory Leak" =>
+                        !string.IsNullOrEmpty(f.Detail) ? f.Detail
+                        : s.Gen2Bytes > 0 ? $"Gen2: {FormatSize(s.Gen2Bytes)}  ({(s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0):F0}% of heap)" : "",
+                    "Async" =>
+                        !string.IsNullOrEmpty(f.Detail) ? f.Detail
+                        : $"{s.AsyncBacklogTotal:N0} continuations pending",
+                    "Threading" when h.Contains("block") =>
+                        $"{s.BlockedThreadCount:N0} blocked  |  {s.ThreadCount:N0} total threads",
+                    "Threading" =>
+                        $"{s.TpActiveWorkers}/{s.TpMaxWorkers} workers active",
+                    "Connections" =>
+                        $"{s.ConnectionCount:N0} connections on heap",
+                    "Leaks" when h.Contains("event") =>
+                        !string.IsNullOrEmpty(f.Detail) ? f.Detail
+                        : $"{s.EventSubscriberTotal:N0} subscribers  |  {s.EventLeakFieldCount:N0} fields",
+                    "Leaks" when h.Contains("timer") =>
+                        $"{s.TimerCount:N0} timer objects",
+                    "Exceptions" =>
+                        $"{s.ExceptionThreadCount:N0} threads  |  top: {(s.ExceptionCounts.FirstOrDefault() is { } e ? $"{e.Name.Split('.').Last()} ×{e.Count:N0}" : "—")}",
+                    "WCF" =>
+                        $"{s.WcfFaultedCount:N0} faulted  |  {s.WcfObjectCount:N0} total WCF objects",
+                    _ => f.Detail ?? "",
+                };
+            }
+
+            var findingRows = s.Findings
+                .OrderBy(f => f.Severity == FindingSeverity.Critical ? 0 : f.Severity == FindingSeverity.Warning ? 1 : 2)
+                .ThenBy(f => f.Category)
+                .Select(f =>
+                {
+                    string sev = f.Severity == FindingSeverity.Critical ? "✗ Critical"
+                               : f.Severity == FindingSeverity.Warning  ? "⚠ Warning"
+                               :                                          "ℹ Info";
+                    string evidence = Evidence(f, s);
+                    if (evidence.Length > 90) evidence = evidence[..87] + "…";
+                    string advice = string.IsNullOrEmpty(f.Advice) ? "" : f.Advice.Length > 80 ? f.Advice[..77] + "…" : f.Advice;
+                    string headline = f.Headline.Length > 75 ? f.Headline[..72] + "…" : f.Headline;
+                    return new[] { sev, f.Category, headline, evidence, advice };
+                })
+                .ToList();
+            int critCount = s.Findings.Count(f => f.Severity == FindingSeverity.Critical);
+            int warnCount = s.Findings.Count(f => f.Severity == FindingSeverity.Warning);
+            int infoCount = s.Findings.Count - critCount - warnCount;
+            string caption = $"{s.Findings.Count} finding(s)";
+            if (critCount > 0) caption += $"  |  ✗ {critCount} critical";
+            if (warnCount > 0) caption += $"  |  ⚠ {warnCount} warning";
+            if (infoCount  > 0) caption += $"  |  ℹ {infoCount} info";
+            sink.Table(["Severity", "Category", "Finding", "Evidence", "Recommendation"], findingRows, caption);
+        }
+        else
+        {
+            sink.Alert(AlertLevel.Info, "No findings — all monitored signals within acceptable thresholds.");
         }
 
         // Memory
@@ -188,12 +237,65 @@ public static class AnalyzeReport
         }
 
         // Exceptions
-        if (s.ExceptionCounts.Count > 0)
+        if (s.ExceptionCounts.Count > 0 || (ctx is not null && ctx.Runtime.Threads.Any(t => t.CurrentException is not null)))
         {
             sink.Section("Exceptions on Heap");
-            sink.Table(
-                ["Exception Type", "Count"],
-                s.ExceptionCounts.Take(15).Select(e => new[] { e.Name, e.Count.ToString("N0") }).ToList());
+
+            // Summary table from snapshot
+            if (s.ExceptionCounts.Count > 0)
+                sink.Table(
+                    ["Exception Type", "Count"],
+                    s.ExceptionCounts.Take(15).Select(e => new[] { e.Name, e.Count.ToString("N0") }).ToList());
+
+            // Active exceptions with stack traces from live threads
+            if (ctx is not null)
+            {
+                var activeThreads = ctx.Runtime.Threads
+                    .Where(t => t.CurrentException is not null)
+                    .ToList();
+
+                if (activeThreads.Count > 0)
+                {
+                    sink.Alert(AlertLevel.Critical,
+                        $"{activeThreads.Count} active (in-flight) exception(s) on managed threads — these caused or are related to the crash.");
+
+                    foreach (var t in activeThreads)
+                    {
+                        var ex = t.CurrentException!;
+                        string title = $"Thread {t.ManagedThreadId}  (OS 0x{t.OSThreadId:X4})  —  {ex.Type?.Name ?? "?"}  ⚡ ACTIVE";
+                        sink.BeginDetails(title, open: true);
+
+                        var infoRows = new List<string[]>();
+                        if (!string.IsNullOrEmpty(ex.Message))     infoRows.Add(["Message",         ex.Message]);
+                        if (ex.HResult != 0)                       infoRows.Add(["HResult",         $"0x{ex.HResult:X8}"]);
+                        if (ex.Inner?.Type?.Name is string inner)   infoRows.Add(["Inner Exception", inner]);
+                        infoRows.Add(["Address", $"0x{ex.Address:X16}"]);
+                        sink.Table(["Field", "Value"], infoRows);
+
+                        // Original throw stack from ClrException.StackTrace
+                        var throwFrames = ex.StackTrace
+                            .Select(f => f.ToString() ?? "")
+                            .Where(f => f.Length > 0)
+                            .ToList();
+                        if (throwFrames.Count > 0)
+                            sink.Table(["Stack Frame"], throwFrames.Select(f => new[] { f }).ToList(),
+                                "Original throw stack — where the exception was raised");
+                        else
+                            sink.Text("⚠ Original throw stack not available.");
+
+                        // Live thread call stack
+                        var threadFrames = t.EnumerateStackTrace(includeContext: false)
+                            .Select(f => f.ToString() ?? "")
+                            .Where(f => f.Length > 0)
+                            .ToList();
+                        if (threadFrames.Count > 0)
+                            sink.Table(["Stack Frame"], threadFrames.Select(f => new[] { f }).ToList(),
+                                "Live thread call stack — where the thread was when the dump was captured");
+
+                        sink.EndDetails();
+                    }
+                }
+            }
         }
 
         // Leaks & Handles

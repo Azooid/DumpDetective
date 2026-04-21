@@ -52,11 +52,32 @@ public sealed class ExceptionAnalysisCommand : ICommand
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
         // Build active-exception lookup from live threads (not stored in analyzer data)
-        var activeByAddr = new Dictionary<ulong, (int ThreadId, uint OSThreadId)>();
+        var activeByAddr = new Dictionary<ulong, (int ThreadId, uint OSThreadId, string? TypeName, string? Message, int HResult, string? InnerType, IReadOnlyList<string> ThreadFrames, IReadOnlyList<string> ThrowFrames)>();
         foreach (var t in ctx.Runtime.Threads)
         {
-            if (t.CurrentException is not null)
-                activeByAddr[t.CurrentException.Address] = (t.ManagedThreadId, t.OSThreadId);
+            var ex = t.CurrentException;
+            if (ex is null) continue;
+
+            // Live managed thread call stack (where the thread is RIGHT NOW)
+            var threadFrames = t.EnumerateStackTrace(includeContext: false)
+                .Select(f => f.ToString() ?? "")
+                .Where(s => s.Length > 0)
+                .ToList();
+
+            // Original throw location stored inside the exception object
+            var throwFrames = ex.StackTrace
+                .Select(f => f.ToString() ?? "")
+                .Where(s => s.Length > 0)
+                .ToList();
+
+            activeByAddr[ex.Address] = (
+                t.ManagedThreadId, t.OSThreadId,
+                ex.Type?.Name,
+                ex.Message,
+                ex.HResult,
+                ex.Inner?.Type?.Name,
+                (IReadOnlyList<string>)threadFrames,
+                (IReadOnlyList<string>)throwFrames);
         }
 
         var data = _analyzer.Analyze(ctx);

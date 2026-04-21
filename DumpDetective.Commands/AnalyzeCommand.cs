@@ -83,7 +83,7 @@ public sealed class AnalyzeCommand : ICommand
             log.SectionHeader("Rendering Output");
 
             using var sink = SinkFactory.Create(outputPath);
-            AnalyzeReport.RenderReport(snap, sink);
+            AnalyzeReport.RenderReport(snap, sink, ctx: dumpCtx);
             log.Check("Summary report rendered.");
 
             if (full)
@@ -111,6 +111,6 @@ public sealed class AnalyzeCommand : ICommand
     public void Render(DumpContext ctx, IRenderSink sink)
     {
         var snap = DumpCollector.CollectFull(ctx);
-        AnalyzeReport.RenderReport(snap, sink);
+        AnalyzeReport.RenderReport(snap, sink, ctx: ctx);
     }
 }

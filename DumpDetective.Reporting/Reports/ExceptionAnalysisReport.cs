@@ -8,13 +8,13 @@ public sealed class ExceptionAnalysisReport
     public void Render(
         ExceptionAnalysisData data,
         IRenderSink sink,
-        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId)>? activeByAddr = null,
+        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId, string? TypeName, string? Message, int HResult, string? InnerType, IReadOnlyList<string> ThreadFrames, IReadOnlyList<string> ThrowFrames)>? activeByAddr = null,
         int top = 20,
         string? filter = null,
         bool showAddr = false,
         bool showStack = false)
     {
-        activeByAddr ??= new Dictionary<ulong, (int, uint)>();
+        activeByAddr ??= new Dictionary<ulong, (int, uint, string?, string?, int, string?, IReadOnlyList<string>, IReadOnlyList<string>)>();
 
         sink.Section("1. Exceptions on Heap");
 
@@ -31,9 +31,16 @@ public sealed class ExceptionAnalysisReport
             {
                 var samples  = data.ByType.TryGetValue(kv.Key, out var g) ? g.Samples : [];
                 int actCnt   = samples.Count(s => activeByAddr.ContainsKey(s.Addr));
+                // Also check by type name in case the active address isn't in the 10-sample cap
+                if (actCnt == 0)
+                    actCnt = activeByAddr.Values.Count(v => v.TypeName == kv.Key);
                 int hr       = samples.FirstOrDefault(s => s.HResult != 0)?.HResult ?? 0;
-                string inner = samples.FirstOrDefault(s => s.InnerType is not null)?.InnerType ?? "—";
+                if (hr == 0) hr = activeByAddr.Values.FirstOrDefault(v => v.TypeName == kv.Key && v.HResult != 0).HResult;
+                string inner = samples.FirstOrDefault(s => s.InnerType is not null)?.InnerType
+                            ?? activeByAddr.Values.FirstOrDefault(v => v.TypeName == kv.Key && v.InnerType is not null).InnerType
+                            ?? "—";
                 string msg   = samples.FirstOrDefault(s => activeByAddr.ContainsKey(s.Addr) && s.Message.Length > 0)?.Message
+                            ?? activeByAddr.Values.FirstOrDefault(v => v.TypeName == kv.Key && !string.IsNullOrEmpty(v.Message)).Message
                             ?? samples.FirstOrDefault(s => s.Message.Length > 0)?.Message ?? "—";
                 if (msg.Length > 80) msg = msg[..77] + "…";
                 return new[]
@@ -66,7 +73,7 @@ public sealed class ExceptionAnalysisReport
         RenderActiveThreadSection(sink, activeByAddr, data, showStack);
         RenderHResults(sink, data);
 
-        if (showStack && data.ByType.Count > 0)
+        if ((showStack || activeCount > 0) && data.ByType.Count > 0)
             RenderThrowStacks(sink, data, activeByAddr, top, showAddr);
         else if (showAddr && data.TotalAll > 0)
             RenderAddresses(sink, data, activeByAddr, top);
@@ -79,30 +86,64 @@ public sealed class ExceptionAnalysisReport
     }
 
     private static void RenderActiveThreadSection(IRenderSink sink,
-        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId)> activeByAddr,
+        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId, string? TypeName, string? Message, int HResult, string? InnerType, IReadOnlyList<string> ThreadFrames, IReadOnlyList<string> ThrowFrames)> activeByAddr,
         ExceptionAnalysisData data, bool showStack)
     {
         sink.Section("2. Active Thread Exceptions");
         if (activeByAddr.Count == 0) { sink.Text("No active exceptions on any managed thread."); return; }
 
-        var activeRows = new List<string[]>();
-        foreach (var (addr, (tid, ostid)) in activeByAddr)
+        foreach (var (addr, (tid, ostid, clrTypeName, clrMsg, clrHresult, clrInner, threadFrames, throwFrames)) in activeByAddr)
         {
-            string? typeName = null, message = null;
-            int hresult = 0; string? inner = null;
-            foreach (var g in data.ByType.Values)
+            // Primary: use info captured directly from ClrMD (always accurate)
+            string? typeName = clrTypeName;
+            string? message  = string.IsNullOrEmpty(clrMsg) ? null : clrMsg;
+            int     hresult  = clrHresult;
+            string? inner    = clrInner;
+
+            // Fallback: search heap samples only if ClrMD didn't provide it
+            if (typeName is null)
             {
-                var s = g.Samples.FirstOrDefault(x => x.Addr == addr);
-                if (s is null) continue;
-                typeName = s.Type; message = s.Message; hresult = s.HResult; inner = s.InnerType;
-                break;
+                foreach (var g in data.ByType.Values)
+                {
+                    var s = g.Samples.FirstOrDefault(x => x.Addr == addr);
+                    if (s is null) continue;
+                    typeName = s.Type; message ??= s.Message; hresult = hresult != 0 ? hresult : s.HResult; inner ??= s.InnerType;
+                    break;
+                }
             }
-            activeRows.Add([
-                tid.ToString(), $"0x{ostid:X4}", typeName ?? "?", message ?? "—",
-                hresult != 0 ? $"0x{hresult:X8}" : "—", inner ?? "—",
-            ]);
+
+            // One collapsible block per active exception, open by default
+            string title = $"Thread {tid}  (OS 0x{ostid:X4})  —  {typeName ?? "?"}  ⚡ ACTIVE";
+            sink.BeginDetails(title, open: true);
+
+            var infoRows = new List<string[]>();
+            if (!string.IsNullOrEmpty(message))  infoRows.Add(["Message",         message!]);
+            if (hresult != 0)                    infoRows.Add(["HResult",         $"0x{hresult:X8}"]);
+            if (!string.IsNullOrEmpty(inner))    infoRows.Add(["Inner Exception", inner!]);
+            infoRows.Add(["Address", $"0x{addr:X16}"]);
+            sink.Table(["Field", "Value"], infoRows);
+
+            // ── Original throw stack (where throw happened) ──────────────
+            // Priority: ClrException.StackTrace → heap _stackTraceString → thread stack substring
+            var bestThrowFrames = throwFrames.Count > 0
+                ? throwFrames
+                : (data.ByType.Values.SelectMany(g => g.Samples)
+                       .FirstOrDefault(s => s.Addr == addr)?.StackFrames
+                   ?? (IReadOnlyList<string>)[]);
+
+            if (bestThrowFrames.Count > 0)
+                sink.Table(["Stack Frame"], bestThrowFrames.Select(f => new[] { f }).ToList(),
+                    "Original throw stack — where the exception was raised");
+            else
+                sink.Text("⚠ Original throw stack not available (exception may have been created without being thrown, or frames were not captured).");
+
+            // ── Live thread stack (where the thread is right now) ────────
+            if (threadFrames.Count > 0)
+                sink.Table(["Stack Frame"], threadFrames.Select(f => new[] { f }).ToList(),
+                    "Live thread call stack — where the thread was when the dump was captured");
+
+            sink.EndDetails();
         }
-        sink.Table(["Managed ID", "OS Thread", "Exception Type", "Message", "HResult", "Inner Exception"], activeRows);
     }
 
     private static void RenderHResults(IRenderSink sink, ExceptionAnalysisData data)
@@ -120,7 +161,7 @@ public sealed class ExceptionAnalysisReport
     }
 
     private static void RenderThrowStacks(IRenderSink sink, ExceptionAnalysisData data,
-        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId)> activeByAddr, int top, bool showAddr)
+        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId, string? TypeName, string? Message, int HResult, string? InnerType, IReadOnlyList<string> ThreadFrames, IReadOnlyList<string> ThrowFrames)> activeByAddr, int top, bool showAddr)
     {
         sink.Section("3. Original Throw Stack Traces");
         foreach (var (typeName, g) in data.ByType
@@ -154,7 +195,7 @@ public sealed class ExceptionAnalysisReport
     }
 
     private static void RenderAddresses(IRenderSink sink, ExceptionAnalysisData data,
-        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId)> activeByAddr, int top)
+        IReadOnlyDictionary<ulong, (int ThreadId, uint OSThreadId, string? TypeName, string? Message, int HResult, string? InnerType, IReadOnlyList<string> ThreadFrames, IReadOnlyList<string> ThrowFrames)> activeByAddr, int top)
     {
         sink.Section("3. Exception Objects");
         var rows = data.ByType.Values
