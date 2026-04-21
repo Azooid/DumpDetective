@@ -115,14 +115,12 @@ public static class CommandBase
 
             bool consoleOnly = !sink.IsFile;
             if (consoleOnly)
-                AnsiConsole.MarkupLine("[dim yellow]⚠ No output file specified — report is printed to console only and will not be saved.[/]\n");
+                AnsiConsole.MarkupLine("[dim]ℹ No output file — printing to console. Use -o / --output <file> to save as .html / .md / .txt / .json[/]\n");
 
             body(ctx, sink);
 
             if (sink.IsFile && sink.FilePath is not null)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
-            else
-                AnsiConsole.MarkupLine("\n[dim yellow]⚠ Report printed to console only — use -o / --output <file> to save as .html / .md / .txt / .json[/]");
             return 0;
         }
         catch (InvalidOperationException ex)
