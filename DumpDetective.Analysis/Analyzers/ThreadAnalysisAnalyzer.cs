@@ -13,29 +13,32 @@ public sealed class ThreadAnalysisAnalyzer
         var threads     = ctx.Runtime.Threads.ToList();
 
         var infos = new List<ThreadInfo>(threads.Count);
-        foreach (var t in threads)
+        CommandBase.RunStatus($"Walking stack traces ({threads.Count} threads)...", () =>
         {
-            threadNames.TryGetValue(t.ManagedThreadId, out string? name);
-            string category = ClassifyThread(t, threadNames);
-            string? ex      = FormatException(t.CurrentException);
-            string? lock_   = GetLockInfo(t);
-            var frames = captureStacks
-                ? t.EnumerateStackTrace().Take(10)
-                    .Select(f => f.FrameName ?? f.Method?.Signature ?? "<unknown>")
-                    .ToList()
-                : (IReadOnlyList<string>)[];
+            foreach (var t in threads)
+            {
+                threadNames.TryGetValue(t.ManagedThreadId, out string? name);
+                string category = ClassifyThread(t, threadNames);
+                string? ex      = FormatException(t.CurrentException);
+                string? lock_   = GetLockInfo(t);
+                var frames = captureStacks
+                    ? t.EnumerateStackTrace().Take(10)
+                        .Select(f => f.FrameName ?? f.Method?.Signature ?? "<unknown>")
+                        .ToList()
+                    : (IReadOnlyList<string>)[];
 
-            infos.Add(new ThreadInfo(
-                ManagedId:      t.ManagedThreadId,
-                OSThreadId:     t.OSThreadId,
-                Name:           name,
-                IsAlive:        t.IsAlive,
-                Category:       category,
-                GcMode:         t.GCMode.ToString(),
-                Exception:      ex?.Length > 0 ? ex : null,
-                LockInfo:       lock_?.Length > 0 ? lock_ : null,
-                StackFrames:    frames));
-        }
+                infos.Add(new ThreadInfo(
+                    ManagedId:      t.ManagedThreadId,
+                    OSThreadId:     t.OSThreadId,
+                    Name:           name,
+                    IsAlive:        t.IsAlive,
+                    Category:       category,
+                    GcMode:         t.GCMode.ToString(),
+                    Exception:      ex?.Length > 0 ? ex : null,
+                    LockInfo:       lock_?.Length > 0 ? lock_ : null,
+                    StackFrames:    frames));
+            }
+        });
 
         return new ThreadAnalysisData(
             Threads:            infos,
@@ -48,26 +51,35 @@ public sealed class ThreadAnalysisAnalyzer
 
     internal static Dictionary<int, string> BuildThreadNameMap(DumpContext ctx)
     {
-        var map = new Dictionary<int, string>();
-        if (!ctx.Heap.CanWalkHeap) return map;
-        try
-        {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+        if (!ctx.Heap.CanWalkHeap) return new ThreadNameMap();
+        // GetOrCreateAnalysis ensures only ONE heap walk runs even when
+        // thread-analysis and deadlock-detection call this concurrently.
+        // The second caller blocks until the first finishes, then reuses the result.
+        ThreadNameMap? result = null;
+        CommandBase.RunStatus("Building thread name map (heap walk)...", () =>
+            result = ctx.GetOrCreateAnalysis<ThreadNameMap>(() =>
             {
-                if (!obj.IsValid || obj.Type?.Name != "System.Threading.Thread") continue;
+                var map = new ThreadNameMap();
                 try
                 {
-                    int mgdId = obj.ReadField<int>("_managedThreadId");
-                    string? name = null;
-                    try { name = obj.ReadStringField("_name"); } catch { }
-                    if (!string.IsNullOrEmpty(name) && mgdId > 0)
-                        map[mgdId] = name!;
+                    foreach (var obj in ctx.Heap.EnumerateObjects())
+                    {
+                        if (!obj.IsValid || obj.Type?.Name != "System.Threading.Thread") continue;
+                        try
+                        {
+                            int mgdId = obj.ReadField<int>("_managedThreadId");
+                            string? name = null;
+                            try { name = obj.ReadStringField("_name"); } catch { }
+                            if (!string.IsNullOrEmpty(name) && mgdId > 0)
+                                map[mgdId] = name!;
+                        }
+                        catch { }
+                    }
                 }
                 catch { }
-            }
-        }
-        catch { }
-        return map;
+                return map;
+            }));
+        return result!;
     }
 
     internal static bool IsLikelyBlocked(ClrThread t)

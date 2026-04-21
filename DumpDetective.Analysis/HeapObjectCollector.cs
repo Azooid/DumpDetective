@@ -35,10 +35,14 @@ internal static class HeapObjectCollector
             committed += (long)seg.CommittedMemory.Length;
 
         // ── Instantiate consumers ─────────────────────────────────────────────
-        var typeStatsC = new Consumers.TypeStatsConsumer();
-        var genCounter = new Consumers.GenCounterConsumer();
-        var inbound    = new Consumers.InboundRefConsumer();
-        var strings    = new Consumers.StringGroupConsumer();
+        var typeStatsC  = new Consumers.TypeStatsConsumer();
+        var genCounter  = new Consumers.GenCounterConsumer();
+        var inbound     = new Consumers.InboundRefConsumer();
+        var strings     = new Consumers.StringGroupConsumer();
+        var threadNames = new Consumers.ThreadNameConsumer();
+        var threadPool  = new Consumers.ThreadPoolConsumer();
+        var httpReqs    = new Consumers.HttpRequestsConsumer();
+        var cwt         = new Consumers.ConditionalWeakTableConsumer();
 
         var timerAnalyzer = new Analyzers.TimerLeaksAnalyzer();       timerAnalyzer.Reset(ctx.Runtime);
         var wcfAnalyzer   = new Analyzers.WcfChannelsAnalyzer();       wcfAnalyzer.Reset();
@@ -50,6 +54,7 @@ internal static class HeapObjectCollector
         // ── Single heap walk — all consumers driven in one pass ───────────────
         long freeBytes = HeapWalker.Walk(heap,
             [typeStatsC, genCounter, inbound, strings,
+             threadNames, threadPool, httpReqs, cwt,
              timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer],
             progress);
 
@@ -83,6 +88,16 @@ internal static class HeapObjectCollector
         ctx.SetAnalysis(asyncAnalyzer.Result!);
         // Note: EventAnalysisData is NOT pre-cached here because the consumer-based quick-count
         // lacks per-subscriber detail. EventAnalysisAnalyzer.Analyze() will do the full scan.
+
+        // ── New full-mode consumers ────────────────────────────────────────────
+        // ThreadNameMap: pre-seed into the once-cache so GetOrCreateAnalysis in
+        // ThreadAnalysisAnalyzer/DeadlockAnalyzer returns instantly (~0 ms).
+        ctx.PreloadAnalysis(threadNames.Map);
+        ctx.SetAnalysis(httpReqs.Result!);
+        ctx.SetAnalysis(new Consumers.CwtData(cwt.Entries));
+        // ThreadPoolConsumer: results stored in threadPool.TaskCounts + threadPool.WorkItems;
+        // ThreadPoolAnalyzer reads them via GetAnalysis<ThreadPoolConsumerCache>.
+        ctx.SetAnalysis(new Consumers.ThreadPoolConsumerCache(threadPool.TaskCounts, threadPool.WorkItems));
 
         // ── String duplicate stats ────────────────────────────────────────────
         SnapshotPopulator.ApplyStringDuplicates(s, strings.StringGroups);

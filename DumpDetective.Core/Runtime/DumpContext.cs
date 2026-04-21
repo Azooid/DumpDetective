@@ -1,4 +1,5 @@
 using Microsoft.Diagnostics.Runtime;
+using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 
 namespace DumpDetective.Core.Runtime;
@@ -14,6 +15,8 @@ public sealed class DumpContext : IDisposable
     private bool _disposed;
     private HeapSnapshot? _snapshot;
     private readonly Dictionary<Type, object> _analysisCache = new();
+    // Thread-safe once-computed results (e.g. thread name map shared by multiple parallel commands)
+    private readonly ConcurrentDictionary<Type, object> _onceCache = new();
 
     public string     DumpPath    { get; }
     public DateTime   FileTime    { get; }
@@ -60,6 +63,25 @@ public sealed class DumpContext : IDisposable
     /// </summary>
     internal void SetAnalysis<T>(T value) where T : class
         => _analysisCache[typeof(T)] = value;
+
+    /// <summary>
+    /// Returns the cached result for <typeparamref name="T"/>, invoking <paramref name="factory"/>
+    /// exactly once across all parallel callers. If two threads call this simultaneously for the
+    /// same <typeparamref name="T"/>, only one runs the factory — the other blocks until it finishes.
+    /// </summary>
+    public T GetOrCreateAnalysis<T>(Func<T> factory) where T : class
+    {
+        var lazy = (Lazy<T>)_onceCache.GetOrAdd(typeof(T), _ => (object)new Lazy<T>(factory));
+        return lazy.Value;
+    }
+
+    /// <summary>
+    /// Seeds the once-cache with an already-computed value so that subsequent
+    /// <see cref="GetOrCreateAnalysis{T}"/> calls return it immediately without executing a factory.
+    /// Call this during collection to pre-populate expensive caches before parallel sub-reports run.
+    /// </summary>
+    internal void PreloadAnalysis<T>(T value) where T : class
+        => _onceCache.TryAdd(typeof(T), (object)new Lazy<T>(() => value));
 
     private DumpContext(string path, DataTarget dt, ClrRuntime rt, string? archWarning)
     {

@@ -20,6 +20,49 @@ public static class CommandBase
     [ThreadStatic] private static bool _suppressVerbose;
     public static bool SuppressVerbose { get => _suppressVerbose; set => _suppressVerbose = value; }
 
+    // ── Per-command operation trace ───────────────────────────────────────────
+    // [ThreadStatic] so parallel full-analyze workers each have their own trace.
+
+    [ThreadStatic] private static List<(string Label, long Ms)>? _trace;
+
+    /// <summary>
+    /// Activates operation tracing on this thread. Call immediately before
+    /// <c>BuildReport</c>. Every subsequent <see cref="RunStatus"/> call will
+    /// record its label and elapsed milliseconds into the trace.
+    /// </summary>
+    public static void BeginTrace() => _trace = new List<(string, long)>(8);
+
+    /// <summary>
+    /// Ends tracing, formats the recorded entries into sub-lines (2 per line),
+    /// and clears the trace list. Returns <see langword="null"/> when nothing
+    /// was traced (command used only cached snapshot data).
+    /// </summary>
+    public static string[]? EndTrace()
+    {
+        var t = _trace;
+        _trace = null;
+        if (t is null || t.Count == 0) return null;
+
+        var formatted = new List<string>(t.Count);
+        foreach (var (label, ms) in t)
+        {
+            string elapsed = ms < 1000 ? $"{ms}ms" : $"{ms / 1000.0:F1}s";
+            // Strip trailing "..." from messages like "Scanning GC handles..."
+            string clean = label.EndsWith("...") ? label[..^3].TrimEnd() : label;
+            formatted.Add($"{clean} • {elapsed}");
+        }
+
+        // Pack 2 entries per sub-line for compact display
+        var lines = new List<string>();
+        for (int i = 0; i < formatted.Count; i += 2)
+        {
+            lines.Add(i + 1 < formatted.Count
+                ? $"{formatted[i]}  |  {formatted[i + 1]}"
+                : formatted[i]);
+        }
+        return lines.ToArray();
+    }
+
     public const string OutputFormats = ".html / .md / .txt / .json";
 
     /// <summary>
@@ -117,20 +160,39 @@ public static class CommandBase
     /// <summary>
     /// Runs a spinner with <paramref name="message"/> and executes <paramref name="body"/>.
     /// No-op (body runs directly) when <see cref="SuppressVerbose"/> is true.
+    /// Always records label + elapsed time into the active trace if one is running.
     /// </summary>
     public static void RunStatus(string message, Action body)
     {
-        if (SuppressVerbose) { body(); return; }
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
-            .Start(message, _ => body());
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            if (SuppressVerbose) body();
+            else AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
+                .Start(message, _ => body());
+        }
+        finally
+        {
+            sw.Stop();
+            _trace?.Add((message, sw.ElapsedMilliseconds));
+        }
     }
 
     /// <summary>Overload that provides a status-update callback to the body.</summary>
     public static void RunStatus(string message, Action<Action<string>> body)
     {
-        if (SuppressVerbose) { body(_ => { }); return; }
-        AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
-            .Start(message, ctx => body(msg => ctx.Status(msg)));
+        var sw = Stopwatch.StartNew();
+        try
+        {
+            if (SuppressVerbose) body(_ => { });
+            else AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
+                .Start(message, ctx => body(msg => ctx.Status(msg)));
+        }
+        finally
+        {
+            sw.Stop();
+            _trace?.Add((message, sw.ElapsedMilliseconds));
+        }
     }
 
     public static void TimedStatus(string message, Action<StatusContext> body)

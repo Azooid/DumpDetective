@@ -108,6 +108,33 @@ public sealed class HighRefsAnalyzer
     private static Dictionary<ulong, Dictionary<string, int>> BuildReferencingTypes(
         DumpContext ctx, HashSet<ulong> addrs)
     {
+        // Fast path: reuse the SharedReferrerCache that memory-leak also uses.
+        // In full-analyze mode it is pre-populated during snapshot collection (~0 ms).
+        // In standalone mode GetOrCreateAnalysis builds it here (one heap walk).
+        if (ctx.Snapshot is not null)
+        {
+            SharedReferrerCache? cache = null;
+            CommandBase.RunStatus("Building referrer map (heap walk)...", () =>
+                cache = ctx.GetOrCreateAnalysis<SharedReferrerCache>(
+                    () => SharedReferrerCache.Build(ctx)));
+
+            var result = new Dictionary<ulong, Dictionary<string, int>>(addrs.Count);
+            foreach (var addr in addrs)
+            {
+                result[addr] = cache!.HotAddrTypes.TryGetValue(addr, out var tm)
+                    ? tm
+                    : new Dictionary<string, int>(StringComparer.Ordinal);
+            }
+            return result;
+        }
+
+        // Slow path: snapshot not available (standalone command without prior CollectFull).
+        return BuildReferencingTypesWalk(ctx, addrs);
+    }
+
+    private static Dictionary<ulong, Dictionary<string, int>> BuildReferencingTypesWalk(
+        DumpContext ctx, HashSet<ulong> addrs)
+    {
         var result = new Dictionary<ulong, Dictionary<string, int>>(addrs.Count);
         foreach (var a in addrs) result[a] = new Dictionary<string, int>(32, StringComparer.Ordinal);
 

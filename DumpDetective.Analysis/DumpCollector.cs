@@ -2,6 +2,7 @@ using Microsoft.Diagnostics.Runtime;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using DumpDetective.Core.Models;
+using System.Diagnostics;
 
 namespace DumpDetective.Analysis;
 
@@ -84,26 +85,43 @@ public static class DumpCollector
     private static void CollectAll(ClrRuntime runtime, DumpSnapshot snapshot, bool full,
                                    Action<string>? progress = null, DumpContext? ctx = null)
     {
-        progress?.Invoke("Reading threads...");
+        // Track elapsed time per sub-collector only when a progress listener is attached
+        var sw = progress is not null ? Stopwatch.StartNew() : null;
+
         RuntimeSubCollectors.CollectThreads(runtime, snapshot);
         RuntimeSubCollectors.CollectThreadPool(runtime, snapshot);
-        progress?.Invoke("Reading GC handles...");
+        if (sw is not null)
+        {
+            progress!($"[SCAN]Thread scan|{snapshot.ThreadCount}|{sw.ElapsedMilliseconds}");
+            sw.Restart();
+        }
+
         RuntimeSubCollectors.CollectHandles(runtime, snapshot);
-        progress?.Invoke("Reading modules...");
+        if (sw is not null)
+        {
+            progress!($"[SCAN]Handle scan|{snapshot.TotalHandleCount}|{sw.ElapsedMilliseconds}");
+            sw.Restart();
+        }
+
         RuntimeSubCollectors.CollectModules(runtime, snapshot);
+        if (sw is not null)
+        {
+            progress!($"[SCAN]Module scan|{snapshot.ModuleCount}|{sw.ElapsedMilliseconds}");
+        }
 
         var heap = runtime.Heap;
         if (heap.CanWalkHeap)
         {
-            progress?.Invoke("Reading heap segments...");
             RuntimeSubCollectors.CollectSegmentLayout(heap, snapshot);
-            progress?.Invoke("Walking heap objects...");
             if (ctx is not null && full)
                 HeapObjectCollector.CollectHeapObjectsCombined(ctx, snapshot, progress);
             else
                 HeapObjectCollector.CollectHeapObjects(heap, snapshot, full, progress);
-            progress?.Invoke("Reading finalizer queue...");
+
+            if (sw is not null) sw.Restart();
             RuntimeSubCollectors.CollectFinalizerQueue(heap, snapshot);
+            if (sw is not null)
+                progress!($"[SCAN]Finalizer queue scan|{snapshot.FinalizerQueueDepth}|{sw.ElapsedMilliseconds}");
         }
     }
 }

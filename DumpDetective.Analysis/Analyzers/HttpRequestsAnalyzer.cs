@@ -19,6 +19,10 @@ public sealed class HttpRequestsAnalyzer
 
     public HttpRequestsData Analyze(DumpContext ctx)
     {
+        // Fast path: pre-populated by HttpRequestsConsumer during CollectHeapObjectsCombined.
+        var cached = ctx.GetAnalysis<HttpRequestsData>();
+        if (cached is not null) return cached;
+
         var found = new List<HttpObjectEntry>();
 
         CommandBase.RunStatus("Scanning HTTP objects...", () =>

@@ -35,19 +35,20 @@ public sealed class HeapFragmentationAnalyzer
                 info.PinnedCount++;
         }
 
-        // Pass 3: walk heap to split live vs. free per segment
+        // Pass 3: walk each segment individually — avoids GetSegmentByAddress per object
         var freeType = ctx.Heap.FreeType;
         CommandBase.RunStatus("Measuring fragmentation...", () =>
         {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+            foreach (var seg in ctx.Heap.Segments)
             {
-                if (!obj.IsValid) continue;
-                var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
-                if (seg is null || !segData.ContainsKey(seg.Address)) continue;
-                var info = segData[seg.Address];
-                long size = (long)obj.Size;
-                if (obj.Type == freeType) info.FreeBytes += size;
-                else                      info.LiveBytes += size;
+                if (!segData.TryGetValue(seg.Address, out var info)) continue;
+                foreach (var obj in seg.EnumerateObjects())
+                {
+                    if (!obj.IsValid) continue;
+                    long size = (long)obj.Size;
+                    if (obj.Type == freeType) info.FreeBytes += size;
+                    else                      info.LiveBytes += size;
+                }
             }
         });
 
@@ -63,7 +64,10 @@ public sealed class HeapFragmentationAnalyzer
         var freeType = ctx.Heap.FreeType;
         var buckets  = new Dictionary<int, (long Count, long Size)>();
 
-        foreach (var obj in ctx.Heap.EnumerateObjects())
+        // Enumerate per segment to stay cache-local; free objects are already collected above
+        // but we need bucket distribution, so a second segment-scoped pass is needed.
+        foreach (var seg in ctx.Heap.Segments)
+        foreach (var obj in seg.EnumerateObjects())
         {
             if (!obj.IsValid || obj.Type != freeType) continue;
             long sz = (long)obj.Size;

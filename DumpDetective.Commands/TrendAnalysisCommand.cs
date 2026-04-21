@@ -94,8 +94,10 @@ public sealed class TrendAnalysisCommand : ICommand
 
         dumpPaths = [.. dumpPaths.OrderBy(File.GetLastWriteTime)];
 
-        AnsiConsole.MarkupLine($"[bold]Trend analysis:[/] {dumpPaths.Count} dump(s)  [[{(full ? "full" : "lightweight")} mode]]");
-        AnsiConsole.WriteLine();
+        var log = new ProgressLogger();
+        log.SectionHeader("DumpDetective Trend Analysis");
+        log.Info($"{dumpPaths.Count} dump(s) found  [{(full ? "full" : "lightweight")} mode]");
+        log.Blank();
 
         var snapshots = new List<DumpSnapshot>();
         ReportDoc?[]? capturedSubReports = full ? new ReportDoc?[dumpPaths.Count] : null;
@@ -109,61 +111,55 @@ public sealed class TrendAnalysisCommand : ICommand
 
             ToolMemoryDiagnostic.Start();
 
+            log.Stage($"Dump {i + 1}/{dumpPaths.Count}: {dispName}");
+            log.Info("Loading dump file...", indent: true);
+
             {
                 using var dumpCtx = DumpContext.Open(path);
 
-                AnsiConsole.Status()
-                    .Spinner(Spinner.Known.Dots)
-                    .SpinnerStyle(Style.Parse("blue"))
-                    .Start($"[bold]{label}[/]  {Markup.Escape(dispName)}  opening...", spinCtx =>
-                    {
-                        void Upd(string msg) =>
-                            spinCtx.Status($"[bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  {Markup.Escape(msg)}");
-                        snap = full
-                            ? DumpCollector.CollectFull(dumpCtx, Upd)
-                            : DumpCollector.CollectLightweight(dumpCtx, Upd);
-                    });
+                var clrVer = dumpCtx.ClrVersion ?? "unknown";
+                var archNote = dumpCtx.ArchWarning is not null ? $"  ⚠ {dumpCtx.ArchWarning}" : string.Empty;
+                log.Success($"Dump loaded  |  CLR {clrVer}{archNote}", indent: true);
 
-                snapshots.Add(snap!);
-                var sc = TrendAnalysisReport.ScoreColor(snap!.HealthScore);
-                AnsiConsole.MarkupLine(
-                    $"  [green]✓[/]  [bold]{label}[/]  [dim]{Markup.Escape(dispName)}[/]  " +
-                    $"[{sc}]{snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}[/]");
+                snap = full
+                    ? DumpCollector.CollectFull(dumpCtx, log.OnProgress)
+                    : DumpCollector.CollectLightweight(dumpCtx, log.OnProgress);
+
+                snapshots.Add(snap);
+                var sc = TrendAnalysisReport.ScoreColor(snap.HealthScore);
+                log.SuccessM(
+                    $"{Markup.Escape(label)} complete  |  [{sc}]{snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}[/]  |  " +
+                    $"{snap.TotalObjectCount:N0} objs",
+                    indent: true);
 
                 if (capturedSubReports is not null)
                 {
-                    CommandBase.SuppressVerbose = true;
                     try
                     {
                         var cap = new CaptureSink();
                         cap.Header(
                             $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
-                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {snap.ClrVersion ?? "unknown"}  |  Score: {snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}");
+                            $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {clrVer}  |  Score: {snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}");
                         AnalyzeReport.RenderReport(snap, cap, includeHeader: false);
-                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap);
+                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, log);
                         capturedSubReports[i] = cap.GetDoc();
                     }
                     catch (Exception ex)
                     {
-                        AnsiConsole.MarkupLine($"  [yellow]⚠ Sub-reports partial: {Markup.Escape(ex.Message)}[/]");
+                        log.Warn($"Sub-reports partial: {ex.Message}", indent: true);
                         var capErr = new CaptureSink();
                         capErr.Alert(AlertLevel.Warning,
                             $"Sub-reports incomplete for {dispName}: {ex.Message}");
                         capturedSubReports[i] = capErr.GetDoc();
                     }
-                    finally
-                    {
-                        CommandBase.SuppressVerbose = false;
-                    }
                 }
             }
 
+            log.Blank();
             GC.Collect(2, GCCollectionMode.Aggressive, blocking: true, compacting: true);
             GC.WaitForPendingFinalizers();
             GC.Collect(1, GCCollectionMode.Forced, blocking: true, compacting: true);
         }
-
-        AnsiConsole.WriteLine();
 
         int baselineIndex = baselineArg - 1;
         if (baselineIndex >= dumpPaths.Count)
@@ -177,33 +173,41 @@ public sealed class TrendAnalysisCommand : ICommand
         if (a.OutputPath is not null && a.OutputPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
         {
             TrendRawSerializer.Save(snapshots, a.OutputPath, capturedSubReports);
-            AnsiConsole.MarkupLine($"[dim]→ Raw snapshot data written to:[/] {Markup.Escape(a.OutputPath)}");
-            AnsiConsole.MarkupLine("[dim]Use 'trend-render' to convert to HTML/Markdown/text at any time.[/]");
+            log.Success($"Raw snapshot data written to: {a.OutputPath}");
+            log.Info("Use 'trend-render' to convert to HTML/Markdown/text at any time.");
             return 0;
         }
 
+        log.SectionHeader("Rendering Output");
+        log.Info("Building trend report...");
         using var sink = SinkFactory.Create(a.OutputPath);
         TrendAnalysisReport.RenderTrend(snapshots, sink, ignoreEvents, baselineIndex);
+        log.Check("Trend report rendered.");
 
         if (capturedSubReports is not null)
         {
-            AnsiConsole.MarkupLine("[bold]Rendering per-dump detailed reports…[/]");
+            log.Info($"Rendering {dumpPaths.Count} per-dump detailed report(s)...");
             for (int i = 0; i < dumpPaths.Count; i++)
             {
                 var label = $"D{i + 1}";
                 var snap  = snapshots[i];
                 var sc    = TrendAnalysisReport.ScoreColor(snap.HealthScore);
-                AnsiConsole.MarkupLine(
-                    $"  [bold]{label}[/]  [dim]{Markup.Escape(ShortName(dumpPaths[i]))}[/]  " +
-                    $"[{sc}]{snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}[/]");
+                log.InfoM(
+                    $"{Markup.Escape(label)}  {Markup.Escape(ShortName(dumpPaths[i]))}  " +
+                    $"[{sc}]{snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}[/]",
+                    indent: true);
 
                 if (capturedSubReports[i] is { } doc)
                     ReportDocReplay.Replay(doc, sink);
             }
+            log.Check("All per-dump reports rendered.");
         }
 
         if (sink.IsFile && sink.FilePath is not null)
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+        {
+            log.Blank();
+            log.Success($"Written to: {sink.FilePath}");
+        }
         return 0;
     }
 

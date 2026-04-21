@@ -16,8 +16,98 @@ public static class CommandRegistry
         // ── orchestrator ──────────────────────────────────────────────────────
         new AnalyzeCommand(),
 
-        // ── full-analyze order matches original canonical sequence ─────────────
-        // heap / memory
+        // ── full-analyze: LPT order (longest first) ───────────────────────────
+        // Parallel.For with NoBuffering picks the next item one-at-a-time in index
+        // order. Placing the slowest jobs first fills all 8 workers with heavy work
+        // from t=0 (LPT heuristic).
+        //
+        // IMPORTANT: deadlock-detection is NOT in the first 8 slots even though it
+        // looks slow (~17s) — that time is entirely spent waiting on the ThreadNameMap
+        // cache built by thread-analysis. Once the cache is ready deadlock takes ~1s.
+        // Keeping it out of the first 8 lets memory-leak start at t=0.
+        //
+        // Empirical timings (large WCF dump, ~10 M objects):
+        //   ~34s  static-refs
+        //   ~33s  heap-fragmentation, large-objects
+        //   ~25s  high-refs, memory-leak (when starting at t=0)
+        //   ~21s  event-analysis
+        //   ~18s  weak-refs, thread-pool
+        //   ~17s  thread-analysis (triggers shared ThreadNameMap heap walk)
+        //   ~12s  http-requests
+        //    ~1s  deadlock-detection (reuses ThreadNameMap cache from thread-analysis)
+        //   <1s   everything else
+
+        // ── wave 1: first 8 slots, all start at t=0 ──────────────────────────
+        new StaticRefsCommand(                          // ~34s
+            new StaticRefsAnalyzer(),
+            new StaticRefsReport()),
+
+        new HeapFragmentationCommand(                   // ~33s
+            new HeapFragmentationAnalyzer(),
+            new HeapFragmentationReport()),
+
+        new LargeObjectsCommand(                        // ~33s
+            new LargeObjectsAnalyzer(),
+            new LargeObjectsReport()),
+
+        new MemoryLeakCommand(                          // ~25s — must be in first 8 (two heap walks)
+            new MemoryLeakAnalyzer(),
+            new MemoryLeakReport()),
+
+        new HighRefsCommand(                            // ~25s
+            new HighRefsAnalyzer(),
+            new HighRefsReport()),
+
+        new EventAnalysisCommand(                       // ~21s
+            new EventAnalysisAnalyzer(),
+            new EventAnalysisReport()),
+
+        new ThreadAnalysisCommand(                      // ~17s — triggers shared ThreadNameMap heap walk
+            new ThreadAnalysisAnalyzer(),
+            new ThreadAnalysisReport()),
+
+        new WeakRefsCommand(                            // ~18s
+            new WeakRefsAnalyzer(),
+            new WeakRefsReport()),
+
+        // ── wave 2+: fill slots as wave-1 jobs finish ─────────────────────────
+        new ThreadPoolCommand(                          // ~18s — starts when thread-analysis frees at t≈17
+            new ThreadPoolAnalyzer(),
+            new ThreadPoolReport()),
+
+        new DeadlockDetectionCommand(                   // ~1s with cache — starts when weak-refs frees at t≈18
+            new DeadlockAnalyzer(),
+            new DeadlockReport()),
+
+        new HttpRequestsCommand(                        // ~12s — starts when deadlock frees at t≈19
+            new HttpRequestsAnalyzer(),
+            new HttpRequestsReport()),
+
+        // ── fast (<1s typically, order is cosmetic) ────────────────────────────
+        new FinalizerQueueCommand(
+            new FinalizerQueueAnalyzer(),
+            new FinalizerQueueReport()),
+
+        new StringDuplicatesCommand(
+            new StringDuplicatesAnalyzer(),
+            new StringDuplicatesReport()),
+
+        new ConnectionPoolCommand(
+            new ConnectionPoolAnalyzer(),
+            new ConnectionPoolReport()),
+
+        new WcfChannelsCommand(
+            new WcfChannelsAnalyzer(),
+            new WcfChannelsReport()),
+
+        new ModuleListCommand(
+            new ModuleListAnalyzer(),
+            new ModuleListReport()),
+
+        new HandleTableCommand(
+            new HandleTableAnalyzer(),
+            new HandleTableReport()),
+
         new HeapStatsCommand(
             new HeapStatsAnalyzer(),
             new HeapStatsReport()),
@@ -26,92 +116,21 @@ public static class CommandRegistry
             new GenSummaryAnalyzer(),
             new GenSummaryReport()),
 
-        new HeapFragmentationCommand(
-            new HeapFragmentationAnalyzer(),
-            new HeapFragmentationReport()),
-
-        new LargeObjectsCommand(
-            new LargeObjectsAnalyzer(),
-            new LargeObjectsReport()),
-
-        new HighRefsCommand(
-            new HighRefsAnalyzer(),
-            new HighRefsReport()),
-
-        // threads / concurrency
-        new ExceptionAnalysisCommand(
-            new ExceptionAnalysisAnalyzer(),
-            new ExceptionAnalysisReport()),
-
-        new ThreadAnalysisCommand(
-            new ThreadAnalysisAnalyzer(),
-            new ThreadAnalysisReport()),
-
-        new ThreadPoolCommand(
-            new ThreadPoolAnalyzer(),
-            new ThreadPoolReport()),
-
         new AsyncStacksCommand(
             new AsyncStacksAnalyzer(),
             new AsyncStacksReport()),
-
-        new DeadlockDetectionCommand(
-            new DeadlockAnalyzer(),
-            new DeadlockReport()),
-
-        // gc / handles / leaks
-        new FinalizerQueueCommand(
-            new FinalizerQueueAnalyzer(),
-            new FinalizerQueueReport()),
-
-        new HandleTableCommand(
-            new HandleTableAnalyzer(),
-            new HandleTableReport()),
 
         new PinnedObjectsCommand(
             new PinnedObjectsAnalyzer(),
             new PinnedObjectsReport()),
 
-        new WeakRefsCommand(
-            new WeakRefsAnalyzer(),
-            new WeakRefsReport()),
-
-        new StaticRefsCommand(
-            new StaticRefsAnalyzer(),
-            new StaticRefsReport()),
-
         new TimerLeaksCommand(
             new TimerLeaksAnalyzer(),
             new TimerLeaksReport()),
 
-        new EventAnalysisCommand(
-            new EventAnalysisAnalyzer(),
-            new EventAnalysisReport()),
-
-        new StringDuplicatesCommand(
-            new StringDuplicatesAnalyzer(),
-            new StringDuplicatesReport()),
-
-        // infrastructure / networking
-        new WcfChannelsCommand(
-            new WcfChannelsAnalyzer(),
-            new WcfChannelsReport()),
-
-        new ConnectionPoolCommand(
-            new ConnectionPoolAnalyzer(),
-            new ConnectionPoolReport()),
-
-        new HttpRequestsCommand(
-            new HttpRequestsAnalyzer(),
-            new HttpRequestsReport()),
-
-        new MemoryLeakCommand(
-            new MemoryLeakAnalyzer(),
-            new MemoryLeakReport()),
-
-        new ModuleListCommand(
-            new ModuleListAnalyzer(),
-            new ModuleListReport()),
+        new ExceptionAnalysisCommand(
+            new ExceptionAnalysisAnalyzer(),
+            new ExceptionAnalysisReport()),
 
         // ── not included in full-analyze ──────────────────────────────────────
         new GcRootsCommand(

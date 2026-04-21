@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
+using DumpDetective.Analysis.Consumers;
 using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
@@ -24,9 +25,13 @@ public sealed class WeakRefsAnalyzer
             })
             .ToList();
 
-        var cwts = ctx.Heap.CanWalkHeap
-            ? ScanConditionalWeakTables(ctx)
-            : (IReadOnlyList<CwtInstanceInfo>)Array.Empty<CwtInstanceInfo>();
+        // Fast path: ConditionalWeakTableConsumer pre-built during CollectHeapObjectsCombined.
+        var cwtCached = ctx.GetAnalysis<CwtData>();
+        var cwts = cwtCached is not null
+            ? cwtCached.Tables
+            : ctx.Heap.CanWalkHeap
+                ? ScanConditionalWeakTables(ctx)
+                : (IReadOnlyList<CwtInstanceInfo>)Array.Empty<CwtInstanceInfo>();
 
         return new WeakRefsData(handles, cwts);
     }

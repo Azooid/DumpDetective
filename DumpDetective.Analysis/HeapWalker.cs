@@ -32,7 +32,9 @@ public static class HeapWalker
         var typeMetaCache  = new Dictionary<ulong, HeapTypeMeta>(8192);
         long freeBytes     = 0;
         long processedCount = 0;
-        var  watch         = progress is not null ? Stopwatch.StartNew() : null;
+        var  totalWatch    = progress is not null ? Stopwatch.StartNew() : null;
+        var  rateWatch     = progress is not null ? Stopwatch.StartNew() : null;
+        long lastCount     = 0;
 
         try
         {
@@ -49,10 +51,15 @@ public static class HeapWalker
                 if (progress is not null)
                 {
                     processedCount++;
-                    if ((processedCount & 0xFFFF) == 0 && watch!.ElapsedMilliseconds >= 1000)
+                    if ((processedCount & 0x3FF) == 0 && rateWatch!.ElapsedMilliseconds >= 200)
                     {
-                        progress($"Walking heap objects — {processedCount:N0} processed");
-                        watch.Restart();
+                        double elapsed = totalWatch!.Elapsed.TotalSeconds;
+                        double interval = rateWatch.Elapsed.TotalSeconds;
+                        long delta = processedCount - lastCount;
+                        long rate  = interval > 0 ? (long)(delta / interval) : 0;
+                        lastCount  = processedCount;
+                        rateWatch.Restart();
+                        progress($"Walking heap objects — {processedCount:N0} objs  •  {elapsed:F1}s  •  ~{rate:N0}/s");
                     }
                 }
 
@@ -73,6 +80,10 @@ public static class HeapWalker
                 consumers[i].OnWalkComplete();
         }
 
+        // Final [SCAN] message — clears the live spinner and prints total result
+        if (progress is not null && totalWatch is not null)
+            progress($"[SCAN]Heap walk|{processedCount}|{(long)totalWatch.Elapsed.TotalMilliseconds}");
+
         return freeBytes;
     }
 
@@ -85,6 +96,22 @@ public static class HeapWalker
         "System.Timers.Timer",
         "System.Windows.Forms.Timer",
     ], StringComparer.OrdinalIgnoreCase);
+
+    private static readonly HashSet<string> HttpTypeSet = new(StringComparer.Ordinal)
+    {
+        "System.Net.Http.HttpRequestMessage",
+        "System.Net.Http.HttpResponseMessage",
+        "System.Net.HttpWebRequest",
+        "System.Net.Http.HttpClient",
+        "System.Net.Http.HttpClientHandler",
+        "System.Net.Http.SocketsHttpHandler",
+    };
+
+    private static readonly string[] WorkItemTypes =
+    [
+        "System.Threading.QueueUserWorkItemCallback",
+        "System.Threading.QueueUserWorkItemCallbackDefaultContext",
+    ];
 
     internal static readonly string[] ConnectionPrefixes =
     [
@@ -147,6 +174,16 @@ public static class HeapWalker
             IsTimer      = TimerTypeSet.Contains(typeName),
             IsWcf        = typeName.StartsWith("System.ServiceModel.", StringComparison.OrdinalIgnoreCase),
             IsConnection = isConnection,
+            IsThread     = typeName == "System.Threading.Thread",
+            IsTask       = typeName == "System.Threading.Tasks.Task" ||
+                           typeName.StartsWith("System.Threading.Tasks.Task<", StringComparison.Ordinal) ||
+                           typeName.StartsWith("System.Threading.Tasks.Task`", StringComparison.Ordinal),
+            IsWorkItem   = WorkItemTypes.AsSpan().IndexOf(typeName) >= 0 ||
+                           typeName.Contains("WorkItem",    StringComparison.OrdinalIgnoreCase) ||
+                           typeName.Contains("WorkRequest", StringComparison.OrdinalIgnoreCase),
+            IsHttp       = HttpTypeSet.Contains(typeName),
+            IsCwt        = typeName.StartsWith("System.Runtime.CompilerServices.ConditionalWeakTable",
+                               StringComparison.Ordinal),
             DelegateFields = delegateFields,
         };
     }

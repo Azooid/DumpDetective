@@ -11,9 +11,19 @@ public sealed class LargeObjectsAnalyzer
     {
         var objects = new List<LargeObjectEntry>();
 
+        // Objects ≥ 85 KB (the default LOH threshold) can only live in LOH segments.
+        // Enumerate LOH segments directly to skip ~10 M Gen0/1/2 objects.
+        bool lohOnly = minSize >= 85_000;
+
         CommandBase.RunStatus($"Finding objects ≥ {DumpHelpers.FormatSize(minSize)}...", () =>
         {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+            IEnumerable<ClrObject> src = lohOnly
+                ? ctx.Heap.Segments
+                      .Where(s => s.Kind == GCSegmentKind.Large)
+                      .SelectMany(s => s.EnumerateObjects())
+                : ctx.Heap.EnumerateObjects();
+
+            foreach (var obj in src)
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
                 long size = (long)obj.Size;
@@ -34,19 +44,15 @@ public sealed class LargeObjectsAnalyzer
         var segments = BuildSegmentBreakdown(ctx.Heap, objects);
         long total   = objects.Sum(o => o.Size);
 
-        // LOH free space analysis (second walk, LOH objects only)
+        // LOH free space analysis — iterate LOH segments directly (skip all non-LOH objects)
         long lohCommitted = 0, lohFree = 0, lohLive = 0;
         var  freeType     = ctx.Heap.FreeType;
         foreach (var seg in ctx.Heap.Segments.Where(s => s.Kind == GCSegmentKind.Large))
-            lohCommitted += (long)seg.CommittedMemory.Length;
-
-        if (lohCommitted > 0)
         {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+            lohCommitted += (long)seg.CommittedMemory.Length;
+            foreach (var obj in seg.EnumerateObjects())
             {
                 if (!obj.IsValid) continue;
-                var lohSeg = ctx.Heap.GetSegmentByAddress(obj.Address);
-                if (lohSeg?.Kind != GCSegmentKind.Large) continue;
                 long sz = (long)obj.Size;
                 if (obj.Type == freeType) lohFree += sz;
                 else                      lohLive += sz;

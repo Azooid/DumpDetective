@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
+using DumpDetective.Analysis.Consumers;
 
 namespace DumpDetective.Analysis.Analyzers;
 
@@ -20,6 +21,16 @@ public sealed class ThreadPoolAnalyzer
         if (tp is null)
             return new ThreadPoolData(null, null, null, null, false,
                 new Dictionary<string, int>(), new Dictionary<string, int>());
+
+        // Fast path: pre-populated by ThreadPoolConsumer during CollectHeapObjectsCombined.
+        var cached = ctx.GetAnalysis<Consumers.ThreadPoolConsumerCache>();
+        if (cached is not null)
+        {
+            return new ThreadPoolData(
+                tp.MinThreads, tp.MaxThreads,
+                tp.ActiveWorkerThreads, tp.IdleWorkerThreads,
+                true, cached.TaskCounts, cached.WorkItems);
+        }
 
         var taskCounts = new Dictionary<string, int>(StringComparer.Ordinal)
         {

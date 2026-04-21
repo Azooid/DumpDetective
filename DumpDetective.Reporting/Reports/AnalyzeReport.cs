@@ -4,6 +4,7 @@ using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 
 namespace DumpDetective.Reporting.Reports;
@@ -20,10 +21,8 @@ public static class AnalyzeReport
     /// Runs all <see cref="ICommand.IncludeInFullAnalyze"/> commands in parallel,
     /// captures each to its own <see cref="CaptureSink"/>, then replays in order.
     /// </summary>
-    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink)
+    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, ProgressLogger? log = null)
     {
-        AnsiConsole.MarkupLine("[dim]  Building sub-reports...[/]");
-
         var cmds  = (CommandBase.FullAnalyzeCommandsProvider?.Invoke() ?? []).ToArray();
         int total = cmds.Length;
 
@@ -31,38 +30,75 @@ public static class AnalyzeReport
         for (int i = 0; i < total; i++) captures[i] = new CaptureSink();
 
         var overallSw = Stopwatch.StartNew();
-        AnsiConsole.Progress()
-            .AutoRefresh(true)
-            .AutoClear(false)
-            .HideCompleted(false)
-            .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new ElapsedTimeColumn())
-            .Start(pCtx =>
-            {
-                var task = pCtx.AddTask($"[bold]Sub-reports[/]  [dim]0/{total}[/]", maxValue: total);
 
-                Parallel.For(0, total,
-                    new ParallelOptions { MaxDegreeOfParallelism = 8 },
-                    i =>
+        if (log is not null)
+        {
+            log.BeginParallelBatch("Building sub-reports", total, indent: true);
+
+            // NoBuffering: each thread picks the next available index one-at-a-time
+            // in enumeration order, so the LPT ordering in CommandRegistry is honoured.
+            Parallel.ForEach(
+                Partitioner.Create(Enumerable.Range(0, total), EnumerablePartitionerOptions.NoBuffering),
+                new ParallelOptions { MaxDegreeOfParallelism = 8 },
+                i =>
+                {
+                    CommandBase.SuppressVerbose = true;
+                    CommandBase.BeginTrace();
+                    var csw = Stopwatch.StartNew();
+                    try
                     {
-                        CommandBase.SuppressVerbose = true;
-                        try
-                        {
-                            var doc = cmds[i].BuildReport(ctx);
-                            ReportDocReplay.Replay(doc, captures[i]);
-                            task.Increment(1);
-                            int n = (int)task.Value;
-                            task.Description = n >= total
-                                ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
-                                : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(cmds[i].Description)}[/]";
-                        }
-                        finally
-                        {
-                            CommandBase.SuppressVerbose = false;
-                        }
-                    });
-            });
+                        log.StartParallelItem(cmds[i].Name);
+                        var doc = cmds[i].BuildReport(ctx);
+                        var details = CommandBase.EndTrace();
+                        ReportDocReplay.Replay(doc, captures[i]);
+                        csw.Stop();
+                        log.CompleteParallelItem(cmds[i].Name, csw.ElapsedMilliseconds, details);
+                    }
+                    finally { CommandBase.SuppressVerbose = false; }
+                });
 
-        AnsiConsole.MarkupLine($"[dim]  ✓ {total}/{total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+            log.EndParallelBatch(indent: true);
+        }
+        else
+        {
+            AnsiConsole.MarkupLine("[dim]  Building sub-reports...[/]");
+
+            AnsiConsole.Progress()
+                .AutoRefresh(true)
+                .AutoClear(false)
+                .HideCompleted(false)
+                .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new ElapsedTimeColumn())
+                .Start(pCtx =>
+                {
+                    var task = pCtx.AddTask($"[bold]Sub-reports[/]  [dim]0/{total}[/]", maxValue: total);
+
+                    // NoBuffering: each thread picks the next available index one-at-a-time
+                    // in enumeration order, so the LPT ordering in CommandRegistry is honoured.
+                    Parallel.ForEach(
+                        Partitioner.Create(Enumerable.Range(0, total), EnumerablePartitionerOptions.NoBuffering),
+                        new ParallelOptions { MaxDegreeOfParallelism = 8 },
+                        i =>
+                        {
+                            CommandBase.SuppressVerbose = true;
+                            try
+                            {
+                                var doc = cmds[i].BuildReport(ctx);
+                                ReportDocReplay.Replay(doc, captures[i]);
+                                task.Increment(1);
+                                int n = (int)task.Value;
+                                task.Description = n >= total
+                                    ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
+                                    : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(cmds[i].Description)}[/]";
+                            }
+                            finally
+                            {
+                                CommandBase.SuppressVerbose = false;
+                            }
+                        });
+                });
+
+            AnsiConsole.MarkupLine($"[dim]  ✓ {total}/{total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+        }
 
         for (int i = 0; i < total; i++)
             ReportDocReplay.Replay(captures[i].GetDoc(), sink);

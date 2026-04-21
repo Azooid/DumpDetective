@@ -11,8 +11,10 @@ public sealed class DeadlockAnalyzer
     {
         var threads     = ctx.Runtime.Threads.ToList();
         var threadNames = ThreadAnalysisAnalyzer.BuildThreadNameMap(ctx);
-        var blocked     = ScanBlockedThreads(threads, threadNames);
-        var groups      = BuildGroups(blocked, minThreads);
+        List<BlockedThreadEntry> blocked = [];
+        CommandBase.RunStatus($"Scanning for blocked threads ({threads.Count} threads)...", () =>
+            blocked = ScanBlockedThreads(threads, threadNames));
+        var groups = BuildGroups(blocked, minThreads);
 
         return new DeadlockData(blocked, groups, threads.Count, NamedThreadCount: threadNames.Count);
     }

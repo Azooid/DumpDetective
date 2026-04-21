@@ -43,45 +43,57 @@ public sealed class AnalyzeCommand : ICommand
     {
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        var    a          = CliArgs.Parse(args);
-        bool   full       = a.HasFlag("full");
-        string? dumpPath  = a.DumpPath;
-        string? outputPath= a.OutputPath;
+        var     a          = CliArgs.Parse(args);
+        bool    full       = a.HasFlag("full");
+        string? dumpPath   = a.DumpPath;
+        string? outputPath = a.OutputPath;
 
         if (dumpPath is null)       { AnsiConsole.MarkupLine("[bold red]✗[/] dump file path required."); return 1; }
         if (!File.Exists(dumpPath)) { AnsiConsole.MarkupLine($"[bold red]✗[/] file not found: {Markup.Escape(dumpPath)}"); return 1; }
 
-        CommandBase.PrintAnalyzing(dumpPath);
+        var log = new ProgressLogger();
+        log.SectionHeader("DumpDetective Analysis");
+        log.Info($"Analyzing dump: {Path.GetFileName(dumpPath)}");
+        log.Info("Loading dump file...", indent: true);
 
-        if (!full)
-        {
-            // ── Mini: lightweight collection + scored summary ─────────────────
-            var snap = RunCollect("mini", dumpPath,
-                upd => DumpCollector.CollectLightweight(dumpPath, upd));
-            using var sink = SinkFactory.Create(outputPath);
-            AnalyzeReport.RenderReport(snap, sink);
-            if (sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
-            return 0;
-        }
-
-        // ── Full: open dump once — snapshot + all sub-reports ─────────────────
         try
         {
             using var dumpCtx = DumpContext.Open(dumpPath);
+            var clrVer = dumpCtx.ClrVersion ?? "unknown";
+            log.Success($"Dump loaded  |  CLR {clrVer}", indent: true);
             if (dumpCtx.ArchWarning is not null)
-                AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(dumpCtx.ArchWarning)}[/]");
+                log.Warn(dumpCtx.ArchWarning, indent: true);
 
-            var snap = RunCollect("full", dumpPath,
-                upd => DumpCollector.CollectFull(dumpCtx, upd));
+            log.Blank();
+            log.SectionHeader("Collection");
+
+            var collSw = Stopwatch.StartNew();
+            var snap = full
+                ? DumpCollector.CollectFull(dumpCtx, log.OnProgress)
+                : DumpCollector.CollectLightweight(dumpCtx, log.OnProgress);
+
+            string scoreLabel = snap.HealthScore >= 80 ? "HEALTHY" : snap.HealthScore >= 50 ? "DEGRADED" : "CRITICAL";
+            string scoreColor = snap.HealthScore >= 80 ? "green" : snap.HealthScore >= 50 ? "yellow" : "red";
+            log.Blank();
+            log.CheckM(
+                $"Collection complete  ({collSw.Elapsed.TotalSeconds:F1}s)  |  " +
+                $"[{scoreColor}]{snap.HealthScore}/100  {scoreLabel}[/]  |  {snap.TotalObjectCount:N0} objs");
+
+            log.Blank();
+            log.SectionHeader("Rendering Output");
 
             using var sink = SinkFactory.Create(outputPath);
             AnalyzeReport.RenderReport(snap, sink);
-            AnsiConsole.MarkupLine("[bold blue]Embedding detailed sub-reports:[/]");
-            AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink);
+            log.Check("Summary report rendered.");
+
+            if (full)
+                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);
 
             if (sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+            {
+                log.Blank();
+                log.Success($"Written to: {sink.FilePath}");
+            }
             return 0;
         }
         catch (InvalidOperationException ex)
@@ -100,20 +112,5 @@ public sealed class AnalyzeCommand : ICommand
     {
         var snap = DumpCollector.CollectFull(ctx);
         AnalyzeReport.RenderReport(snap, sink);
-    }
-
-    // ── Helpers ───────────────────────────────────────────────────────────────
-
-    private static DumpSnapshot RunCollect(string mode, string dumpPath, Func<Action<string>, DumpSnapshot> collect)
-    {
-        DumpSnapshot snap = null!;
-        var sw = Stopwatch.StartNew();
-        AnsiConsole.Status()
-            .Spinner(Spinner.Known.Dots)
-            .SpinnerStyle(Style.Parse("blue"))
-            .Start($"Running {mode} analysis — {Markup.Escape(Path.GetFileName(dumpPath))}...", ctx =>
-                snap = collect(msg => ctx.Status($"[dim]{Markup.Escape(Path.GetFileName(dumpPath))}[/]  {Markup.Escape(msg)}")));
-        AnsiConsole.MarkupLine($"[dim]  Collection complete ({sw.Elapsed.TotalSeconds:F1}s)[/]");
-        return snap;
     }
 }

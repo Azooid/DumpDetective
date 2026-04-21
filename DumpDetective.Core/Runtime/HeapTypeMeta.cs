@@ -12,6 +12,17 @@ public sealed class HeapTypeMeta
     public ulong    MT           { get; init; }
     public bool     IsException  { get; init; }
 
+    /// <summary><c>System.Threading.Thread</c> — used by <c>ThreadNameConsumer</c>.</summary>
+    public bool     IsThread     { get; init; }
+    /// <summary><c>System.Threading.Tasks.Task</c> or derived — used by <c>ThreadPoolConsumer</c>.</summary>
+    public bool     IsTask       { get; init; }
+    /// <summary>Thread-pool work-item types — used by <c>ThreadPoolConsumer</c>.</summary>
+    public bool     IsWorkItem   { get; init; }
+    /// <summary>HTTP client/request/response types — used by <c>HttpRequestsConsumer</c>.</summary>
+    public bool     IsHttp       { get; init; }
+    /// <summary><c>System.Runtime.CompilerServices.ConditionalWeakTable*</c> — used by <c>ConditionalWeakTableConsumer</c>.</summary>
+    public bool     IsCwt        { get; init; }
+
     /// <summary>
     /// When non-null, this type is an async state machine and the value is
     /// the extracted outer method name (e.g. <c>MyService.DoWorkAsync</c>).

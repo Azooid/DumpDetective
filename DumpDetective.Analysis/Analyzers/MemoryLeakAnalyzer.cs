@@ -12,53 +12,72 @@ public sealed class MemoryLeakAnalyzer
         int top = 30, int minCount = 500,
         bool noRootTrace = false, bool includeSystem = false)
     {
-        // Step 1 + 2: heap walk for type stats
-        // Tuple: (Count, TotalSize, LohSize, LohCount, Gen2Count, Gen2Size, DominantGen, SampleAddr, MT)
+        // Step 1: build per-type stats (Count, Size, LOH/Gen2 breakdowns, sample addresses)
+        // Fast-path: HeapSnapshot built during DumpCollector.CollectFull already has all this
+        // data in TypeAgg — no heap walk needed (~18-26s saved for large dumps).
+        // Slow-path: fall back to own heap walk when no snapshot is available.
         var typeStats = new Dictionary<string, (long Count, long Size, long LohSize, long LohCount, long Gen2Count, long Gen2Size, string Gen, ulong SampleAddr, ulong MT)>(
             StringComparer.Ordinal);
         var typeSamples = new Dictionary<string, List<ulong>>(StringComparer.Ordinal);
 
-        CommandBase.RunStatus("Walking heap (Step 1: dumpheap-stat)...", () =>
+        if (ctx.Snapshot is { } snapFast)
         {
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+            // Fast path — read TypeAgg directly; no I/O, effectively instant
+            CommandBase.RunStatus("Reading type stats from snapshot cache (Step 1: fast-path)...", () =>
             {
-                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                string name = obj.Type.Name ?? "<unknown>";
-                long   size = (long)obj.Size;
-                var    seg  = ctx.Heap.GetSegmentByAddress(obj.Address);
-                bool   isLoh  = seg?.Kind == GCSegmentKind.Large;
-                bool   isPoh  = seg?.Kind == GCSegmentKind.Pinned;
-                bool   isGen2 = seg?.Kind == GCSegmentKind.Generation2 ||
-                                (seg?.Kind == GCSegmentKind.Ephemeral && seg is not null &&
-                                 !seg.Generation0.Contains(obj.Address) &&
-                                 !seg.Generation1.Contains(obj.Address));
+                foreach (var (name, agg) in snapFast.TypeStats)
+                {
+                    typeStats[name] = (agg.Count, agg.Size, agg.Ls, agg.Lc, agg.G2c, agg.G2s,
+                                       agg.GenLabel, agg.SampleAddrs.Count > 0 ? agg.SampleAddrs[0] : 0, agg.MT);
+                    if (agg.SampleAddrs.Count > 0)
+                        typeSamples[name] = [.. agg.SampleAddrs.Take(3)];
+                }
+            });
+        }
+        else
+        {
+            // Slow path — full heap walk
+            CommandBase.RunStatus("Walking heap (Step 1: dumpheap-stat)...", () =>
+            {
+                foreach (var obj in ctx.Heap.EnumerateObjects())
+                {
+                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    string name = obj.Type.Name ?? "<unknown>";
+                    long   size = (long)obj.Size;
+                    var    seg  = ctx.Heap.GetSegmentByAddress(obj.Address);
+                    bool   isLoh  = seg?.Kind == GCSegmentKind.Large;
+                    bool   isPoh  = seg?.Kind == GCSegmentKind.Pinned;
+                    bool   isGen2 = seg?.Kind == GCSegmentKind.Generation2 ||
+                                    (seg?.Kind == GCSegmentKind.Ephemeral && seg is not null &&
+                                     !seg.Generation0.Contains(obj.Address) &&
+                                     !seg.Generation1.Contains(obj.Address));
 
-                ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(typeStats, name, out bool existed);
-                if (existed)
-                {
-                    entry = (entry.Count + 1, entry.Size + size,
-                             entry.LohSize   + (isLoh  ? size : 0),
-                             entry.LohCount  + (isLoh  ? 1    : 0),
-                             entry.Gen2Count + (isGen2 ? 1    : 0),
-                             entry.Gen2Size  + (isGen2 ? size : 0),
-                             entry.Gen, entry.SampleAddr, entry.MT);
-                    // Collect up to 3 sample addresses per type
-                    if (typeSamples.TryGetValue(name, out var list) && list.Count < 3)
-                        list.Add(obj.Address);
+                    ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(typeStats, name, out bool existed);
+                    if (existed)
+                    {
+                        entry = (entry.Count + 1, entry.Size + size,
+                                 entry.LohSize   + (isLoh  ? size : 0),
+                                 entry.LohCount  + (isLoh  ? 1    : 0),
+                                 entry.Gen2Count + (isGen2 ? 1    : 0),
+                                 entry.Gen2Size  + (isGen2 ? size : 0),
+                                 entry.Gen, entry.SampleAddr, entry.MT);
+                        if (typeSamples.TryGetValue(name, out var list) && list.Count < 3)
+                            list.Add(obj.Address);
+                    }
+                    else
+                    {
+                        string gen = isLoh ? "LOH" : isPoh ? "POH" : "Gen2";
+                        entry = (1, size,
+                                 isLoh  ? size : 0,
+                                 isLoh  ? 1    : 0,
+                                 isGen2 ? 1    : 0,
+                                 isGen2 ? size : 0,
+                                 gen, obj.Address, obj.Type.MethodTable);
+                        typeSamples[name] = new List<ulong>(3) { obj.Address };
+                    }
                 }
-                else
-                {
-                    string gen = isLoh ? "LOH" : isPoh ? "POH" : "Gen2";
-                    entry = (1, size,
-                             isLoh  ? size : 0,
-                             isLoh  ? 1    : 0,
-                             isGen2 ? 1    : 0,
-                             isGen2 ? size : 0,
-                             gen, obj.Address, obj.Type.MethodTable);
-                    typeSamples[name] = new List<ulong>(3) { obj.Address };
-                }
-            }
-        });
+            });
+        }
 
         var allTypes = typeStats
             .Select(kv => new HeapStatRow(kv.Key, kv.Value.Count, kv.Value.Size, kv.Value.Gen, kv.Value.MT))
@@ -143,10 +162,10 @@ public sealed class MemoryLeakAnalyzer
             var sizeCandidates  = sizeSuspects.Where(s => !countNames.Contains(s.Name)).Take(2).ToList();
             var rootCandidates  = countCandidates.Concat(sizeCandidates).ToList();
 
-            CommandBase.RunStatus("Tracing GC roots (Step 4a — enumerating GC roots)...", () =>
+            // Step 4a: build GC roots map
+            var rootMap = new Dictionary<ulong, (string Kind, string? ObjType)>();
+            CommandBase.RunStatus("Building GC roots map (Step 4a)...", () =>
             {
-                // Build GC roots map (same as old ScanGcRoots)
-                var rootMap = new Dictionary<ulong, (string Kind, string? ObjType)>();
                 foreach (var root in ctx.Heap.EnumerateRoots())
                 {
                     if (root.Object == 0 || rootMap.ContainsKey(root.Object)) continue;
@@ -163,34 +182,22 @@ public sealed class MemoryLeakAnalyzer
                     var obj = ctx.Heap.GetObject(root.Object);
                     rootMap[root.Object] = (kind, obj.IsValid ? obj.Type?.Name : null);
                 }
+            });
 
-                // Build multi-parent referrer map (up to 8 parents per object — same as old BuildReferrerMap)
-                const int MaxParents = 8;
-                var allReferrers = new Dictionary<ulong, List<(ulong ParentAddr, string ParentType)>>(256_000);
-                foreach (var obj in ctx.Heap.EnumerateObjects())
-                {
-                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                    string pType = obj.Type.Name ?? "?";
-                    ulong  pAddr = obj.Address;
-                    try
-                    {
-                        foreach (var refAddr in obj.EnumerateReferenceAddresses(carefully: false))
-                        {
-                            if (refAddr == 0 || refAddr == pAddr) continue;
-                            if (allReferrers.TryGetValue(refAddr, out var existing))
-                            {
-                                if (existing.Count < MaxParents)
-                                    existing.Add((pAddr, pType));
-                            }
-                            else
-                            {
-                                allReferrers[refAddr] = new List<(ulong, string)>(2) { (pAddr, pType) };
-                            }
-                        }
-                    }
-                    catch { }
-                }
+            // Step 4b: build full referrer map — heap walk #2 (most expensive step).
+            // SharedReferrerCache is shared with HighRefsAnalyzer — whichever of the two
+            // parallel workers arrives first builds it; the other gets the result instantly.
+            // In full-analyze mode the cache is pre-populated during snapshot collection,
+            // so GetOrCreateAnalysis returns instantly (~0 ms).
+            SharedReferrerCache? referrerCache = null;
+            CommandBase.RunStatus("Building referrer map (heap walk)...", () =>
+                referrerCache = ctx.GetOrCreateAnalysis<SharedReferrerCache>(
+                    () => SharedReferrerCache.Build(ctx)));
+            var allReferrers = referrerCache!.BfsMap;
 
+            // Step 4c: trace root chains for each suspect
+            CommandBase.RunStatus($"Tracing root chains (Step 4c — {rootCandidates.Count} suspect types)...", () =>
+            {
                 foreach (var suspect in rootCandidates)
                 {
                     if (!typeStats.TryGetValue(suspect.Name, out var ts)) continue;
