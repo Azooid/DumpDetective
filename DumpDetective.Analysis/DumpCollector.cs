@@ -119,7 +119,7 @@ public static class DumpCollector
                 HeapObjectCollector.CollectHeapObjects(heap, snapshot, full, progress);
 
             if (sw is not null) sw.Restart();
-            RuntimeSubCollectors.CollectFinalizerQueue(heap, snapshot);
+            RuntimeSubCollectors.CollectFinalizerQueue(heap, snapshot, progress);
             if (sw is not null)
                 progress!($"[SCAN]Finalizer queue scan|{snapshot.FinalizerQueueDepth}|{sw.ElapsedMilliseconds}");
         }

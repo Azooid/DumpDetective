@@ -209,7 +209,7 @@ public sealed class MemoryLeakAnalyzer
                     {
                         var instObj  = ctx.Heap.GetObject(addr);
                         long ownSize = instObj.IsValid ? (long)instObj.Size : 0;
-                        var chain    = BuildChainBFS(addr, allReferrers, rootMap, maxDepth: 60);
+                        var chain    = BuildChainBFS(addr, allReferrers, rootMap, ctx.Heap, maxDepth: 60);
                         sampleChains.Add(new SampleChain(addr, ownSize, chain));
                     }
 
@@ -217,6 +217,11 @@ public sealed class MemoryLeakAnalyzer
                         rootChains.Add(new MemoryRootChain(suspect.Name, suspect.Count, suspect.Size, sampleChains));
                 }
             });
+
+            // Release the referrer cache as soon as BFS tracing is done — the BfsMap is the
+            // largest in-memory structure (~1 GB after the cap). Freeing it now lets
+            // heap-fragmentation and static-refs run without that pressure.
+            referrerCache!.ReleaseIfDone();
         }
 
         int totalUniqueTypes = allTypes.Count;
@@ -294,10 +299,12 @@ public sealed class MemoryLeakAnalyzer
 
     // BFS from startAddr upward through multi-parent referrer graph until a GC root is reached.
     // Returns chain steps from root down to (but not including) startAddr, matching old BuildChainBFS.
+    // Type names are looked up from the heap on demand; at most maxDepth calls per chain = negligible cost.
     private static IReadOnlyList<ChainStep> BuildChainBFS(
         ulong startAddr,
-        Dictionary<ulong, List<(ulong ParentAddr, string ParentType)>> allReferrers,
+        Dictionary<ulong, ParentSlots> allReferrers,
         Dictionary<ulong, (string Kind, string? ObjType)> rootMap,
+        ClrHeap heap,
         int maxDepth)
     {
         try
@@ -320,10 +327,12 @@ public sealed class MemoryLeakAnalyzer
                     break;
                 }
                 if (depth >= maxDepth) continue;
-                if (!allReferrers.TryGetValue(curr, out var parents)) continue;
-                foreach (var (pAddr, pType) in parents)
+                if (!allReferrers.TryGetValue(curr, out var ps)) continue;
+                for (int pi = 0; pi < ps.Count; pi++)
                 {
+                    ulong pAddr = ps.Get(pi);
                     if (prev.ContainsKey(pAddr)) continue;
+                    string pType = heap.GetObject(pAddr).Type?.Name ?? "?";
                     prev[pAddr] = (curr, pType);
                     queue.Enqueue((pAddr, depth + 1));
                 }

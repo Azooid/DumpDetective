@@ -125,6 +125,9 @@ public sealed class HighRefsAnalyzer
                     ? tm
                     : new Dictionary<string, int>(StringComparer.Ordinal);
             }
+            // Release the referrer cache after extracting what is needed — frees BfsMap + HotAddrTypes
+            // memory as soon as both memory-leak and high-refs have finished consuming it.
+            cache!.ReleaseIfDone();
             return result;
         }
 

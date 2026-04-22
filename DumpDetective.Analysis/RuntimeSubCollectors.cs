@@ -137,18 +137,33 @@ internal static class RuntimeSubCollectors
 
     // ── Finalizer queue ───────────────────────────────────────────────────────
 
-    internal static void CollectFinalizerQueue(ClrHeap heap, DumpSnapshot s)
+    internal static void CollectFinalizerQueue(ClrHeap heap, DumpSnapshot s, Action<string>? progress = null)
     {
         var counts = new Dictionary<string, int>(256, StringComparer.Ordinal);
         int total = 0;
+
+        var totalWatch = progress is not null ? System.Diagnostics.Stopwatch.StartNew() : null;
+        var rateWatch  = progress is not null ? System.Diagnostics.Stopwatch.StartNew() : null;
+        int lastCount  = 0;
+
         foreach (var obj in heap.EnumerateFinalizableObjects())
         {
             if (!obj.IsValid) continue;
             var name = obj.Type?.Name ?? "<unknown>";
-            // Single lookup via ref — avoids TryGetValue + indexer double lookup
             ref int c = ref CollectionsMarshal.GetValueRefOrAddDefault(counts, name, out _);
             c++;
             total++;
+
+            if (progress is not null && (total & 0x3FF) == 0 && rateWatch!.ElapsedMilliseconds >= 200)
+            {
+                double elapsed  = totalWatch!.Elapsed.TotalSeconds;
+                double interval = rateWatch.Elapsed.TotalSeconds;
+                int    delta    = total - lastCount;
+                long   rate     = interval > 0 ? (long)(delta / interval) : 0;
+                lastCount = total;
+                rateWatch.Restart();
+                progress($"Scanning finalizer queue — {total:N0} objs  •  {elapsed:F1}s  •  ~{rate:N0}/s");
+            }
         }
         s.FinalizerQueueDepth = total;
         s.TopFinalizerTypes   = counts

@@ -209,7 +209,8 @@ public sealed class ProgressLogger
                 AnsiConsole.MarkupLine($"[dim][[{Now}]][/]   [green]✓[/] {Markup.Escape(inner)}");
             }
         }
-        else if (msg.StartsWith("Walking heap objects", StringComparison.Ordinal))
+        else if (msg.StartsWith("Walking heap objects", StringComparison.Ordinal) ||
+                 msg.StartsWith("Scanning finalizer queue", StringComparison.Ordinal))
         {
             _lastLiveMsg = msg;
             WriteLive($"[{Now}]   {NextSpinner()} {msg}");
