@@ -418,6 +418,63 @@ Thresholds are fully configurable via `dd-thresholds.json` placed alongside the 
 
 ---
 
+## Performance & Resource Expectations
+
+DumpDetective processes dumps by walking every managed object on the heap. Run time and memory scale with **object count**, not dump file size. Dump file size is only a rough guide — a largely native-memory process can produce a multi-GB dump file with very few managed objects.
+
+### Heap walk throughput
+
+The single-pass heap walk (which feeds all analysis consumers simultaneously) runs at roughly **400,000–700,000 objects/second** on typical production machines.
+
+### Combined estimates per dump
+
+| Dump file size | Typical object count | `analyze --full` (wall clock) | Peak working set |
+|---|---|---|---|
+| < 500 MB | < 1 M | < 5 s | < 500 MB |
+| 500 MB – 4 GB | 1 – 15 M | 15–60 s | < 2 GB |
+| 4 – 15 GB | ~15 – 50 M | 1–5 min | 2–8 GB |
+| 15 – 30 GB | ~50 – 120 M | 8–15 min | 10–15 GB |
+
+> Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
+>
+> `analyze` (quick, no `--full`) completes shortly after the heap walk — add 10–30 s for scoring and report rendering on top of the heap walk time.
+
+### What drives `--full` time
+
+`analyze --full` runs all 23 sub-reports in parallel; wall-clock time equals the **slowest** sub-report, not their sum. The five slow ones each do additional heap traversals:
+
+| Sub-report | ~10 M objects | ~100 M objects |
+|---|---|---|
+| `static-refs` | ~15 s | 8–10 min |
+| `heap-fragmentation` | ~10 s | 5–8 min |
+| `event-analysis` | ~10 s | 5–7 min |
+| `memory-leak` / `high-refs` (shared BFS) | ~15 s | 6–8 min |
+| `finalizer-queue` | < 1 s | 2–4 min |
+| All others | < 1 s | < 30 s |
+
+### Memory usage
+
+Peak working set is driven by the referrer-graph BFS (`memory-leak` + `high-refs`) which holds the full reverse-reference map in memory while sub-reports build in parallel. Plan for **at least as much free RAM as the dump file on disk**, and ideally 1.5–2× when running `--full`.
+
+### `trend-analysis --full` across multiple dumps
+
+Each dump is processed **sequentially** — loaded, analysed, fully released — before the next one begins. Peak memory therefore equals the most expensive single dump in the set, not the sum of all dumps.
+
+Example runtimes from real runs:
+
+| Scenario | Dump sizes | Objects per dump | Total time | Peak RAM |
+|---|---|---|---|---|
+| Small/medium dumps | 700 MB – 3.3 GB | 200 K – 11 M | ~50 s | ~1.3 GB |
+| Large dumps | ~25 GB each | 86 M – 110 M | ~38 min | ~13 GB |
+
+For a folder of large dumps (25 GB each, ~100 M objects), budget roughly **10–12 minutes per dump** and **13–15 GB RAM** at peak.
+
+### Offline `render`
+
+`render` on a pre-saved `.json` completes in **under a second** for any output format. No dump file or ClrMD overhead is involved.
+
+---
+
 ## Thresholds
 
 Place a `dd-thresholds.json` file next to `DumpDetective.Cli.exe` to override any scoring or trend threshold. Missing or invalid files silently fall back to built-in defaults. See the included `dd-thresholds.json` for the full schema.
