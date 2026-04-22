@@ -9,7 +9,7 @@ public sealed class ConsoleSink : IRenderSink
     public bool    IsFile   => false;
     public string? FilePath => null;
 
-    public void Header(string title, string? subtitle = null, int navLevel = 0)
+    public void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null)
     {
         AnsiConsole.WriteLine();
         AnsiConsole.Write(new Rule($"[bold deepskyblue1] {Markup.Escape(title)} [/]").LeftJustified());

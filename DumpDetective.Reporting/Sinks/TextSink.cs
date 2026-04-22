@@ -11,7 +11,7 @@ public sealed class TextSink : IRenderSink
 
     public TextSink(string path) => _w = new StreamWriter(path, append: false);
 
-    public void Header(string title, string? subtitle = null, int navLevel = 0)
+    public void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null)
     {
         string bar = new('═', 80);
         _w.WriteLine(bar);

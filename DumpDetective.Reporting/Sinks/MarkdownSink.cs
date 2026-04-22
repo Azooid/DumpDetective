@@ -11,7 +11,7 @@ public sealed class MarkdownSink : IRenderSink
 
     public MarkdownSink(string path) => _w = new StreamWriter(path, append: false);
 
-    public void Header(string title, string? subtitle = null, int navLevel = 0)
+    public void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null)
     {
         _w.WriteLine($"# {title}");
         if (subtitle is not null) _w.WriteLine($"*{subtitle}*");

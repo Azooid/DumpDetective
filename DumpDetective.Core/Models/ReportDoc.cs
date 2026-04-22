@@ -20,6 +20,15 @@ public sealed class ReportChapter
     public string  Title    { get; set; } = string.Empty;
     public string? Subtitle { get; set; }
     public int     NavLevel { get; set; } = 1;
+    /// <summary>
+    /// CLI command name that produced this chapter (e.g. "memory-leak").
+    /// Set automatically by <c>AnalyzeReport.RenderEmbeddedReports</c> after
+    /// <c>BuildReport</c> returns. Used by <c>render --command</c> to slice
+    /// a <see cref="ReportDoc"/> without title-string matching.
+    /// Null on chapters not produced by a registered command (e.g. the analyze summary).
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? CommandName { get; set; }
     public List<ReportSection> Sections { get; set; } = [];
 }
 

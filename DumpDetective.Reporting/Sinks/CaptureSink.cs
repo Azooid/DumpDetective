@@ -48,14 +48,15 @@ public sealed class CaptureSink : IRenderSink
         }
     }
 
-    public void Header(string title, string? subtitle = null, int navLevel = 0)
+    public void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null)
     {
         _detailsStack.Clear();
         _chapter = new ReportChapter
         {
-            Title    = title,
-            Subtitle = subtitle,
-            NavLevel = navLevel > 0 ? navLevel :
+            Title       = title,
+            Subtitle    = subtitle,
+            CommandName = commandName,
+            NavLevel    = navLevel > 0 ? navLevel :
                 CommandBase.SuppressVerbose
                     ? (title.StartsWith("Per-Dump Report", StringComparison.OrdinalIgnoreCase) ? 1 : 2)
                     : 1,

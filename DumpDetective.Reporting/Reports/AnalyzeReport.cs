@@ -51,6 +51,7 @@ public static class AnalyzeReport
                         var doc = cmds[i].BuildReport(ctx);
                         var details = CommandBase.EndTrace();
                         ReportDocReplay.Replay(doc, captures[i]);
+                        foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
                         csw.Stop();
                         log.CompleteParallelItem(cmds[i].Name, csw.ElapsedMilliseconds, details);
                     }
@@ -84,6 +85,7 @@ public static class AnalyzeReport
                             {
                                 var doc = cmds[i].BuildReport(ctx);
                                 ReportDocReplay.Replay(doc, captures[i]);
+                                foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
                                 task.Increment(1);
                                 int n = (int)task.Value;
                                 task.Description = n >= total

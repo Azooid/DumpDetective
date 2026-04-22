@@ -36,7 +36,7 @@ public sealed class HtmlSink : IRenderSink
 
     // ── IRenderSink ───────────────────────────────────────────────────────────
 
-    public void Header(string title, string? subtitle = null, int navLevel = 0)
+    public void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null)
     {
         CloseSection();
         int id = ++_chapterSeq;

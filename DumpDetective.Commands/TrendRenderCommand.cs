@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.Json;
 using DumpDetective.Analysis;
 using DumpDetective.Core.Json;
+using DumpDetective.Reporting;
 
 namespace DumpDetective.Commands;
 
@@ -36,14 +37,29 @@ public sealed class TrendRenderCommand : ICommand
                                  baseline (trend-raw only; default: 1 = first dump).
           --ignore-event <type>  Exclude publisher types containing <type> from
                                  the Event Leak table (trend-raw only). Repeatable.
+          --mini                 Render trend summary only — suppress per-dump
+                                 sub-reports even when they are present in the JSON.
+          --from <n>             Extract dump #N's full sub-report as a standalone
+                                 file. Requires the JSON to have been saved with
+                                 --full. 1-based index.
+          --command <name>       Extract only the named command's chapter(s).
+                                 Combine with --from to target a single dump.
+                                 Repeatable (e.g. --command memory-leak --command heap-stats).
+                                 Valid names: any command that runs in --full analyze
+                                 (heap-stats, memory-leak, high-refs, …).
           -o, --output <file>    Write report to file (.html / .md / .txt / .json)
                                  Omit for console output.
           -h, --help             Show this help
 
         Examples:
-          DumpDetective trend-render snapshots.json --output report.html
-          DumpDetective trend-render snapshots.json --baseline 2 --output report.html
-          DumpDetective render       analyze-report.json --output report.html
+          DumpDetective render snapshots.json --output report.html
+          DumpDetective render snapshots.json --mini --output trend-only.html
+          DumpDetective render snapshots.json --baseline 2 --output report.html
+          DumpDetective render snapshots.json --from 4 --output d4-full.html
+          DumpDetective render snapshots.json --from 4 --command memory-leak --output d4-memleak.html
+          DumpDetective render snapshots.json --command memory-leak --output all-memleak.html
+          DumpDetective render snapshots.json --command memory-leak --command heap-stats --output d4-subset.html
+          DumpDetective render analyze-report.json --output report.html
         """;
 
     public int Run(string[] args)
@@ -58,10 +74,19 @@ public sealed class TrendRenderCommand : ICommand
         string? rawFile      = a.Positionals.FirstOrDefault();
         int     baselineArg  = a.GetInt("baseline", 1);
         var     ignoreEvents = a.GetAll("ignore-event").ToList();
+        bool    mini         = a.HasFlag("mini");
+        int     fromArg      = a.GetInt("from", 0);
+        var     commands     = a.GetAll("command").ToList();
 
         if (baselineArg < 1)
         {
             AnsiConsole.MarkupLine("[bold red]Error:[/] --baseline must be a positive integer.");
+            return 1;
+        }
+
+        if (fromArg < 0)
+        {
+            AnsiConsole.MarkupLine("[bold red]Error:[/] --from must be a positive integer.");
             return 1;
         }
 
@@ -97,6 +122,13 @@ public sealed class TrendRenderCommand : ICommand
         // ── Plain report JSON ─────────────────────────────────────────────────
         if (format == "report")
         {
+            if (fromArg > 0 || commands.Count > 0)
+            {
+                AnsiConsole.MarkupLine("[bold red]Error:[/] --from and --command require a trend-raw JSON file " +
+                    "(produced by: trend-analysis ... --full --output snapshots.json).");
+                return 1;
+            }
+
             DumpReportEnvelope? envelope;
             try { envelope = JsonSerializer.Deserialize(json, CoreJsonContext.Default.DumpReportEnvelope); }
             catch (Exception ex) { AnsiConsole.MarkupLine($"[bold red]Error reading report envelope:[/] {Markup.Escape(ex.Message)}"); return 1; }
@@ -126,6 +158,74 @@ public sealed class TrendRenderCommand : ICommand
             return 1;
         }
 
+        // ── --from / --command: sub-report extraction mode ────────────────────
+        if (fromArg > 0 || commands.Count > 0)
+        {
+            // Validate --from range
+            if (fromArg > 0 && fromArg > snapshots.Count)
+            {
+                AnsiConsole.MarkupLine(
+                    $"[bold red]Error:[/] --from {fromArg} is out of range (only {snapshots.Count} snapshot(s) in file).");
+                return 1;
+            }
+
+            // Determine which snapshots to extract from
+            var targets = fromArg > 0
+                ? [snapshots[fromArg - 1]]
+                : (IReadOnlyList<DumpSnapshot>)snapshots;
+
+            // Verify sub-reports are present on all targets
+            var missing = targets
+                .Select((s, i) => (s, idx: fromArg > 0 ? fromArg : i + 1))
+                .Where(t => t.s.SubReport is null)
+                .ToList();
+
+            if (missing.Count > 0)
+            {
+                foreach (var (s, idx) in missing)
+                    AnsiConsole.MarkupLine(
+                        $"[bold red]Error:[/] Dump #{idx} ({Markup.Escape(Path.GetFileName(s.DumpPath))}) " +
+                        $"has no embedded sub-report.\n" +
+                        $"  Re-run with --full: [dim]trend-analysis ... --full --output {Markup.Escape(Path.GetFileName(rawFile))}[/]");
+                return 1;
+            }
+
+            using var sink = SinkFactory.Create(a.OutputPath);
+
+            for (int i = 0; i < targets.Count; i++)
+            {
+                var snap  = targets[i];
+                var dIdx  = fromArg > 0 ? fromArg : i + 1;
+                var doc   = snap.SubReport!;
+
+                // Slice to requested commands if --command was given
+                if (commands.Count > 0)
+                {
+                    doc = ReportDocSlicer.Slice(doc, commands);
+                    if (doc.Chapters.Count == 0)
+                    {
+                        var available = string.Join(", ", ReportDocSlicer.AvailableCommands(snap.SubReport!));
+                        AnsiConsole.MarkupLine(
+                            $"[bold red]Error:[/] No chapters matched for D{dIdx}. " +
+                            $"Available commands: [dim]{Markup.Escape(available)}[/]");
+                        return 1;
+                    }
+                }
+
+                AnsiConsole.MarkupLine(
+                    $"Extracting D{dIdx} ({Markup.Escape(Path.GetFileName(snap.DumpPath))}, " +
+                    $"score {snap.HealthScore}/100)" +
+                    (commands.Count > 0 ? $"  commands: {Markup.Escape(string.Join(", ", commands))}" : string.Empty));
+
+                ReportDocReplay.Replay(doc, sink);
+            }
+
+            if (sink.IsFile && sink.FilePath is not null)
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+            return 0;
+        }
+
+        // ── Standard trend render ─────────────────────────────────────────────
         int baselineIndex = baselineArg - 1;
         if (baselineIndex >= snapshots.Count)
         {
@@ -136,21 +236,25 @@ public sealed class TrendRenderCommand : ICommand
 
         AnsiConsole.MarkupLine(
             $"Rendering trend report from {Markup.Escape(Path.GetFileName(rawFile))}  " +
-            $"[{snapshots.Count} snapshots]  baseline: D{baselineArg}");
+            $"({snapshots.Count} snapshots)  baseline: D{baselineArg}" +
+            (mini ? "  [dim](--mini: sub-reports suppressed)[/]" : string.Empty));
 
         using var trendSink = SinkFactory.Create(a.OutputPath);
         TrendAnalysisReport.RenderTrend(snapshots, trendSink, ignoreEvents, baselineIndex);
 
-        bool hasSubReports = snapshots.Any(s => s.SubReport is not null);
-        if (hasSubReports)
+        if (!mini)
         {
-            AnsiConsole.MarkupLine("Rendering per-dump detailed sub-reports…");
-            for (int i = 0; i < snapshots.Count; i++)
+            bool hasSubReports = snapshots.Any(s => s.SubReport is not null);
+            if (hasSubReports)
             {
-                var snap = snapshots[i];
-                if (snap.SubReport is null) continue;
-                AnsiConsole.MarkupLine($"  D{i + 1}  {Markup.Escape(Path.GetFileName(snap.DumpPath))}  {snap.HealthScore}/100");
-                ReportDocReplay.Replay(snap.SubReport, trendSink);
+                AnsiConsole.MarkupLine("Rendering per-dump detailed sub-reports…");
+                for (int i = 0; i < snapshots.Count; i++)
+                {
+                    var snap = snapshots[i];
+                    if (snap.SubReport is null) continue;
+                    AnsiConsole.MarkupLine($"  D{i + 1}  {Markup.Escape(Path.GetFileName(snap.DumpPath))}  {snap.HealthScore}/100");
+                    ReportDocReplay.Replay(snap.SubReport, trendSink);
+                }
             }
         }
 

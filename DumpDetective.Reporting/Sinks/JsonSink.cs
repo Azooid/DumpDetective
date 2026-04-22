@@ -20,7 +20,7 @@ public sealed class JsonSink : IRenderSink
 
     public JsonSink(string path) => _path = path;
 
-    public void Header(string title, string? subtitle = null, int navLevel = 0)
+    public void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null)
         => _capture.Header(title, subtitle, navLevel);
     public void Section(string title, string? sectionKey = null)
         => _capture.Section(title, sectionKey);

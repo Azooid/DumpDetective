@@ -14,7 +14,7 @@ public static class ReportDocReplay
     {
         foreach (var chapter in doc.Chapters)
         {
-            sink.Header(chapter.Title, chapter.Subtitle, chapter.NavLevel);
+            sink.Header(chapter.Title, chapter.Subtitle, chapter.NavLevel, chapter.CommandName);
             foreach (var section in chapter.Sections)
             {
                 if (section.Title is not null)

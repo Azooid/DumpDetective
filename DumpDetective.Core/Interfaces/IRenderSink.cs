@@ -9,7 +9,7 @@ public enum AlertLevel { Info, Warning, Critical }
 /// </summary>
 public interface IRenderSink : IDisposable
 {
-    void Header(string title, string? subtitle = null, int navLevel = 0);
+    void Header(string title, string? subtitle = null, int navLevel = 0, string? commandName = null);
 
     /// <summary>
     /// Begins a new named section.

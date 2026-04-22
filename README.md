@@ -166,16 +166,47 @@ Accepted input:
 Options:
   --baseline <n>         Trend baseline (trend-raw only; default: 1 = first dump)
   --ignore-event <type>  Filter event types (trend-raw only; repeatable)
+  --mini                 Trend summary only -- suppress per-dump sub-reports even
+                         when they are present in the JSON (trend-raw only)
+  --from <n>             Extract dump #N's full sub-report as a standalone file.
+                         Requires the JSON to have been saved with --full. 1-based.
+  --command <name>       Extract only the named command's chapter(s).
+                         Combine with --from to target a single dump.
+                         Repeatable: --command memory-leak --command heap-stats
+                         Valid names: any command that runs in analyze --full
   -o, --output <file>    Output file (.html / .md / .txt / .json)
                          Omit for console output
 ```
 
 **Examples:**
 ```bash
-DumpDetective.Cli render report.json --output report.html
+# Standard trend report
+DumpDetective.Cli render snapshots.json --output report.html
+
+# Trend summary only (no per-dump sub-reports)
+DumpDetective.Cli render snapshots.json --mini --output trend-only.html
+
+# Re-render at a different baseline
 DumpDetective.Cli render snapshots.json --baseline 2 --output report-d2base.html
-DumpDetective.Cli render heap-stats.json --output heap-stats.md
+
+# Extract dump #4's full sub-report as a standalone file
+DumpDetective.Cli render snapshots.json --from 4 --output d4-full.html
+
+# Extract just the memory-leak chapter from dump #4
+DumpDetective.Cli render snapshots.json --from 4 --command memory-leak --output d4-memleak.html
+
+# Extract memory-leak from every dump, stacked in one file
+DumpDetective.Cli render snapshots.json --command memory-leak --output all-memleak.html
+
+# Multiple commands from dump #2
+DumpDetective.Cli render snapshots.json --from 2 --command memory-leak --command heap-stats --output d2-subset.html
+
+# Convert a single-dump report JSON to HTML
+DumpDetective.Cli render heap-stats.json --output heap-stats.html
 ```
+
+> **Note:** `--from` and `--command` require `trend-raw` JSON saved with `--full`.
+> If the JSON was saved without `--full`, sub-reports are not present and extraction will fail with a clear error message.
 
 ---
 
