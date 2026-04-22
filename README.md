@@ -1,8 +1,8 @@
 # DumpDetective
 
-A command-line tool for analysing .NET memory dumps (.dmp / .mdmp). Built on **ClrMD 3.x** and **.NET 10**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, or JSON**.
+A command-line tool for analysing .NET memory dumps (`.dmp` / `.mdmp`). Built on **ClrMD 3.x** and **.NET 10 Native AOT**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, or JSON**.
 
-Every command supports `--output report.json`, which captures the full structured report. Use `DumpDetective render report.json --output report.html` (or any other format) to convert it at any time without re-opening the dump.
+Every command supports `--output report.json`, which captures the full structured report. Use `DumpDetective.Cli render report.json --output report.html` (or any other format) to convert it at any time without re-opening the dump.
 
 ---
 
@@ -25,8 +25,10 @@ dotnet build
 For a self-contained, AOT-compiled single executable:
 
 ```bash
-dotnet publish -r win-x64 -c Release
+dotnet publish DumpDetective.Cli -r win-x64 -c Release
 ```
+
+The output is a single native binary: `DumpDetective.Cli.exe`.
 
 ---
 
@@ -37,26 +39,29 @@ dotnet publish -r win-x64 -c Release
 $env:DD_DUMP = "C:\dumps\w3wp.dmp"
 
 # Scored quick-look report in the terminal
-DumpDetective analyze
+DumpDetective.Cli analyze
 
-# Full report (all 20+ sub-analyses) exported to HTML
-DumpDetective analyze app.dmp --full --output report.html
+# Full report (all 23 sub-analyses) exported to HTML
+DumpDetective.Cli analyze app.dmp --full --output report.html
 
-# Save full report as JSON, convert to HTML later — no dump file needed
-DumpDetective analyze app.dmp --full --output report.json
-DumpDetective render report.json --output report.html
+# Full report with peak memory diagnostics printed at the end
+DumpDetective.Cli analyze app.dmp --full --output report.html --debug
+
+# Save full report as JSON, convert to HTML later -- no dump file needed
+DumpDetective.Cli analyze app.dmp --full --output report.json
+DumpDetective.Cli render report.json --output report.html
 
 # Trend report across a series of dumps
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
 
 # Save raw trend data as JSON (includes all per-dump sub-reports when --full)
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
 
-# Re-render the raw JSON at a different baseline or format — no dump files needed
-DumpDetective render snapshots.json --baseline 2 --output report.html
+# Re-render the raw JSON at a different baseline or format -- no dump files needed
+DumpDetective.Cli render snapshots.json --baseline 2 --output report.html
 
-# Or point at a folder — picks up all .dmp files sorted by timestamp
-DumpDetective trend-analysis C:\dumps\ --output trends.html
+# Or point at a folder -- picks up all .dmp files sorted by timestamp
+DumpDetective.Cli trend-analysis C:\dumps\ --output trends.html
 ```
 
 ---
@@ -76,15 +81,17 @@ DumpDetective trend-analysis C:\dumps\ --output trends.html
 Scored health report for a single dump.
 
 ```
-DumpDetective analyze <dump-file> [options]
+DumpDetective.Cli analyze <dump-file> [options]
 
 Options:
-  --full               Full combined report (scored summary + all 20+ sub-reports)
+  --full               Full combined report (scored summary + all 23 sub-reports in parallel)
+  --debug              Print peak working set / managed heap / private bytes at exit
   -o, --output <file>  Write report to file (.html / .md / .txt / .json)
+                       Default: <dump-dir>/analyze_<dump-filename>.html
 ```
 
 **What it covers:**
-- Health score (0–100) with per-finding deductions
+- Health score (0-100) with per-finding deductions
 - Findings grouped as Critical / Warning / Info with recommendations
 - Memory: heap by generation (SOH / LOH / POH), fragmentation
 - Threads: blocked, async backlog, thread pool saturation
@@ -94,8 +101,9 @@ Options:
 
 **Examples:**
 ```bash
-DumpDetective analyze app.dmp
-DumpDetective analyze app.dmp --full --output full-report.html
+DumpDetective.Cli analyze app.dmp
+DumpDetective.Cli analyze app.dmp --full --output full-report.html
+DumpDetective.Cli analyze app.dmp --full --output full-report.html --debug
 ```
 
 ---
@@ -105,9 +113,9 @@ DumpDetective analyze app.dmp --full --output full-report.html
 Cross-dump trend report comparing two or more snapshots over time.
 
 ```
-DumpDetective trend-analysis <dump1> <dump2> [<dump3>...] [options]
-DumpDetective trend-analysis <directory> [options]
-DumpDetective trend-analysis --list <file.txt> [options]
+DumpDetective.Cli trend-analysis <dump1> <dump2> [<dump3>...] [options]
+DumpDetective.Cli trend-analysis <directory> [options]
+DumpDetective.Cli trend-analysis --list <file.txt> [options]
 
 Options:
   --full                   Full collection per dump (event leaks, string duplicates,
@@ -115,16 +123,17 @@ Options:
   --baseline <n>           1-based index of the dump to use as the trend baseline (default: 1)
   --ignore-event <type>    Exclude publisher types whose name contains <type> (repeatable)
   -o, --output <f>         Write report to file (.html / .md / .txt)
-                           .json — saves raw snapshot data (re-render any time with 'render')
+                           .json -- saves raw snapshot data (re-render any time with 'render')
 ```
 
 **Report sections:**
+
 | # | Section |
 |---|---|
 | 0 | Dump Timeline |
-| 1 | Incident Summary — signal status table (✓/⚠/✗), per-dump findings accordions, executive paragraph |
+| 1 | Incident Summary -- signal status table, per-dump findings accordions, executive paragraph |
 | 2 | Overall Growth Summary |
-| 3 | Thread & Application Pressure |
+| 3 | Thread and Application Pressure |
 | 4 | Event Leak Analysis |
 | 5 | Finalizer Queue Detail |
 | 6 | Highly Referenced Objects |
@@ -133,22 +142,22 @@ Options:
 
 **Examples:**
 ```bash
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
-DumpDetective trend-analysis C:\dumps\ --full --output report.html
-DumpDetective trend-analysis --list dumps.txt --full --output report.md
-DumpDetective trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
+DumpDetective.Cli trend-analysis C:\dumps\ --full --output report.html
+DumpDetective.Cli trend-analysis --list dumps.txt --full --output report.md
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
 ```
 
 ---
 
 ### `render` / `trend-render`
 
-Converts any DumpDetective JSON file to HTML, Markdown, plain text, or console output — **no dump file required**.
+Converts any DumpDetective JSON file to HTML, Markdown, plain text, or console output -- **no dump file required**.
 
 ```
-DumpDetective render <file.json> [options]
+DumpDetective.Cli render <file.json> [options]
 
 Accepted input:
   report     JSON produced by any single-dump command with --output *.json
@@ -163,14 +172,9 @@ Options:
 
 **Examples:**
 ```bash
-# Convert any saved report to HTML
-DumpDetective render report.json --output report.html
-
-# Re-render a trend at a different baseline
-DumpDetective render snapshots.json --baseline 2 --output report-d2base.html
-
-# Produce Markdown from a previously saved JSON
-DumpDetective render heap-stats.json --output heap-stats.md
+DumpDetective.Cli render report.json --output report.html
+DumpDetective.Cli render snapshots.json --baseline 2 --output report-d2base.html
+DumpDetective.Cli render heap-stats.json --output heap-stats.md
 ```
 
 ---
@@ -178,34 +182,37 @@ DumpDetective render heap-stats.json --output heap-stats.md
 ### Targeted Commands
 
 Each command accepts `<dump-file> -o <output>` and `--help`.
+When `-o` / `--output` is omitted, the report is written to `<dump-dir>/<command>_<dump-filename>.html` automatically.
 
-| Command | Description |
-|---|---|
-| `event-analysis` | Detect event handler leaks — publisher types, field names, subscriber counts, retained memory |
-| `heap-stats` | Heap object counts and sizes grouped by type |
-| `large-objects` | Large objects on LOH / POH / Gen heap |
-| `string-duplicates` | Duplicate strings and wasted memory |
-| `thread-analysis` | Thread states, blocking objects, stack traces |
-| `deadlock-detection` | Deadlock cycles in the wait graph |
-| `exception-analysis` | Exception objects on heap and active threads |
-| `gc-roots` | GC roots and referrers for a given type |
-| `static-refs` | Non-null static reference fields |
-| `http-requests` | In-flight HTTP request objects |
-| `timer-leaks` | Timer objects and their callback targets |
-| `finalizer-queue` | Objects waiting in the finalizer queue |
-| `handle-table` | GC handles grouped by kind |
-| `pinned-objects` | Pinned GC handles causing heap fragmentation |
-| `gen-summary` | Object counts and sizes by GC generation |
-| `heap-fragmentation` | Segment free space and fragmentation percentage |
-| `async-stacks` | Suspended async state machines at await points |
-| `thread-pool` | ThreadPool state and queued work items |
-| `object-inspect` | All field values of an object by address |
-| `type-instances` | All instances of a given type |
-| `weak-refs` | WeakReference handles — alive vs collected |
-| `wcf-channels` | WCF service/channel objects and their state |
-| `connection-pool` | Database connection objects and leak detection |
-| `high-refs` | Highly-referenced "hub" objects — caches, shared state |
-| `module-list` | Loaded assemblies with path and size |
+| Command | Incl. in `--full` | Description |
+|---|:---:|---|
+| `heap-stats` | Yes | Heap object counts and sizes grouped by type |
+| `gen-summary` | Yes | Object counts and sizes by GC generation |
+| `heap-fragmentation` | Yes | Segment free space and fragmentation percentage |
+| `large-objects` | Yes | Large objects on LOH / POH / Gen heap |
+| `pinned-objects` | Yes | Pinned GC handles causing heap fragmentation |
+| `memory-leak` | Yes | Suspect types with root-chain BFS traces |
+| `high-refs` | Yes | Highly-referenced "hub" objects -- caches, shared state |
+| `string-duplicates` | Yes | Duplicate strings and wasted memory |
+| `finalizer-queue` | Yes | Objects waiting in the finalizer queue |
+| `handle-table` | Yes | GC handles grouped by kind |
+| `static-refs` | Yes | Non-null static reference fields with retained-size estimates |
+| `weak-refs` | Yes | WeakReference handles -- alive vs collected |
+| `thread-analysis` | Yes | Thread states, blocking objects, stack traces |
+| `thread-pool` | Yes | ThreadPool state and queued work items |
+| `deadlock-detection` | Yes | Deadlock cycles in the wait graph |
+| `async-stacks` | Yes | Suspended async state machines at await points |
+| `exception-analysis` | Yes | Exception objects on heap and active threads |
+| `event-analysis` | Yes | Event handler leaks -- publisher types, field names, subscriber counts, retained memory |
+| `http-requests` | Yes | In-flight HTTP request objects |
+| `connection-pool` | Yes | Database connection objects and leak detection |
+| `wcf-channels` | Yes | WCF service/channel objects and their state |
+| `timer-leaks` | Yes | Timer objects and their callback targets |
+| `module-list` | Yes | Loaded assemblies with path and size |
+| `gc-roots` | No | GC roots and referrers for a given type (too slow for `--full`) |
+| `thread-pool-starvation` | No | ThreadPool starvation heuristic analysis |
+| `type-instances` | No | All instances of a given type (`--type <name>` required) |
+| `object-inspect` | No | All field values of an object (`--address <hex>` required) |
 
 ---
 
@@ -215,15 +222,21 @@ Specify an output file with `-o` / `--output`:
 
 | Extension | Format |
 |---|---|
-| `.html` | Interactive HTML — sticky sidebar nav, collapsible sections, sortable/filterable tables, styled alert cards |
-| `.md` | Markdown — suitable for wiki pages or GitHub |
-| `.json` | Structured JSON — full report data, re-renderable to any other format with `render` |
+| `.html` | Interactive HTML -- sticky sidebar nav, collapsible sections, sortable/filterable tables, styled alert cards |
+| `.md` | Markdown -- suitable for wiki pages or GitHub |
+| `.json` | Structured JSON -- full report data, re-renderable to any other format with `render` |
 | `.txt` | Plain text |
-| *(none)* | Console (Spectre.Console with colour) |
+| (none) | Console (Spectre.Console with colour) |
+
+### Default output path
+
+When `-o` / `--output` is omitted, the tool automatically writes to:
+- **Single-dump commands**: `<dump-directory>/<command>_<dump-filename>.html`
+- **Multi-dump / directory commands**: `<directory>/<command>.html`
 
 ### JSON output and re-rendering
 
-Use `--output report.json` with **any** command to capture a fully structured JSON report. The JSON preserves all report data — chapters, sections, tables, key-value pairs, alerts, findings, and details accordions — including chapter nav levels, polymorphic element types, and (for `trend-analysis --full`) complete per-dump sub-reports.
+Use `--output report.json` with **any** command to capture a fully structured JSON report. The JSON preserves all report data -- chapters, sections, tables, key-value pairs, alerts, findings, and details accordions -- including chapter nav levels and polymorphic element types.
 
 There are two JSON formats:
 
@@ -232,13 +245,12 @@ There are two JSON formats:
 | `"report"` | Any single-dump command with `--output *.json` | Full rendered report document |
 | `"trend-raw"` | `trend-analysis --output *.json` | Raw snapshot metrics + optional captured sub-reports |
 
-Both are handled transparently by `DumpDetective render` — it auto-detects the format:
+Both are handled transparently by `DumpDetective.Cli render` -- it auto-detects the format:
 
 ```bash
-# Any report → any format
-DumpDetective render heap-stats.json    --output heap-stats.html
-DumpDetective render analyze-full.json  --output report.md
-DumpDetective render snapshots.json     --baseline 2 --output report.html
+DumpDetective.Cli render heap-stats.json    --output heap-stats.html
+DumpDetective.Cli render analyze-full.json  --output report.md
+DumpDetective.Cli render snapshots.json     --baseline 2 --output report.html
 ```
 
 The `trend-raw` format is especially useful: save once with `--full`, then re-render at any baseline, format, or time without touching the original dump files.
@@ -248,69 +260,133 @@ The `trend-raw` format is especially useful: save once with `--full`, then re-re
 ## Project Structure
 
 ```
-DumpDetective/
-├── Program.cs                  Command dispatch & help
-├── Collectors/
-│   └── DumpCollector.cs        Heap walk — collects snapshot data for all metrics
-├── Commands/
-│   ├── AnalyzeCommand.cs       Scored health report (single dump)
-│   ├── TrendAnalysisCommand.cs Multi-dump trend analysis
-│   ├── TrendRenderCommand.cs   Re-render / convert saved JSON (alias: render)
-│   ├── TrendRawSerializer.cs   Save / load raw trend JSON
-│   └── *.cs                    Individual targeted commands
-├── Core/
-│   ├── CommandBase.cs          Shared argument parsing, execution wrapper
-│   └── DumpContext.cs          ClrMD runtime and heap wrapper
-├── Helpers/
-│   ├── DumpHelpers.cs          Size formatting, type classification
-│   └── ReportDocReplay.cs      Replays a captured ReportDoc through any IRenderSink
-├── Models/
-│   ├── DumpSnapshot.cs         All collected metrics for one dump
-│   ├── Finding.cs              Scored finding (severity, category, headline, advice)
-│   ├── ReportDoc.cs            Serialisable report document model (chapters → sections → elements)
-│   ├── SnapshotData.cs         AOT-serialisable DTO mirror of DumpSnapshot + SubReport
-│   └── ThresholdConfig.cs      Configurable scoring / trend thresholds
-├── Core/
-│   └── ThresholdLoader.cs      Lazy-loads dd-thresholds.json; falls back to defaults
-└── Output/
-    ├── IRenderSink.cs           Format-agnostic output interface & factory
-    ├── CaptureSink.cs           Captures all sink calls into a ReportDoc (in-memory)
-    ├── HtmlSink.cs              HTML renderer
-    ├── MarkdownSink.cs          Markdown renderer
-    ├── JsonSink.cs              JSON renderer — delegates to CaptureSink, writes envelope
-    ├── TextSink.cs              Plain text renderer
-    └── ConsoleSink.cs           Spectre.Console renderer
+DumpDetective.slnx
 
-dd-thresholds.json              Override default scoring/trend thresholds (place next to exe)
+DumpDetective.Core/               Models, interfaces, shared utilities
+  Interfaces/
+    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Run, BuildReport
+    IRenderSink.cs                Format-agnostic output interface
+    IHeapObjectConsumer.cs        Heap-walk consumer interface
+  Models/
+    DumpSnapshot.cs               All collected metrics for one dump (AOT JSON-serialisable)
+    Finding.cs                    Scored finding (severity, category, headline, advice)
+    ReportDoc.cs                  Replayable report document model (chapters > sections > elements)
+    ThresholdConfig.cs            Configurable scoring / trend thresholds
+  Runtime/
+    DumpContext.cs                ClrMD DataTarget + ClrRuntime wrapper
+    HeapSnapshot.cs               TypeStats, InboundCounts, StringGroups, gen counters
+  Utilities/
+    CliArgs.cs                    Shared argument parser (--help, --output, DD_DUMP, flags)
+    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus, SuppressVerbose
+    DumpHelpers.cs                FormatSize, IsSystemType, OpenDump, SegmentKindLabel
+    HealthScorer.cs               Score(DumpSnapshot, ScoringThresholds) -> (Findings, score)
+    ProgressLogger.cs             Live spinner + [SCAN] completion lines via Spectre.Console
+    ThresholdLoader.cs            Lazy-loads dd-thresholds.json; silent fallback to defaults
+
+DumpDetective.Analysis/           ClrMD data collection and heap walking
+  DumpCollector.cs                CollectFull / CollectLightweight orchestration
+  HeapWalker.cs                   Single EnumerateObjects() call feeding all consumers
+  HeapObjectCollector.cs          Manages consumer registration and walk execution
+  SharedReferrerCache.cs          Reverse-reference graph; shared between MemoryLeak + HighRefs
+  RuntimeSubCollectors.cs         Thread, handle, module, finalizer-queue sub-collectors
+  SnapshotPopulator.cs            Writes consumer results back into DumpSnapshot
+  TrendRawSerializer.cs           DumpSnapshot JSON storage for trend analysis
+  Consumers/                      IHeapObjectConsumer implementations (one concern each)
+    TypeStatsConsumer.cs
+    InboundRefConsumer.cs
+    StringGroupConsumer.cs
+    GenCounterConsumer.cs
+    AsyncMethodConsumer.cs
+    ExceptionCountConsumer.cs
+    HttpRequestsConsumer.cs
+    ThreadNameConsumer.cs
+    ThreadPoolConsumer.cs
+    LightweightStatsConsumer.cs
+    ConditionalWeakTableConsumer.cs
+  Analyzers/                      Per-command analysis logic (pure POCO in / POCO out)
+    HeapStatsAnalyzer.cs
+    MemoryLeakAnalyzer.cs
+    HighRefsAnalyzer.cs
+    HeapFragmentationAnalyzer.cs
+    StaticRefsAnalyzer.cs
+    EventAnalysisAnalyzer.cs
+    ... (one file per command)
+
+DumpDetective.Reporting/          Output format implementations
+  Sinks/
+    HtmlSink.cs                   Self-contained HTML; inline CSS/JS; sticky nav; virtual scroll
+    MarkdownSink.cs
+    TextSink.cs
+    ConsoleSink.cs
+    JsonSink.cs
+    CaptureSink.cs
+  ReportDocReplay.cs              Replays a ReportDoc through any IRenderSink
+  ToolMemoryDiagnostic.cs         Peak working-set / managed-heap / private-bytes poller
+
+DumpDetective.Commands/           ICommand implementations (one file per command; 31 total)
+  AnalyzeCommand.cs               Orchestrator; runs FullAnalyzeCommands in parallel
+  HeapStatsCommand.cs
+  MemoryLeakCommand.cs
+  ... (one file per command)
+
+DumpDetective.Cli/                Entry point -- the AOT executable
+  Program.cs                      Top-level statements; --debug flag; default HTML output injection
+  Configuration/
+    CommandRegistry.cs            Single source of truth for all ICommand instances
+  Helpers/
+    HelpPrinter.cs                Formats --help output
+
+DumpDetective.Tests/              xUnit test project (no AOT)
+
+dd-thresholds.json                Override default scoring/trend thresholds (place next to exe)
+```
+
+### Dependency graph
+
+```
+Cli ─────────────────────► Commands
+ |                              |
+ |                              v
+ |                          Analysis ─────────┐
+ |                                            |
+ └──────────────► Reporting ────► Core ◄──────┘
 ```
 
 ---
 
 ## Health Score
 
-The `analyze` command produces a score from **0–100** for the dump, deducting points for each finding:
+The `analyze` command produces a score from **0-100** for the dump, deducting points for each finding:
 
 | Signal | Deduction |
 |---|---|
-| Event leak > 1000 subscribers on a single field | −20 |
-| Thread pool saturated | −15 |
-| Heap > 2 GB | −15 |
-| Finalizer queue > 500 objects | −15 |
-| Async backlog > 500 continuations | −10 |
-| Heap fragmentation ≥ 40% | −10 |
-| DB connections > 50 | −10 |
-| LOH > 500 MB | −10 |
-| WCF faulted channels | −10 |
-| Event leaks (moderate) | −10 |
-| Blocked threads > 20 | −10 |
-| Heap fragmentation 20–40% | −5 |
-| Blocked threads 5–20 | −5 |
-| Finalizer queue 100–500 | −5 |
-| Async backlog 100–500 | −5 |
-| Thread pool near capacity | −5 |
-| Exception threads > 5 | −5 |
-| String duplication > 100 MB | −5 |
-| Pinned handles > 2000 | −5 |
-| Timer objects > 500 | −5 |
+| Event leak > 1000 subscribers on a single field | -20 |
+| Thread pool saturated | -15 |
+| Heap > 2 GB | -15 |
+| Finalizer queue > 500 objects | -15 |
+| Async backlog > 500 continuations | -10 |
+| Heap fragmentation >= 40% | -10 |
+| DB connections > 50 | -10 |
+| LOH > 500 MB | -10 |
+| WCF faulted channels | -10 |
+| Event leaks (moderate) | -10 |
+| Blocked threads > 20 | -10 |
+| Heap fragmentation 20-40% | -5 |
+| Blocked threads 5-20 | -5 |
+| Finalizer queue 100-500 | -5 |
+| Async backlog 100-500 | -5 |
+| Thread pool near capacity | -5 |
+| Exception threads > 5 | -5 |
+| String duplication > 100 MB | -5 |
+| Pinned handles > 2000 | -5 |
+| Timer objects > 500 | -5 |
 
-Score labels: **Healthy** (≥85) · **Stable** (≥70) · **Degraded** (≥50) · **Critical** (<50)
+Score labels: **Healthy** (>=85) · **Stable** (>=70) · **Degraded** (>=50) · **Critical** (<50)
+
+Thresholds are fully configurable via `dd-thresholds.json` placed alongside the executable.
+
+---
+
+## Thresholds
+
+Place a `dd-thresholds.json` file next to `DumpDetective.Cli.exe` to override any scoring or trend threshold. Missing or invalid files silently fall back to built-in defaults. See the included `dd-thresholds.json` for the full schema.
