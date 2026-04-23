@@ -15,8 +15,10 @@ public sealed class LargeObjectsAnalyzer
         // Enumerate LOH segments directly to skip ~10 M Gen0/1/2 objects.
         bool lohOnly = minSize >= 85_000;
 
-        CommandBase.RunStatus($"Finding objects ≥ {DumpHelpers.FormatSize(minSize)}...", () =>
+        CommandBase.RunStatus($"Finding objects \u2265 {DumpHelpers.FormatSize(minSize)}...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             IEnumerable<ClrObject> src = lohOnly
                 ? ctx.Heap.Segments
                       .Where(s => s.Kind == GCSegmentKind.Large)
@@ -26,6 +28,12 @@ public sealed class LargeObjectsAnalyzer
             foreach (var obj in src)
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Finding large objects \u2014 {count:N0} LOH objects scanned  \u2022  {objects.Count} found...");
+                    sw.Restart();
+                }
                 long size = (long)obj.Size;
                 if (size < minSize) continue;
 

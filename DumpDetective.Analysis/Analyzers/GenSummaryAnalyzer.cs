@@ -77,11 +77,19 @@ public sealed class GenSummaryAnalyzer
         long gen0c = 0, gen1c = 0, gen2c = 0;
         long frozenObj = 0, frozenSize = 0, pohObj = 0, pohSize = 0;
 
-        CommandBase.RunStatus("Counting objects per generation...", () =>
+        CommandBase.RunStatus("Counting objects per generation...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Counting objects per generation \u2014 {count:N0} objects  \u2022  gen0:{gen0c:N0}  gen1:{gen1c:N0}  gen2:{gen2c:N0}  loh:{pohObj:N0}...");
+                    sw.Restart();
+                }
                 var seg = ctx.Heap.GetSegmentByAddress(obj.Address);
                 if (seg is null) continue;
 

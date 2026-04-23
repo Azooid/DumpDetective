@@ -26,11 +26,19 @@ public sealed class HeapStatsAnalyzer
         var stats = new Dictionary<string, (long Count, long Size, string Gen)>(StringComparer.Ordinal);
         var mtToGen = new Dictionary<ulong, string>();
 
-        CommandBase.RunStatus("Walking heap...", () =>
+        CommandBase.RunStatus("Walking heap...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Walking heap \u2014 {count:N0} objects  \u2022  {stats.Count} types...");
+                    sw.Restart();
+                }
 
                 if (!mtToGen.TryGetValue(obj.Type.MethodTable, out var gen))
                 {

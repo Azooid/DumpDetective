@@ -46,8 +46,8 @@ public sealed class AsyncStacksAnalyzer : IHeapObjectConsumer
         if (ctx.GetAnalysis<AsyncStacksData>() is { } cached) return cached;
 
         Reset();
-        CommandBase.RunStatus("Scanning async state machines...", () =>
-            HeapWalker.Walk(ctx.Heap, [this]));
+        CommandBase.RunStatus("Scanning async state machines...", update =>
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
 
         ctx.SetAnalysis(_result!);
         return _result!;

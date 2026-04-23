@@ -2,7 +2,7 @@
   "profiles": {
     "DumpDetective.Cli": {
       "commandName": "Project",
-      "commandLineArgs": "analyze --help --debug"
+      "commandLineArgs": "thread-analysis \"D:\\Dump\\WCF_dump_final\\senerio2_dump\\w3wp.exe__BALLOADTEST__PID__4672__Date__04_06_2026__Time_06_43_20PM__186__Manual Dump.dmp\" --full"
     }
   }
 }

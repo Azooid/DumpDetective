@@ -12,20 +12,25 @@ public sealed class DeadlockDetectionCommand : ICommand
     }
 
     public string Name               => "deadlock-detection";
-    public string Description        => "Detect potential deadlocks via heuristic stack-frame analysis.";
+    public string Description        => "Detect deadlocks via sync-block ownership and wait-chain analysis.";
     public bool   IncludeInFullAnalyze => true;
 
     private const string Help = """
         Usage: DumpDetective deadlock-detection <dump-file> [options]
 
         Options:
-          --min-threads <N>    Minimum group size to flag (default: 2)
           -o, --output <file>  Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
 
-        Note:
-          Analysis is heuristic (stack-frame based). Use WinDbg !dlk for
-          guaranteed Monitor-level deadlock detection on live data.
+        Analysis steps:
+          1. Enumerate sync blocks to find inflated Monitor locks and their owners.
+          2. Classify threads as Monitor-waiters, independent waiters, or active.
+          3. Build a wait-for graph (waiter → owner) and detect cyclic dependencies.
+
+        Severity:
+          CRITICAL  — circular wait chain confirmed (T1 owns A, waits B; T2 owns B, waits A).
+          WARNING   — contested lock(s) found but no cycle detected (contention, not deadlock).
+          INFO      — independent waiting threads only (WaitOne/Task.Wait/timers — normal).
         """;
 
     public int Run(string[] args)
@@ -33,19 +38,13 @@ public sealed class DeadlockDetectionCommand : ICommand
         var a = CliArgs.Parse(args);
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        int minThreads = a.GetInt("min-threads", 2);
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
-            (ctx, sink) => RenderWith(ctx, sink, minThreads));
+        return CommandBase.Execute(a.DumpPath, a.OutputPath, Render);
     }
 
-    public void Render(DumpContext ctx, IRenderSink sink) => RenderWith(ctx, sink, 2);
-
-
-    private void RenderWith(DumpContext ctx, IRenderSink sink, int minThreads)
+    public void Render(DumpContext ctx, IRenderSink sink)
     {
         CommandBase.RenderHeader("Deadlock Detection", ctx, sink);
-
-        var data = _analyzer.Analyze(ctx, minThreads);
+        var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink);
     }
 }

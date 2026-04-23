@@ -43,14 +43,24 @@ public sealed class HeapFragmentationAnalyzer
         var buckets  = new Dictionary<int, (long Count, long Size)>();
 
         // Single combined walk — fills per-segment live/free bytes AND hole-size distribution.
-        CommandBase.RunStatus("Measuring fragmentation...", () =>
+        CommandBase.RunStatus("Measuring fragmentation...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var seg in ctx.Heap.Segments)
             {
                 if (!segData.TryGetValue(seg.Address, out var info)) continue;
                 foreach (var obj in seg.EnumerateObjects())
                 {
                     if (!obj.IsValid) continue;
+                    count++;
+                    if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                    {
+                        long free = segData.Values.Sum(s => s.FreeBytes);
+                        long live = segData.Values.Sum(s => s.LiveBytes);
+                        update($"Measuring fragmentation \u2014 {count:N0} objects  \u2022  live:{DumpHelpers.FormatSize(live)}  free:{DumpHelpers.FormatSize(free)}...");
+                        sw.Restart();
+                    }
                     long size = (long)obj.Size;
                     if (obj.Type == freeType)
                     {

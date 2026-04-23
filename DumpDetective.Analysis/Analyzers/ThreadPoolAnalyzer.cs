@@ -46,11 +46,19 @@ public sealed class ThreadPoolAnalyzer
 
         if (ctx.Heap.CanWalkHeap)
         {
-            CommandBase.RunStatus("Scanning work items and tasks...", () =>
+            CommandBase.RunStatus("Scanning work items and tasks...", update =>
             {
+                long count = 0;
+                var sw     = System.Diagnostics.Stopwatch.StartNew();
                 foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
                     if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    count++;
+                    if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                    {
+                        update($"Scanning work items and tasks — {count:N0} objects  •  tasks: {taskCounts.Values.Sum()}  work-items: {workItems.Values.Sum()}...");
+                        sw.Restart();
+                    }
                     var name = obj.Type.Name ?? string.Empty;
 
                     if (IsTask(name))

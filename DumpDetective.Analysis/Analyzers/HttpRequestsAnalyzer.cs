@@ -25,11 +25,19 @@ public sealed class HttpRequestsAnalyzer
 
         var found = new List<HttpObjectEntry>();
 
-        CommandBase.RunStatus("Scanning HTTP objects...", () =>
+        CommandBase.RunStatus("Scanning HTTP objects...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Scanning HTTP objects \u2014 {count:N0} objects  \u2022  {found.Count} HTTP objects found...");
+                    sw.Restart();
+                }
                 var name = obj.Type.Name ?? string.Empty;
                 if (!HttpTypeSet.Contains(name)) continue;
 

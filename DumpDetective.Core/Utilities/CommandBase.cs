@@ -120,7 +120,7 @@ public static class CommandBase
             body(ctx, sink);
 
             if (sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+                AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {Markup.Escape(sink.FilePath)}");
             return 0;
         }
         catch (InvalidOperationException ex)
@@ -155,9 +155,29 @@ public static class CommandBase
         return true;
     }
 
+    // ── Timestamp helper ────────────────────────────────────────────────────
+    private static string Now => DateTime.Now.ToString("HH:mm:ss");
+
+    private static string FormatElapsed(long ms) =>
+        ms < 1000 ? $"{ms}ms" : $"{ms / 1000.0:F1}s";
+
+    // Strip trailing "..." from spinner messages before printing as a done line.
+    private static string CleanLabel(string msg) =>
+        msg.EndsWith("...", StringComparison.Ordinal) ? msg[..^3].TrimEnd() : msg;
+
+    private static void PrintDone(string message, long ms)
+    {
+        // Only print the permanent ✓ line when not suppressed (not in parallel mode)
+        if (SuppressVerbose) return;
+        string elapsed = FormatElapsed(ms);
+        string label   = CleanLabel(message);
+        AnsiConsole.MarkupLine($"[dim][[{Now}]][/] [green]✓[/] {Markup.Escape(label)}  [dim]({elapsed})[/]");
+    }
+
     /// <summary>
     /// Runs a spinner with <paramref name="message"/> and executes <paramref name="body"/>.
-    /// No-op (body runs directly) when <see cref="SuppressVerbose"/> is true.
+    /// Prints a permanent timestamped ✓ line when done.
+    /// No-op spinner (body runs directly) when <see cref="SuppressVerbose"/> is true.
     /// Always records label + elapsed time into the active trace if one is running.
     /// </summary>
     public static void RunStatus(string message, Action body)
@@ -173,25 +193,40 @@ public static class CommandBase
         {
             sw.Stop();
             _trace?.Add((message, sw.ElapsedMilliseconds));
+            PrintDone(message, sw.ElapsedMilliseconds);
         }
     }
 
     /// <summary>Overload that provides a status-update callback to the body.</summary>
     public static void RunStatus(string message, Action<Action<string>> body)
     {
-        var sw = Stopwatch.StartNew();
+        var sw          = Stopwatch.StartNew();
+        string lastMsg  = message;  // track final status text for the done line
         try
         {
             if (SuppressVerbose) body(_ => { });
             else AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
-                .Start(message, ctx => body(msg => ctx.Status(msg)));
+                .Start(message, ctx => body(msg => { lastMsg = msg; ctx.Status(msg); }));
         }
         finally
         {
             sw.Stop();
             _trace?.Add((message, sw.ElapsedMilliseconds));
+            PrintDone(lastMsg, sw.ElapsedMilliseconds);
         }
     }
+
+    /// <summary>
+    /// Wraps a <see cref="RunStatus"/> update callback to filter out <c>[SCAN]</c>
+    /// ProgressLogger protocol messages that are not meaningful for spinner display.
+    /// Use this when passing the update callback straight into <c>HeapWalker.Walk</c>.
+    /// </summary>
+    public static Action<string> StatusProgress(Action<string> update) =>
+        msg =>
+        {
+            if (!msg.StartsWith("[SCAN]", StringComparison.Ordinal))
+                update(msg);
+        };
 
     public static void TimedStatus(string message, Action<StatusContext> body)
     {
@@ -209,13 +244,28 @@ public static class CommandBase
     }
 
     /// <summary>
-    /// Emits the standard "Analyzing: …" console line and writes the report header
-    /// to <paramref name="sink"/>.  The full title is <c>"Dump Detective — {title}"</c>.
-    /// Call this as the first line of every command's <c>RenderWith</c> method.
+    /// Emits a ProgressLogger-style section banner and info line, then writes the
+    /// report header to <paramref name="sink"/>.
+    /// Call this as the first line of every command's Render method.
     /// </summary>
     public static void RenderHeader(string title, DumpContext ctx, IRenderSink sink)
     {
-        PrintAnalyzing(ctx.DumpPath);
+        if (!SuppressVerbose)
+        {
+            // Section banner ── Title ─────────────────────────────────────────
+            int w;
+            try   { w = Console.WindowWidth > 20 ? Console.WindowWidth - 1 : 100; }
+            catch { w = 100; }
+            int dashes = Math.Max(4, w - title.Length - 4);
+            AnsiConsole.MarkupLine($"[bold]── {Markup.Escape(title)} {new string('─', dashes)}[/]");
+
+            // Timestamped info line: file | directory | CLR version
+            AnsiConsole.MarkupLine(
+                $"[dim][[{Now}]][/] [blue]ℹ[/] " +
+                $"{Markup.Escape(Path.GetFileName(ctx.DumpPath))}  " +
+                $"[dim]{Markup.Escape(Path.GetDirectoryName(ctx.DumpPath) ?? "")}  |  " +
+                $"CLR {Markup.Escape(ctx.ClrVersion ?? "unknown")}[/]");
+        }
         sink.Header($"Dump Detective — {title}", Subtitle(ctx));
     }
 }

@@ -37,11 +37,19 @@ public sealed class MemoryLeakAnalyzer
         else
         {
             // Slow path — full heap walk
-            CommandBase.RunStatus("Walking heap (Step 1: dumpheap-stat)...", () =>
+            CommandBase.RunStatus("Walking heap (Step 1: dumpheap-stat)...", update =>
             {
+                long count = 0;
+                var  sw    = System.Diagnostics.Stopwatch.StartNew();
                 foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
                     if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    count++;
+                    if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                    {
+                        update($"Walking heap \u2014 {count:N0} objects  \u2022  {typeStats.Count:N0} types  \u2022  size:{DumpHelpers.FormatSize(typeStats.Values.Sum(e => e.Size))}...");
+                        sw.Restart();
+                    }
                     string name = obj.Type.Name ?? "<unknown>";
                     long   size = (long)obj.Size;
                     var    seg  = ctx.Heap.GetSegmentByAddress(obj.Address);

@@ -87,12 +87,18 @@ public sealed class HighRefsAnalyzer
     {
         var counts = new Dictionary<ulong, int>(65536);
         long refs = 0, objs = 0;
-        CommandBase.RunStatus("Counting inbound references...", () =>
+        CommandBase.RunStatus("Counting inbound references...", update =>
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
                 objs++;
+                if ((objs & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Counting inbound references \u2014 {objs:N0} objects  \u2022  {refs:N0} refs  \u2022  {counts.Count:N0} tracked...");
+                    sw.Restart();
+                }
                 foreach (var refAddr in obj.EnumerateReferenceAddresses(carefully: false))
                 {
                     if (refAddr == 0) continue;
@@ -141,11 +147,19 @@ public sealed class HighRefsAnalyzer
         var result = new Dictionary<ulong, Dictionary<string, int>>(addrs.Count);
         foreach (var a in addrs) result[a] = new Dictionary<string, int>(32, StringComparer.Ordinal);
 
-        CommandBase.RunStatus("Profiling referencing types...", () =>
+        CommandBase.RunStatus("Profiling referencing types...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Profiling referencing types \u2014 {count:N0} objects scanned...");
+                    sw.Restart();
+                }
                 string srcType = obj.Type.Name ?? "<unknown>";
                 foreach (var refAddr in obj.EnumerateReferenceAddresses(carefully: false))
                 {

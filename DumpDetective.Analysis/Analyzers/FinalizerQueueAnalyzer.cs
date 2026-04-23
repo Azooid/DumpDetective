@@ -45,11 +45,19 @@ public sealed class FinalizerQueueAnalyzer
         var disposeCache = new Dictionary<ulong, bool>();
         var critCache    = new Dictionary<ulong, bool>();
 
-        CommandBase.RunStatus("Reading finalizer queue...", () =>
+        CommandBase.RunStatus("Reading finalizer queue...", update =>
         {
+            int count = 0;
+            var sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateFinalizableObjects())
             {
                 if (!obj.IsValid) continue;
+                count++;
+                if ((count & 0xFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Reading finalizer queue \u2014 {count:N0} objects  \u2022  {stats.Count} types...");
+                    sw.Restart();
+                }
                 string typeName = obj.Type?.Name ?? "<unknown>";
                 long   size     = (long)obj.Size;
                 int    gen      = GetGen(ctx.Heap, obj.Address);

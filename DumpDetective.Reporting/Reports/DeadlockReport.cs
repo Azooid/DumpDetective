@@ -7,92 +7,147 @@ public sealed class DeadlockReport
 {
     public void Render(DeadlockData data, IRenderSink sink)
     {
+        int monitorWaiters = data.MonitorLocks.Sum(l => l.WaiterManagedIds.Count);
+        int contested      = data.MonitorLocks.Count(l => l.WaiterManagedIds.Count > 0);
+
         sink.Section("Analysis Summary");
         sink.KeyValues([
-            ("Threads total",        data.TotalThreadsByRuntime.ToString("N0")),
-            ("Blocked threads",      data.Blocked.Count.ToString("N0")),
-            ("Named threads found",  data.NamedThreadCount.ToString("N0")),
-            ("Unique blocking types",data.Blocked.Select(b => b.BlockType).Distinct().Count().ToString("N0")),
+            ("Threads total",           data.TotalThreadsByRuntime.ToString("N0")),
+            ("Inflated monitor locks",  data.MonitorLocks.Count.ToString("N0")),
+            ("Contested locks",         contested.ToString("N0")),
+            ("Monitor waiters",         monitorWaiters.ToString("N0")),
+            ("Independent waiters",     data.IndependentWaiters.Count.ToString("N0")),
+            ("Confirmed deadlock cycles", data.ConfirmedCycles.Count.ToString("N0")),
+            ("Named threads found",     data.NamedThreadCount.ToString("N0")),
         ]);
 
-        if (data.Blocked.Count == 0)
-        {
-            sink.Alert(AlertLevel.Info, "No threads appear blocked on synchronization primitives.");
-            return;
-        }
-
-        if (data.Groups.Count > 0)
+        // ── Verdict ──────────────────────────────────────────────────────────
+        if (data.ConfirmedCycles.Count > 0)
         {
             sink.Alert(AlertLevel.Critical,
-                $"{data.Groups.Count} contention group(s) — {data.Groups.Sum(g => g.ThreadIds.Count)} threads blocked on the same type.",
-                "Multiple threads waiting on the same lock type is the primary deadlock indicator.",
-                "Enforce lock ordering, use SemaphoreSlim with CancellationToken timeouts, or convert to async/await.");
-
-            RenderContentionGroups(sink, data);
-            RenderWaitForTable(sink, data);
+                $"{data.ConfirmedCycles.Count} confirmed deadlock cycle(s) detected.",
+                "A circular wait dependency was found: each thread owns a lock while waiting for a lock held by another thread in the cycle.",
+                "Enforce consistent lock-acquisition order (lock hierarchy), use SemaphoreSlim with CancellationToken timeouts, or eliminate shared mutable state.");
+            RenderCycles(sink, data);
+        }
+        else if (contested > 0)
+        {
+            sink.Alert(AlertLevel.Warning,
+                $"{contested} contested monitor lock(s) — {monitorWaiters} thread(s) waiting to enter.",
+                "No cyclic dependency found. This is lock contention, not a deadlock. The owner thread will release the lock once it finishes its critical section.",
+                "Reduce the scope of your lock blocks, consider upgrading to ReaderWriterLockSlim for read-heavy paths, or convert to async/await.");
+        }
+        else if (data.MonitorLocks.Count > 0)
+        {
+            sink.Alert(AlertLevel.Info,
+                $"{data.MonitorLocks.Count} inflated monitor lock(s) held — no waiters, no deadlock.");
+        }
+        else if (data.IndependentWaiters.Count > 0)
+        {
+            sink.Alert(AlertLevel.Info,
+                $"{data.IndependentWaiters.Count} thread(s) are in normal waiting states (WaitOne/Task.Wait/etc.).",
+                "These threads are independently waiting on events, timers, or queues. This is expected for background workers and infrastructure threads.",
+                "No action required unless the application is unresponsive.");
         }
         else
         {
-            sink.Alert(AlertLevel.Warning,
-                $"{data.Blocked.Count} blocked thread(s) — no shared contention type (single-thread contention or I/O wait).");
+            sink.Alert(AlertLevel.Info, "No monitor contention or deadlock indicators found.");
+            return;
         }
 
-        RenderAllBlocked(sink, data);
-        RenderStackDetails(sink, data);
+        // ── Sections ─────────────────────────────────────────────────────────
+        if (data.MonitorLocks.Count > 0)
+            RenderMonitorLocks(sink, data);
+
+        if (data.IndependentWaiters.Count > 0)
+            RenderIndependentWaiters(sink, data);
     }
 
-    private static void RenderContentionGroups(IRenderSink sink, DeadlockData data)
+    // ── Confirmed cycles ─────────────────────────────────────────────────────
+
+    private static void RenderCycles(IRenderSink sink, DeadlockData data)
     {
-        sink.Section("Contention Groups");
-        var rows = data.Groups.Select(g => new[]
+        sink.Section("Deadlock Cycles");
+        for (int i = 0; i < data.ConfirmedCycles.Count; i++)
         {
-            g.LockType,
-            g.ThreadIds.Count.ToString("N0"),
-            string.Join(", ", g.ThreadIds.Select(id => $"T{id}")),
-            g.TopBlockFrame,
-        }).ToList();
-        sink.Table(["Lock Type", "Waiting Threads", "Thread IDs", "Blocking Frame"], rows);
+            var cycle = data.ConfirmedCycles[i];
+            string chain = string.Join(" → ", cycle.ThreadIds.Select(id => $"T{id}"));
+            sink.Alert(AlertLevel.Critical, $"Cycle {i + 1}: {chain}");
+        }
     }
 
-    private static void RenderWaitForTable(IRenderSink sink, DeadlockData data)
-    {
-        sink.Section("Thread → Lock Mapping");
-        var rows = data.Blocked.Select(b => new[]
-        {
-            $"T{b.ManagedId}" + (b.ThreadName is not null ? $" [{b.ThreadName}]" : ""),
-            b.BlockType,
-            b.BlockFrame.Length > 80 ? b.BlockFrame[..77] + "…" : b.BlockFrame,
-        }).ToList();
-        sink.Table(["Thread", "Waiting On Type", "Blocking Frame"], rows);
-    }
+    // ── Monitor locks table ───────────────────────────────────────────────────
 
-    private static void RenderAllBlocked(IRenderSink sink, DeadlockData data)
+    private static void RenderMonitorLocks(IRenderSink sink, DeadlockData data)
     {
-        sink.Section("All Blocked Threads");
-        var rows = data.Blocked.Select(b =>
-        {
-            bool inGroup = data.Groups.Any(g => g.ThreadIds.Contains(b.ManagedId));
-            return new[]
+        sink.Section("Monitor Lock Table");
+        sink.Text(
+            "Source: sync block table (inflated monitors only). " +
+            "An inflated lock means ≥1 thread has entered or is waiting to enter a Monitor.Enter / lock() block.");
+
+        var rows = data.MonitorLocks
+            .OrderByDescending(l => l.WaiterManagedIds.Count)
+            .Select(l =>
             {
-                $"T{b.ManagedId}", $"0x{b.OSThreadId:X4}", b.ThreadName ?? "",
-                b.BlockType, inGroup ? "⚠ GROUP" : "",
-            };
-        }).ToList();
-        sink.Table(["Mgd ID", "OS ID", "Name", "Waiting On", "Flags"], rows);
+                string ownerCell = l.OwnerManagedId.HasValue
+                    ? $"T{l.OwnerManagedId}" + (l.OwnerThreadName is not null ? $" [{l.OwnerThreadName}]" : "")
+                    : "(unknown)";
+                string waitersCell = l.WaiterManagedIds.Count > 0
+                    ? string.Join(", ", l.WaiterManagedIds.Select(id => $"T{id}"))
+                    : "—";
+                return new[]
+                {
+                    l.LockAddress == 0 ? "—" : $"0x{l.LockAddress:X}",
+                    l.LockTypeName,
+                    ownerCell,
+                    waitersCell,
+                    l.WaiterManagedIds.Count.ToString("N0"),
+                    l.RecursionCount > 1 ? l.RecursionCount.ToString() : "",
+                };
+            })
+            .ToList();
+
+        sink.Table(
+            ["Lock Object", "Type", "Owner Thread", "Waiting Threads", "Waiter Count", "Recursion"],
+            rows,
+            "Monitor locks from the sync-block table");
     }
 
-    private static void RenderStackDetails(IRenderSink sink, DeadlockData data)
+    // ── Independent waiters ───────────────────────────────────────────────────
+
+    private static void RenderIndependentWaiters(IRenderSink sink, DeadlockData data)
     {
-        sink.Section("Stack Traces");
-        foreach (var b in data.Blocked)
+        sink.Section("Independent Waiting Threads");
+        sink.Text(
+            "These threads are waiting on WaitHandle/Task/SemaphoreSlim/etc. primitives. " +
+            "They are NOT waiting on each other — this is normal infrastructure behaviour " +
+            "(timer threads, background workers, APM dispatchers). " +
+            "They do NOT indicate a deadlock.");
+
+        var rows = data.IndependentWaiters
+            .OrderBy(w => w.BlockReason)
+            .ThenBy(w => w.ManagedId)
+            .Select(w => new[]
+            {
+                $"T{w.ManagedId}",
+                $"0x{w.OSThreadId:X4}",
+                w.ThreadName ?? "",
+                w.BlockReason,
+                w.TopUserFrame,
+            })
+            .ToList();
+
+        sink.Table(["Mgd ID", "OS ID", "Thread Name", "Wait Primitive", "Top User Frame"], rows);
+
+        // Stack traces (collapsed by default — these are INFO-level)
+        sink.Section("Independent Waiter Stack Traces");
+        foreach (var w in data.IndependentWaiters)
         {
-            bool inGroup = data.Groups.Any(g => g.ThreadIds.Contains(b.ManagedId));
-            string title = $"T{b.ManagedId}" +
-                (b.ThreadName is not null ? $" [{b.ThreadName}]" : "") +
-                $"  waiting on: {b.BlockType}" +
-                (inGroup ? "  ⚠ GROUP" : "");
-            sink.BeginDetails(title, open: inGroup);
-            sink.Table(["Frame"], b.StackFrames.Select(f => new[] { f }).ToList());
+            string title = $"T{w.ManagedId}" +
+                (w.ThreadName is not null ? $" [{w.ThreadName}]" : "") +
+                $"  {w.BlockReason}";
+            sink.BeginDetails(title, open: false);
+            sink.Table(["Frame"], w.StackFrames.Select(f => new[] { f }).ToList());
             sink.EndDetails();
         }
     }

@@ -12,11 +12,17 @@ public sealed class HandleTableAnalyzer
         var byKind = new Dictionary<string, (int Count, long TotalSize, Dictionary<string, (int Count, long Size)> Types)>(StringComparer.Ordinal);
         int total  = 0;
 
-        CommandBase.RunStatus("Scanning GC handles...", () =>
+        CommandBase.RunStatus("Scanning GC handles...", update =>
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             foreach (var h in ctx.Runtime.EnumerateHandles())
             {
                 total++;
+                if ((total & 0xFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Scanning GC handles — {total:N0} handles  •  {byKind.Count} kinds...");
+                    sw.Restart();
+                }
                 var kind = h.HandleKind.ToString();
                 if (filter is not null && !kind.Contains(filter, StringComparison.OrdinalIgnoreCase))
                     continue;

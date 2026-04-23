@@ -39,11 +39,19 @@ public sealed class WeakRefsAnalyzer
     private static IReadOnlyList<CwtInstanceInfo> ScanConditionalWeakTables(DumpContext ctx)
     {
         var result = new List<CwtInstanceInfo>();
-        CommandBase.RunStatus("Scanning for ConditionalWeakTable...", () =>
+        CommandBase.RunStatus("Scanning for ConditionalWeakTable...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Scanning for ConditionalWeakTable \u2014 {count:N0} objects  \u2022  {result.Count} CWT instances found...");
+                    sw.Restart();
+                }
                 var name = obj.Type.Name ?? string.Empty;
                 if (!name.StartsWith("System.Runtime.CompilerServices.ConditionalWeakTable",
                         StringComparison.Ordinal)) continue;

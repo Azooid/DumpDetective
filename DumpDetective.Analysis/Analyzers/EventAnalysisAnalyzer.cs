@@ -86,11 +86,19 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
         var instanceCounts = new Dictionary<(string, string), int>(128);
         var publisherAddrs = new HashSet<ulong>();  // count unique publisher instances
 
-        CommandBase.RunStatus("Scanning event handlers (detailed)...", () =>
+        CommandBase.RunStatus("Scanning event handlers (detailed)...", update =>
         {
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Scanning event handlers \u2014 {count:N0} objects  \u2022  {rawGroups.Count} event fields  \u2022  {publisherAddrs.Count} publishers...");
+                    sw.Restart();
+                }
                 string typeName = obj.Type.Name ?? string.Empty;
                 if (DumpHelpers.IsSystemType(typeName)) continue;
 

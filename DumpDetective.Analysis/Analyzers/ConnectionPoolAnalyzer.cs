@@ -77,8 +77,8 @@ public sealed partial class ConnectionPoolAnalyzer : IHeapObjectConsumer
         if (ctx.GetAnalysis<ConnectionPoolData>() is { } cached) return cached;
 
         Reset();
-        CommandBase.RunStatus("Scanning connection objects...", () =>
-            HeapWalker.Walk(ctx.Heap, [this]));
+        CommandBase.RunStatus("Scanning connection objects...", update =>
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
 
         ctx.SetAnalysis(_result!);
         return _result!;

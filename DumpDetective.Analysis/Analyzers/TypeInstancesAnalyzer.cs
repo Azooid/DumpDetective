@@ -12,13 +12,23 @@ public sealed class TypeInstancesAnalyzer
     {
         var typeMap = new Dictionary<string, (long Count, long TotalSize, int G0, int G1, int G2, int Loh, long MaxSingle, List<InstanceEntry> Largest)>(StringComparer.Ordinal);
 
-        CommandBase.RunStatus($"Scanning for '{typeName}'...", () =>
+        CommandBase.RunStatus($"Scanning for '{typeName}'...", update =>
         {
+            long count = 0;
+            long hits  = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Scanning for '{typeName}' \u2014 {count:N0} objects  \u2022  {hits} matches...");
+                    sw.Restart();
+                }
                 string name = obj.Type.Name ?? "";
                 if (!name.Contains(typeName, StringComparison.OrdinalIgnoreCase)) continue;
+                hits++;
 
                 long size = (long)obj.Size;
                 if (size < minSize) continue;

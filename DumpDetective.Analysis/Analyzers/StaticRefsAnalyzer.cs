@@ -18,12 +18,16 @@ public sealed class StaticRefsAnalyzer
         var fields    = new List<StaticFieldEntry>();
         long totalSz  = 0;
 
-        CommandBase.RunStatus("Scanning static fields...", () =>
+        CommandBase.RunStatus("Scanning static fields...", update =>
         {
+            int modules = 0;
+            int found   = 0;
             foreach (var appDomain in ctx.Runtime.AppDomains)
             {
                 foreach (var module in appDomain.Modules)
                 {
+                    modules++;
+                    update($"Scanning static fields — module {modules}  •  {found} fields found...");
                     foreach (var (mt, _) in module.EnumerateTypeDefToMethodTableMap())
                     {
                         if (mt == 0) continue;
@@ -61,6 +65,7 @@ public sealed class StaticRefsAnalyzer
                                     IsCollection: isCollection,
                                     RetainedSize: retained,
                                     Addr:         obj.Address));
+                                found++;
                             }
                             catch { }
                         }

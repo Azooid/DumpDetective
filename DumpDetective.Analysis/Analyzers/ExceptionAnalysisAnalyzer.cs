@@ -79,8 +79,8 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
         if (ctx.GetAnalysis<ExceptionAnalysisData>() is { } cached) return cached;
 
         Reset();
-        CommandBase.RunStatus("Scanning exception objects...", () =>
-            HeapWalker.Walk(ctx.Heap, [this]));
+        CommandBase.RunStatus("Scanning exception objects...", update =>
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
 
         ctx.SetAnalysis(_result!);
         return _result!;

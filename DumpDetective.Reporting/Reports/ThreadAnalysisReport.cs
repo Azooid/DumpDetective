@@ -12,15 +12,16 @@ public sealed class ThreadAnalysisReport
         int gcCoop = data.Threads.Count(t => t.GcMode == "Cooperative");
         sink.Section("Thread Summary");
         sink.KeyValues([
-            ("Total threads",   data.TotalCount.ToString("N0")),
-            ("Alive",           data.AliveCount.ToString("N0")),
-            ("Likely blocked",  data.BlockedCount.ToString("N0")),
-            ("With exception",  data.WithExceptionCount.ToString("N0")),
-            ("GC cooperative",  gcCoop.ToString("N0")),
-            ("Named threads",   data.NamedCount.ToString("N0")),
+            ("Total threads",       data.TotalCount.ToString("N0")),
+            ("Alive",               data.AliveCount.ToString("N0")),
+            ("Monitor-blocked",     data.MonitorBlockedCount.ToString("N0")),
+            ("Independently waiting", data.IndependentWaitCount.ToString("N0")),
+            ("With exception",      data.WithExceptionCount.ToString("N0")),
+            ("GC cooperative",      gcCoop.ToString("N0")),
+            ("Named threads",       data.NamedCount.ToString("N0")),
         ]);
 
-        // Category breakdown table (matches original ThreadAnalysisCommand.RenderSummary)
+        // Category breakdown table
         var categories = data.Threads
             .GroupBy(t => t.Category)
             .OrderByDescending(g => g.Count())
@@ -29,18 +30,26 @@ public sealed class ThreadAnalysisReport
         if (categories.Count > 1)
             sink.Table(["Category", "Count"], categories, "Thread categories");
 
-        if (data.BlockedCount >= data.TotalCount / 2 && data.TotalCount > 4)
-            sink.Alert(AlertLevel.Critical, $"{data.BlockedCount} of {data.TotalCount} threads are blocked.",
-                "Check for deadlocks — run deadlock-detection for wait-chain analysis.");
-        else if (data.BlockedCount > 0)
-            sink.Alert(AlertLevel.Warning, $"{data.BlockedCount} thread(s) appear blocked on synchronization primitives.");
+        if (data.MonitorBlockedCount >= data.TotalCount / 2 && data.TotalCount > 4)
+            sink.Alert(AlertLevel.Critical,
+                $"{data.MonitorBlockedCount} of {data.TotalCount} threads are waiting to enter a Monitor lock.",
+                "This many contested locks is unusual — likely deadlock or severe contention. Run deadlock-detection for ownership analysis.");
+        else if (data.MonitorBlockedCount > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{data.MonitorBlockedCount} thread(s) are waiting to enter a Monitor lock (contended lock block).",
+                "Run deadlock-detection to check for cyclic wait chains.");
+        if (data.IndependentWaitCount > 0)
+            sink.Alert(AlertLevel.Info,
+                $"{data.IndependentWaitCount} thread(s) are in independent waiting states (WaitHandle/Task.Wait/Semaphore/etc.).",
+                "These are normal background workers, timers, and APM dispatchers — not an indication of deadlock.");
 
         // Apply filters
         var filtered = data.Threads.AsEnumerable();
-        if      (stateFilter == "blocked")  filtered = filtered.Where(t => t.LockInfo is not null);
-        else if (stateFilter == "running")  filtered = filtered.Where(t => t.IsAlive && t.LockInfo is null);
+        if      (stateFilter == "blocked")  filtered = filtered.Where(t => t.WaitKind == WaitKind.Monitor);
+        else if (stateFilter == "waiting")  filtered = filtered.Where(t => t.WaitKind == WaitKind.Independent);
+        else if (stateFilter == "running")  filtered = filtered.Where(t => t.IsAlive && t.WaitKind == WaitKind.None);
         else if (stateFilter == "dead")     filtered = filtered.Where(t => !t.IsAlive);
-        if (blockedOnly)                    filtered = filtered.Where(t => t.LockInfo is not null);
+        if (blockedOnly)                    filtered = filtered.Where(t => t.WaitKind == WaitKind.Monitor);
         if (nameFilter is not null)
             filtered = filtered.Where(t => t.Name?.Contains(nameFilter, StringComparison.OrdinalIgnoreCase) == true);
 

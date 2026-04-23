@@ -15,12 +15,20 @@ public sealed class GcRootsAnalyzer
         bool capped     = false;
 
         // Pass 1: find matching objects
-        CommandBase.RunStatus($"Finding instances of '{typeName}'...", () =>
+        CommandBase.RunStatus($"Finding instances of '{typeName}'...", update =>
         {
-            int found = 0;
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
+            int found  = 0;
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                count++;
+                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Finding instances \u2014 {count:N0} objects scanned  \u2022  {found} matches...");
+                    sw.Restart();
+                }
                 string objType = obj.Type.Name ?? "";
                 if (!objType.Contains(typeName, StringComparison.OrdinalIgnoreCase)) continue;
 

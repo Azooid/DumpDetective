@@ -49,8 +49,8 @@ public sealed class WcfChannelsAnalyzer : IHeapObjectConsumer
         if (ctx.GetAnalysis<WcfChannelsData>() is { } cached) return cached;
 
         Reset();
-        CommandBase.RunStatus("Scanning WCF objects...", () =>
-            HeapWalker.Walk(ctx.Heap, [this]));
+        CommandBase.RunStatus("Scanning WCF objects...", update =>
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
 
         ctx.SetAnalysis(_result!);
         return _result!;

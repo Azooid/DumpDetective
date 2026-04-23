@@ -21,12 +21,18 @@ public sealed class StringDuplicatesAnalyzer
         var dict  = new Dictionary<string, (int Count, long TotalSize)>(StringComparer.Ordinal);
         long totalStrings = 0, totalSize = 0;
 
-        CommandBase.RunStatus("Scanning strings...", () =>
+        CommandBase.RunStatus("Scanning strings...", update =>
         {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             foreach (var obj in ctx.Heap.EnumerateObjects())
             {
                 if (!obj.IsValid || obj.Type?.Name != "System.String") continue;
                 totalStrings++;
+                if ((totalStrings & 0x3FF) == 0 && sw.ElapsedMilliseconds >= 200)
+                {
+                    update($"Scanning strings \u2014 {totalStrings:N0} strings  \u2022  {dict.Count:N0} unique...");
+                    sw.Restart();
+                }
                 long size  = (long)obj.Size;
                 totalSize += size;
                 var val    = obj.AsString(maxLength: 512) ?? string.Empty;
