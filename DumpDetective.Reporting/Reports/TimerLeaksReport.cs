@@ -11,6 +11,13 @@ public sealed class TimerLeaksReport
         sink.Section("Summary");
         if (data.Timers.Count == 0) { sink.Text("No timer objects found."); return; }
 
+        sink.Explain(
+            what: "Counts System.Threading.Timer, System.Timers.Timer, and related scheduling objects on the managed heap.",
+            why: "Timer objects stay alive as long as they are scheduled — even if all user-visible references are released. The timer queue itself holds a GC root.",
+            impact: "Undisposed timers fire callbacks indefinitely, consuming CPU and potentially causing race conditions or crashes long after the owning object is 'gone'.",
+            bullets: ["System.Timers.Timer must be Dispose()-d; it does not self-dispose when its container is collected", "System.Threading.PeriodicTimer is the modern replacement — it is awaitable and naturally tied to async lifetime", "'Period' shows how frequently each timer fires; very short periods with many instances = high CPU burn"],
+            action: "Always Dispose() System.Timers.Timer in IDisposable.Dispose(). For new code, prefer System.Threading.PeriodicTimer inside a background IHostedService."
+        );
         long totalSize = data.Timers.Sum(t => t.Size);
         sink.KeyValues([
             ("Total timer objects", data.Timers.Count.ToString("N0")),

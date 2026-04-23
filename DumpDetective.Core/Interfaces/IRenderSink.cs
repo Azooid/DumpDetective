@@ -28,6 +28,14 @@ public interface IRenderSink : IDisposable
     void BeginDetails(string title, bool open = false);
     void EndDetails();
 
+    /// <summary>
+    /// Emits a structured "explain" block that answers What / Why / Impact / Action.
+    /// HTML renders as a styled card; other sinks render as plain text paragraphs.
+    /// All parameters are optional — pass only the ones relevant to the section.
+    /// </summary>
+    void Explain(string? what, string? why = null, string[]? bullets = null,
+                 string? impact = null, string? action = null);
+
     bool    IsFile   { get; }
     string? FilePath { get; }
 }

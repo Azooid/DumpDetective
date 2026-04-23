@@ -64,7 +64,21 @@ public sealed class MarkdownSink : IRenderSink
     public void BeginDetails(string title, bool open = false)
         { _w.WriteLine($"### {title}"); _w.WriteLine(); }
     public void EndDetails() => _w.WriteLine();
-    public void Dispose()    => _w.Dispose();
+
+    public void Explain(string? what, string? why = null, string[]? bullets = null,
+                        string? impact = null, string? action = null)
+    {
+        _w.WriteLine("> **Context**");
+        if (what   is not null) _w.WriteLine($"> **What:** {what}");
+        if (why    is not null) _w.WriteLine($"> **Why it matters:** {why}");
+        if (impact is not null) _w.WriteLine($"> **Impact:** {impact}");
+        if (bullets is not null)
+            foreach (var b in bullets) _w.WriteLine($"> - {b}");
+        if (action is not null) _w.WriteLine($"> **Recommended action:** {action}");
+        _w.WriteLine();
+    }
+
+    public void Dispose() => _w.Dispose();
 
     private static string E(string s) => s.Replace("|", "\\|").Replace("`", "'");
 }

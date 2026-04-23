@@ -11,6 +11,7 @@ namespace DumpDetective.Core.Json;
 [JsonSerializable(typeof(Finding))]
 [JsonSerializable(typeof(List<Finding>))]
 [JsonSerializable(typeof(ReportDoc))]
+[JsonSerializable(typeof(ReportExplain))]
 [JsonSerializable(typeof(DumpReportEnvelope))]
 [JsonSerializable(typeof(ThresholdConfig))]
 [JsonSerializable(typeof(NameCount))]

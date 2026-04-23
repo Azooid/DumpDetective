@@ -117,5 +117,16 @@ public sealed class CaptureSink : IRenderSink
         if (_detailsStack.Count > 0) _detailsStack.Pop();
     }
 
+    public void Explain(string? what, string? why = null, string[]? bullets = null,
+                        string? impact = null, string? action = null)
+        => CurrentElements().Add(new ReportExplain
+        {
+            What    = what,
+            Why     = why,
+            Impact  = impact,
+            Bullets = bullets,
+            Action  = action,
+        });
+
     public void Dispose() { }
 }

@@ -9,6 +9,13 @@ public sealed class TypeInstancesReport
     public void Render(TypeInstancesData data, IRenderSink sink, bool showAddr = false)
     {
         sink.Section($"Type Instances: {data.SearchTerm}");
+        sink.Explain(
+            what: $"Finds all instances of types matching '{data.SearchTerm}' on the managed heap and reports counts, sizes, and generation distribution.",
+            why: "Useful for answering 'how many of this type exist?' — verifying singleton assumptions, investigating retention, or checking disposal.",
+            impact: "Unexpected instance counts reveal incorrect lifetimes: transient services created as singletons, undisposed objects accumulating in Gen2/LOH.",
+            bullets: ["Gen2 instances survived multiple GC cycles — they are candidates for retention/leak investigation", "LOH instances are large (\u226585 KB) and rarely collected — check if pooling is appropriate", "'Largest Instance' shows the biggest single allocation of that type"],
+            action: "If count far exceeds expected, run gc-roots <dump> --type <TypeName> to trace what is keeping the instances alive."
+        );
 
         if (data.ByType.Count == 0)
         {

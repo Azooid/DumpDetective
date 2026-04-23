@@ -18,6 +18,23 @@ public sealed class HeapStatsReport
         sink.Section("Heap Statistics");
         if (ordered.Count == 0) { sink.Text("No types match the specified filters."); return; }
 
+        sink.Explain(
+            what: "A complete inventory of every managed type currently alive on the heap, " +
+                  "showing instance count and total memory footprint per type.",
+            why:  "Heap statistics are the starting point for any memory investigation. " +
+                  "Types with unexpectedly high counts or large footprints are the primary leak suspects. " +
+                  "Without this view, you cannot see what the application's memory is actually being used for.",
+            bullets:
+            [
+                "Sort by Count to find types that have too many instances (unexpected accumulation)",
+                "Sort by Size to find types consuming the most memory (large objects or many medium-sized objects)",
+                "System.String at high count \u2192 string duplication (run 'string-duplicates <dump>')",
+                "Your own service/model types at high count \u2192 primary leak suspects (run 'memory-leak <dump>')",
+                "Task, CancellationTokenSource, SemaphoreSlim at high count \u2192 async resource leak patterns",
+            ],
+            action: "Identify the top types by count or size. For suspicious types run " +
+                    "'memory-leak <dump>' for GC root chain analysis, or " +
+                    "'type-instances <dump> --type \"TypeName\"' to see individual object addresses.");
         sink.KeyValues([
             ("Types shown",   ordered.Count.ToString("N0")),
             ("Types on heap", data.Types.Count.ToString("N0")),

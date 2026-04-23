@@ -10,6 +10,26 @@ public sealed class EventAnalysisReport
     {
         sink.Section("1. Event Handler Leaks");
 
+        sink.Explain(
+            what: "Event handler subscriptions found on the managed heap. Each row represents an event field " +
+                  "on a publisher object that currently holds one or more subscriber delegate references.",
+            why:  "When a subscriber registers a handler with '+=' but never calls '-=', the publisher's event field " +
+                  "holds a delegate reference to the subscriber. This prevents the garbage collector from reclaiming " +
+                  "the subscriber — and everything the subscriber references — for as long as the publisher is alive.",
+            bullets:
+            [
+                "Static publishers → subscribers will NEVER be garbage collected (GC cannot collect static roots)",
+                "Long-lived publishers (singletons, services) → subscribers outlive their intended lifetime",
+                "Lambda/closure handlers → the closure captures additional objects in its scope, expanding the retained graph",
+                "Duplicate subscriptions → '+=' called multiple times without '-=' matching each call",
+            ],
+            impact: "Event leaks cause silent, unbounded memory growth. Unlike object leaks that show up in heap stats, " +
+                    "event-leaked objects appear 'reachable' from the GC's perspective — they look like intentional retention. " +
+                    "A single static event field can prevent thousands of objects from ever being collected.",
+            action: "For each publisher.Field with high subscribers: verify '-= handler' is called in Dispose(), " +
+                    "during component shutdown, or when the subscriber's lifecycle ends. " +
+                    "Use WeakEventManager or CompositeDisposable for complex subscription lifetimes.");
+
         if (data.Groups.Count == 0)
         {
             sink.Alert(AlertLevel.Info, "No event handler leaks found.");

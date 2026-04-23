@@ -16,6 +16,13 @@ public sealed class ThreadPoolReport
     private static void RenderThreadPoolState(ThreadPoolData data, IRenderSink sink)
     {
         sink.Section("Thread Pool State");
+        sink.Explain(
+            what: "The .NET thread pool manages a shared pool of worker threads used by Task.Run(), async continuations, and timer callbacks.",
+            why: "The pool grows slowly (one thread every ~500 ms via hill-climbing). Once all threads are blocked, new work queues up and latency spikes immediately.",
+            impact: "Pool saturation causes response times to grow into seconds. Service degradation is sudden and hard to diagnose without a dump.",
+            bullets: ["'Active workers' at 100% of max = saturated pool; all work items are queueing", "High WaitingToRun task count = backlog building faster than threads can drain it", "Blocked threads holding the pool: look for Task.Wait(), .Result, Thread.Sleep() in ThreadAnalysis"],
+            action: "Never block a thread-pool thread. Replace Task.Wait() / .Result / .GetAwaiter().GetResult() with await throughout the entire call chain."
+        );
         if (!data.InfoAvailable)
         {
             sink.Alert(AlertLevel.Warning, "ThreadPool information not available in this dump.");

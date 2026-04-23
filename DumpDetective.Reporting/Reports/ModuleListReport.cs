@@ -26,6 +26,13 @@ public sealed class ModuleListReport
     private static void RenderModuleTable(ModuleListData data, IRenderSink sink, int dupCount)
     {
         sink.Section("Loaded Modules");
+        sink.Explain(
+            what: "Lists all managed assemblies (modules) loaded into the process, classified by origin: App, System/framework, or GAC.",
+            why: "Duplicate assembly names loaded from different paths cause type identity mismatches: two 'identical' types from different load paths are not equal.",
+            impact: "Type cast failures, interface mismatch exceptions, and serialization surprises can all stem from having multiple versions of the same assembly loaded.",
+            bullets: ["'App' modules = your code and third-party packages", "'System' modules = .NET runtime framework assemblies", "Duplicate names in 'Duplicate Assemblies' section are the highest priority to investigate"],
+            action: "Ensure binding redirects in app.config point to a single version. Audit multi-targeting or plugin loading scenarios where assemblies are loaded from different directories."
+        );
         var rows = data.Modules
             .Select(m => new[] { m.FileName, m.Kind, DumpHelpers.FormatSize(m.Size), m.Path })
             .ToList();

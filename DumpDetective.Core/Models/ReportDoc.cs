@@ -45,6 +45,7 @@ public sealed class ReportSection
 [JsonDerivedType(typeof(ReportAlert),     "alert")]
 [JsonDerivedType(typeof(ReportText),      "text")]
 [JsonDerivedType(typeof(ReportDetails),   "details")]
+[JsonDerivedType(typeof(ReportExplain),   "explain")]
 public abstract class ReportElement { }
 
 public sealed class ReportKeyValues : ReportElement
@@ -86,6 +87,20 @@ public sealed class ReportDetails : ReportElement
     public string  Title    { get; set; } = string.Empty;
     public bool    Open     { get; set; }
     public List<ReportElement> Elements { get; set; } = [];
+}
+
+/// <summary>
+/// Structured explanation block rendered in HTML as an information card.
+/// Answers: What / Why / Impact / What-to-look-for / Recommended action.
+/// In non-HTML sinks rendered as inline text paragraphs.
+/// </summary>
+public sealed class ReportExplain : ReportElement
+{
+    public string?   What    { get; set; }
+    public string?   Why     { get; set; }
+    public string?   Impact  { get; set; }
+    public string[]? Bullets { get; set; }
+    public string?   Action  { get; set; }
 }
 
 // ── Top-level JSON envelope ───────────────────────────────────────────────────

@@ -10,15 +10,52 @@ public sealed class MemoryLeakReport
     {
         // ── Heap Snapshot section (KVs + gen2/LOH alerts) ─────────────────────
         sink.Section("Heap Snapshot");
+        sink.Explain(
+            what: "Current state of the managed heap: generation sizes, fragmentation, and top types by count. " +
+                  "This is the raw evidence for the memory leak investigation.",
+            why:  "The relative sizes of Gen0/Gen1/Gen2 reveal the lifecycle of objects. " +
+                  "Objects that survive multiple GC cycles promote to higher generations. " +
+                  "If Gen2 keeps growing, objects are accumulating in long-lived memory instead of being collected.",
+            bullets:
+            [
+                "Gen2 > 50% of heap → objects surviving multiple GC cycles — strong leak signal",
+                "LOH growing → large objects (buffers, arrays, datasets) not being released",
+                "Very high total object count → object creation rate significantly exceeds collection rate",
+            ]);
         RenderHeapSnapshot(sink, data, top);
 
         // ── Step 2 — Suspect Types ─────────────────────────────────────────────
         sink.Section("Step 2  —  Suspect Types");
+        sink.Explain(
+            what: "Types with unusually high instance counts or large total memory footprints. " +
+                  "These are candidate leak types — objects accumulating beyond expected steady-state levels.",
+            why:  "A type with thousands of instances when you expect dozens is a strong leak indicator. " +
+                  "The presence of the type alone doesn't confirm a leak — the GC root chain (Step 4) " +
+                  "is needed to confirm why instances cannot be collected.",
+            bullets:
+            [
+                "Look for your own application types (service classes, models, DTOs) at high counts",
+                "System types (Task, CancellationTokenSource, Timer) at high counts indicate framework-level leaks",
+                "Types growing across dumps (use trend-analysis) confirm accumulation vs. transient spike",
+            ],
+            action: "The types in this section are suspects, not confirmed leaks. Proceed to Step 4 to trace GC roots.");
         RenderCountSuspects(sink, data.CountSuspects, data.MinCount, includeSystem);
         RenderSizeSuspects(sink, data.SizeSuspects);
 
         // ── Step 3 — Accumulation Pattern Checks ──────────────────────────────
         sink.Section("Step 3  —  Accumulation Pattern Checks");
+        sink.Explain(
+            what: "Heuristic checks for common leak patterns: collections growing beyond expected size, " +
+                  "static collections with many entries, and type counts suggesting per-request object accumulation.",
+            why:  "Many memory leaks follow recognizable patterns. Static dictionaries that grow without bounds, " +
+                  "event handlers that never unsubscribe, and per-request objects stored in long-lived caches " +
+                  "are the most frequent root causes in .NET applications.",
+            bullets:
+            [
+                "Collections with > 10,000 entries → unbounded growth in a cache or queue",
+                "Static/singleton types accumulating → long-lived objects retaining short-lived objects",
+                "High ratio of service/repository types → DI container scope mismatch (singleton holding scoped)",
+            ]);
         RenderAccumulationPatterns(sink, data);
 
         // ── Findings ───────────────────────────────────────────────────────────
@@ -27,6 +64,22 @@ public sealed class MemoryLeakReport
 
         // ── Step 4 — GC Root Chains ────────────────────────────────────────────
         sink.Section("Step 4  —  GC Root Chains  (gcroot simulation)");
+        sink.Explain(
+            what: "For each suspect type, traces the reference chain from the object back to the root that prevents collection. " +
+                  "The root is a GC handle (static field, thread local, or pinned handle) — the actual source of the leak.",
+            why:  "Knowing that a type has many instances does not tell you WHY they can't be collected. " +
+                  "The GC root chain shows the exact reference path. The last entry in the chain is the retention root — " +
+                  "that is where code changes need to be made.",
+            bullets:
+            [
+                "HandleTable root → a GC handle (usually a static or long-lived field) is holding the object",
+                "Thread root → the object is on a thread's stack or in a local variable of a running method",
+                "Chain: HandleTable → Cache<T> → List<T> → T → means the Cache holds the list which holds your type",
+                "Short chain (1-2 hops) → direct retention, easiest to fix",
+                "Long chain (10+ hops) → indirect retention through complex object graph",
+            ],
+            action: "The last entry in the chain is the root. Remove the reference at the root, " +
+                    "make the cache entry expiring, or ensure the Dispose() path clears the collection.");
         if (data.RootChains.Count == 0)
         {
             sink.Alert(AlertLevel.Info,

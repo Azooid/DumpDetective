@@ -100,7 +100,8 @@ public sealed class HtmlSink : IRenderSink
     {
         CloseSection();
         int id = ++_sectionSeq;
-        string tip = TipHtml(title);
+        // Use sectionKey for tooltip lookup first (stable), fallback to title-matching
+        string tip = sectionKey is not null ? TipHtmlByKey(sectionKey) ?? TipHtml(title) : TipHtml(title);
         _w.WriteLine($"""
             <div class="card" id="s{id}">
               <h2 class="card-title" onclick="toggleCard('s{id}')" title="Click to collapse/expand">
@@ -109,6 +110,17 @@ public sealed class HtmlSink : IRenderSink
               <div class="card-body">
             """);
         _inSection = true;
+    }
+
+    static string? TipHtmlByKey(string key)
+    {
+        foreach (var (k, text) in s_tooltipsByKey)
+            if (k.Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                string lines = string.Join("<br>", text.Split('\n'));
+                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+            }
+        return null;
     }
 
     static string TipHtml(string title)
@@ -156,6 +168,24 @@ public sealed class HtmlSink : IRenderSink
         ("DB Connection Pool",      "SQL/database connection pool usage and leaks.\nPool exhaustion causes timeouts and application hangs."),
         ("HTTP",                    "Outgoing HTTP requests and connection instances.\nStuck or leaked requests indicate downstream service issues."),
         ("Module List",             "Loaded .NET assemblies and native modules.\nUnexpected modules may indicate dynamic injection or leaks."),
+    ];
+
+    // Stable key → tooltip text; used when sectionKey is provided (avoids title-matching fragility)
+    static readonly (string Key, string Text)[] s_tooltipsByKey =
+    [
+        ("findings",              "Scored health signals detected in this dump.\nCritical findings require immediate investigation."),
+        ("memory",                "Managed heap distribution across GC generations.\nGen2 growth is the primary memory leak signal."),
+        ("threads",               "Thread state, blocking, and thread pool pressure.\nBlocked threads and empty idle pool indicate contention or starvation."),
+        ("async-backlog",         "Suspended async/await state machines.\nHigh counts indicate a downstream bottleneck or thread pool starvation."),
+        ("exceptions",            "Exception objects on the heap and active exceptions on threads.\nActive exceptions indicate crash-related conditions."),
+        ("leaks-handles",         "Resource handles, finalizer queue, timers, WCF channels, and connections.\nResource leaks can exhaust system limits before memory pressure is visible."),
+        ("event-leaks",           "Event handler subscriptions preventing garbage collection.\nSubscriber objects cannot be collected while the publisher holds delegate references."),
+        ("string-duplicates",     "Identical string values stored in separate objects.\nDeduplication with string.Intern or shared constants reduces heap pressure."),
+        ("memory-leak-analysis",  "Gen2 percentage and type accumulation analysis.\nGen2 > 50% of heap is a strong managed memory leak signal."),
+        ("heap-fragmentation",    "Free space between live heap objects.\nHigh fragmentation causes allocation failures and GC compaction overhead."),
+        ("finalizer-queue",       "Objects queued for finalization before memory can be reclaimed.\nLarge queues indicate IDisposable pattern violations."),
+        ("deadlock-analysis",     "Circular lock-wait cycles detected from Monitor ownership data.\nA single deadlock halts all threads sharing those locks."),
+        ("gen-breakdown",         "Memory distribution across GC generations.\nGen2 > 70% of heap causes frequent expensive Gen2 collections."),
     ];
 
     public void KeyValues(IReadOnlyList<(string Key, string Value)> pairs, string? title = null)
@@ -283,6 +313,50 @@ public sealed class HtmlSink : IRenderSink
     }
 
     public void EndDetails() => _w.WriteLine("</div></details>");
+
+    public void Explain(string? what, string? why = null, string[]? bullets = null,
+                        string? impact = null, string? action = null)
+    {
+        _w.WriteLine("<div class=\"explain-block\">");
+        if (what is not null)
+        {
+            _w.WriteLine("<div class=\"explain-item\">");
+            _w.WriteLine("<span class=\"explain-label\">What this means</span>");
+            _w.WriteLine($"<p class=\"explain-text\">{H(what)}</p>");
+            _w.WriteLine("</div>");
+        }
+        if (why is not null)
+        {
+            _w.WriteLine("<div class=\"explain-item\">");
+            _w.WriteLine("<span class=\"explain-label\">Why it matters</span>");
+            _w.WriteLine($"<p class=\"explain-text\">{H(why)}</p>");
+            _w.WriteLine("</div>");
+        }
+        if (impact is not null)
+        {
+            _w.WriteLine("<div class=\"explain-item\">");
+            _w.WriteLine("<span class=\"explain-label\">Potential impact</span>");
+            _w.WriteLine($"<p class=\"explain-text\">{H(impact)}</p>");
+            _w.WriteLine("</div>");
+        }
+        if (bullets is { Length: > 0 })
+        {
+            _w.WriteLine("<div class=\"explain-item\">");
+            _w.WriteLine("<span class=\"explain-label\">What to look for</span>");
+            _w.WriteLine("<ul class=\"explain-bullets\">");
+            foreach (var b in bullets) _w.WriteLine($"<li>{H(b)}</li>");
+            _w.WriteLine("</ul>");
+            _w.WriteLine("</div>");
+        }
+        if (action is not null)
+        {
+            _w.WriteLine("<div class=\"explain-item explain-action\">");
+            _w.WriteLine("<span class=\"explain-label\">Recommended action</span>");
+            _w.WriteLine($"<p class=\"explain-text\">{H(action)}</p>");
+            _w.WriteLine("</div>");
+        }
+        _w.WriteLine("</div>");
+    }
 
     public void Dispose()
     {
@@ -446,7 +520,14 @@ public sealed class HtmlSink : IRenderSink
         details[open] summary.det-sum::before{transform:rotate(90deg)}
         details[open] summary.det-sum{border-bottom:1px solid #e2e8f0}
         .details-body{padding:.5rem .8rem}
-
+        /* ── Explain block ─────────────────────────────────────────────────────────────────── */
+        .explain-block{background:#f0f7ff;border:1px solid #bfdbfe;border-left:4px solid #3b82f6;border-radius:6px;padding:.65rem .9rem;margin:.45rem 0 .75rem;display:flex;flex-direction:column;gap:.45rem}
+        .explain-item{display:flex;flex-direction:column;gap:.1rem}
+        .explain-label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#2563eb}
+        .explain-text{font-size:12.5px;color:#1e3a5f;line-height:1.6;margin:0}
+        .explain-bullets{margin:.15rem 0 0 1.1rem;padding:0;list-style:disc;color:#1e3a5f;font-size:12.5px;line-height:1.65}
+        .explain-action{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #16a34a;border-radius:4px;padding:.35rem .6rem}
+        .explain-action .explain-label{color:#15803d}
         /* ── Misc ─────────────────────────────────────────────────────── */
         .body-text{color:#374151;margin:.3rem 0;font-size:13px}
         .ref-link{color:#6b7280;font-size:12px;margin:.4rem 0 .2rem;font-style:italic}.ref-link a{color:#2563eb;text-decoration:none}.ref-link a:hover{text-decoration:underline}

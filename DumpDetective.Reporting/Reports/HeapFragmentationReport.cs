@@ -22,6 +22,24 @@ public sealed class HeapFragmentationReport
         long totalCommitted, long totalFree, double totalFrag)
     {
         sink.Section("Overall Fragmentation");
+        sink.Explain(
+            what: "Heap fragmentation is free space scattered between live objects in the managed heap. " +
+                  "Fragmentation is measured as the percentage of committed heap memory that is free space " +
+                  "but cannot be used for new allocations because it is not contiguous.",
+            why:  "High fragmentation forces the GC to either compact the heap (expensive, causes pauses) " +
+                  "or trigger more frequent GC collections to consolidate free space. " +
+                  "Pinned objects are the most common cause — they prevent the GC from moving live objects during compaction.",
+            bullets:
+            [
+                "Fragmentation > 40% → critical: allocation efficiency is severely impacted",
+                "High pinned count per segment → native interop buffers preventing heap compaction",
+                "LOH always has high fragmentation → normal behavior, but growing LOH with high fragmentation is a problem",
+                "Many free regions of small size → severe fragmentation causing frequent OOM despite available total free",
+            ],
+            impact: "Severe fragmentation can cause OutOfMemoryException even when total heap free space appears adequate. " +
+                    "The GC may be unable to find a contiguous block large enough for a requested allocation.",
+            action: "Run 'pinned-objects <dump>' to see what is pinned and where. " +
+                    "Consider ArrayPool<T> and MemoryPool<T> for I/O buffers to avoid pinning large arrays.");
         sink.KeyValues([
             ("Total committed", Fmt(totalCommitted)),
             ("Total live",      Fmt(data.Segments.Sum(s => s.LiveBytes))),

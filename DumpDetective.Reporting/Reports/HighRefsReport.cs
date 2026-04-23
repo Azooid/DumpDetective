@@ -9,6 +9,13 @@ public sealed class HighRefsReport
     public void Render(HighRefsData data, IRenderSink sink, int minRefs = 10, bool showAddr = false)
     {
         sink.Section("Summary");
+        sink.Explain(
+            what: "Identifies objects with the most inbound references — objects that many other objects point to simultaneously.",
+            why: "Widely-shared objects act as implicit singletons. As long as one live root holds any of the referencing objects, the shared object (and its entire graph) cannot be collected.",
+            impact: "One live root on a widely-shared object can retain hundreds or thousands of other objects, making it appear as if many unrelated objects are 'leaking'.",
+            bullets: ["'Widely shared (≥10 types)' = different kinds of objects all reference this one — an ambient global", "'Cache-like' = Dictionary/List/ConcurrentDictionary types — verify they have eviction policies", "'Retained size' is the estimated graph kept alive through this object"],
+            action: "Investigate whether widely-shared mutable objects should be immutable, split into smaller scopes, or replaced with explicit DI registrations with a scoped lifetime."
+        );
         int maxRefs      = data.Candidates.Count > 0 ? data.Candidates[0].InboundRefs : 0;
         long totalHotSz  = data.Candidates.Sum(c => c.RetainedSize);
         int widelyShared = data.Candidates.Count(c => c.DistinctSourceTypes >= 10);

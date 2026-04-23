@@ -23,6 +23,13 @@ public sealed class WeakRefsReport
         int total, int aliveCount, int alivePercent, int collectedCount)
     {
         sink.Section("Weak Reference Summary");
+        sink.Explain(
+            what: "Weak references allow the GC to collect the referenced object even while the WeakReference<T> itself is still reachable.",
+            why: "Used for caches, event systems, and cross-object communication where the holder should not extend the target's lifetime.",
+            impact: "A high 'Collected' ratio means objects are being collected sooner than callers expect — possible cache thrash or premature disposal.",
+            bullets: ["WeakShort handles: target collected at Gen0/Gen1 GC", "WeakLong handles: target survives until after finalization (useful for post-finalization cleanup)", "ConditionalWeakTable: key → value lifetime coupling — value collected when key is"],
+            action: "If alive% is very low, verify that strong references are held for the expected object lifetime. Check for missing field assignments."
+        );
         sink.KeyValues([
             ("Total weak handles", total.ToString("N0")),
             ("Alive",              $"{aliveCount:N0}  ({alivePercent}%)"),

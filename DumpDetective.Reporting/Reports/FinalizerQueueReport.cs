@@ -10,6 +10,25 @@ public sealed class FinalizerQueueReport
     {
         sink.Section("Finalizer Queue Summary");
 
+        sink.Explain(
+            what: "Objects in the GC finalizer queue are those the garbage collector has determined are unreachable " +
+                  "but which have a Finalize() method (destructor) that must be called before their memory can be reclaimed.",
+            why:  "The finalizer queue is processed by a single dedicated finalizer thread. While an object waits in the " +
+                  "queue, all objects it references are also kept alive — the entire retained graph cannot be collected. " +
+                  "A large or growing queue means cleanup is falling behind creation, often due to IDisposable not being called.",
+            bullets:
+            [
+                "Queue > 500 objects → critical: the application is creating finalizable objects faster than the finalizer thread can process them",
+                "Types in Gen2/LOH → these objects survived multiple GC cycles before finalization, causing maximum GC overhead",
+                "Finalizer thread BLOCKED → all queued objects are stuck — nothing can be cleaned up",
+                "SafeHandle / CriticalFinalizerObject types → native handles (file, socket, DB connections) are not being explicitly released",
+                "Types with IDisposable → these should be using 'using' statements, not relying on finalization",
+            ],
+            impact: "A large finalizer queue delays memory reclamation, increases GC pause times, causes Gen2 growth, " +
+                    "and can exhaust system resources (file handles, native memory, socket descriptors) before managed memory pressure becomes visible.",
+            action: "Identify the top types in the queue. For each: verify Dispose() is called explicitly (or 'using' is used). " +
+                    "Never rely on GC finalization as the primary cleanup path for IDisposable objects.");
+
         if (data.Total == 0) { sink.Text("Finalizer queue is empty — no finalizable objects found."); return; }
 
         int critCount = data.Stats.Values.Where(v => v.IsCritical).Sum(v => v.Count);

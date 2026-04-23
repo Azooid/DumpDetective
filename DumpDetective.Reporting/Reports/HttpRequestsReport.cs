@@ -11,6 +11,13 @@ public sealed class HttpRequestsReport
         sink.Section("Summary");
         if (data.Objects.Count == 0) { sink.Text("No HTTP objects found."); return; }
 
+        sink.Explain(
+            what: "Inventories HttpClient, HttpRequestMessage, HttpResponseMessage and related HTTP objects found on the managed heap.",
+            why: "HttpClient manages a socket connection pool. Each distinct instance opens its own pool. Creating one per request quickly exhausts available sockets.",
+            impact: "Too many HttpClient instances cause SocketException (port exhaustion) and TIME_WAIT socket accumulation in production.",
+            bullets: ["HttpClient/Handler count > 1 is a code smell; > 5 is a confirmed leak", "In-Flight Requests section shows URIs/methods of requests pending at dump time", "Non-2xx response codes indicate the application is retrying failed requests"],
+            action: "Register a single HttpClient via IHttpClientFactory (typed/named client) or use a static shared HttpClient with a SocketsHttpHandler that has PooledConnectionLifetime set."
+        );
         int clientCount = data.Objects.Count(o =>
             o.Type is "System.Net.Http.HttpClient" or
                       "System.Net.Http.HttpClientHandler" or

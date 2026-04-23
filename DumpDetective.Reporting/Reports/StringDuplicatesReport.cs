@@ -30,6 +30,13 @@ public sealed class StringDuplicatesReport
             .Sum(g => { long per = g.TotalSize / g.Count; return per * (g.Count - 1); });
 
         sink.Section("Summary");
+        sink.Explain(
+            what: "String deduplication analysis — finds identical strings that exist as multiple separate objects on the heap.",
+            why: ".NET only interns string literals at compile time. Strings created at runtime (e.g. from databases, config, HTTP responses) are never shared automatically.",
+            impact: "Each duplicate group wastes (copies − 1) × string size bytes. Thousands of identical connection strings or JSON keys can waste hundreds of megabytes.",
+            bullets: ["Sort by 'Wasted' to find the highest-value targets first", "'Pattern' column classifies common shapes: path, url, guid, json, xml", "Strings > 72 chars are truncated in the display"],
+            action: "Use string.Intern() for high-frequency identifiers, or a FrozenDictionary<string, string> as a shared string table."
+        );
         sink.KeyValues([
             ("Total strings",     data.TotalStrings.ToString("N0")),
             ("Total string size", DumpHelpers.FormatSize(data.TotalSize)),

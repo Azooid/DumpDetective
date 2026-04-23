@@ -33,10 +33,40 @@ public static class TrendAnalysisReport
 
         // ── Diagnosis Summary ─────────────────────────────────────────────────
         sink.Section("Diagnosis Summary");
+        sink.Explain(
+            what: "A cross-snapshot comparison of all key health signals. Each row shows how a metric evolved " +
+                  "from the baseline dump to the most recent dump, with severity classification.",
+            why:  "Comparing metrics across time is the most reliable way to distinguish temporary workload spikes " +
+                  "from genuine accumulation patterns. A single elevated snapshot may be normal. " +
+                  "Consistently elevated or worsening metrics indicate unresolved conditions.",
+            bullets:
+            [
+                "✗ Critical — the metric exceeded the critical threshold in the latest dump",
+                "⚠ Warning — the metric exceeded the warning threshold — monitor for further degradation",
+                "✓ Good — the metric is within acceptable range",
+                "A stable ✗ CRITICAL metric does NOT mean it improved — it may have been critical throughout",
+                "↑↑ worsening trend = metric increased significantly from baseline to latest",
+                "↓ improving trend = metric decreased significantly from baseline to latest",
+                "~ stable = metric changed minimally (may still be critical if it was already elevated)",
+            ],
+            impact: "Worsening trends in critical metrics indicate the application's condition is degrading. " +
+                    "Stable critical metrics indicate a persistent unresolved problem. " +
+                    "Only ↓ improving trends with ✓ Good classification indicate genuine recovery.");
         RenderDiagnosisSummary(snaps, s0, sN, labels, baselineLabel, sink);
 
         // ── 0. Dump Timeline ──────────────────────────────────────────────────
         sink.Section("0. Dump Timeline");
+        sink.Explain(
+            what: "The temporal sequence and metadata of all analyzed dump snapshots.",
+            why:  "Understanding the capture timeline helps correlate diagnostic symptoms with specific times. " +
+                  "Dumps taken shortly apart that show persistent critical metrics indicate a chronic problem, " +
+                  "not a transient workload spike.",
+            bullets:
+            [
+                "Closely spaced dumps with worsening metrics → rapid accumulation or escalating incident",
+                "Large time gaps → conditions may have changed significantly between captures",
+                "Consistent health score across all dumps → the issue was present throughout the entire window",
+            ]);
         sink.Table(
             ["Dump", "File", "File Size", "Time", "Threads (Total / Alive)", "Health"],
             snaps.Select((s, i) => new[]
@@ -51,6 +81,20 @@ public static class TrendAnalysisReport
 
         // ── 1. Incident Summary ───────────────────────────────────────────────
         sink.Section("1. Incident Summary");
+        sink.Explain(
+            what: "A scored summary of all monitored signals in the latest dump compared to configured thresholds, " +
+                  "plus finding-level changes between baseline and latest.",
+            why:  "This section translates raw metric values into operational severity levels. It shows not just " +
+                  "what the current values are, but which conditions are new (appeared since baseline) and " +
+                  "which resolved.",
+            bullets:
+            [
+                "New findings (🆕) — conditions that were not present in the baseline dump",
+                "Resolved findings (✅) — conditions that were present in baseline but not in the latest dump",
+                "Findings present in all dumps → chronic unresolved conditions, not temporary spikes",
+            ],
+            action: "Focus investigation on findings present in the latest dump and on metrics with ↑↑ worsening trends. " +
+                    "Resolved findings may indicate temporary workload spikes that self-corrected.");
 
         {
             static string Status(double val, double warnAt, double critAt, bool higherIsBad = true)
@@ -296,6 +340,18 @@ public static class TrendAnalysisReport
 
         // ── 2. Overall Growth Summary ──────────────────────────────────────────
         sink.Section("2. Overall Growth Summary");
+        sink.Explain(
+            what: "Raw metric values for every tracked signal across all dump snapshots, with trend arrows.",
+            why:  "Growth that does not reverse between dumps is the clearest signal of a leak or accumulation problem. " +
+                  "This table shows the full picture across all captured snapshots rather than just baseline vs. latest.",
+            bullets:
+            [
+                "Metrics that monotonically increase across ALL dumps → strong accumulation/leak signal",
+                "Metrics that peak and then stabilize → may indicate a workload spike that resolved",
+                "LOH growing while fragmentation is also high → LOH retention causing allocation pressure",
+                "Event subscriber count growing → event leak accumulating across the capture window",
+                "Finalizer queue growing with heap also growing → IDisposable violations causing retention",
+            ]);
         var growthCols = new[] { "Metric" }.Concat(labels).Append($"Trend ({baselineLabel}→{labels[^1]})").ToArray();
         var growthRows = new List<string[]>();
 
@@ -329,6 +385,20 @@ public static class TrendAnalysisReport
 
         // ── 3. Thread & Application Pressure ──────────────────────────────────
         sink.Section("3. Thread & Application Pressure");
+        sink.Explain(
+            what: "Thread counts, thread pool state, async backlog, and execution-level resource usage across dumps.",
+            why:  "High thread counts, blocked threads, zero idle workers, or a growing async backlog indicate " +
+                  "the application is under execution pressure. This directly affects request throughput and latency.",
+            bullets:
+            [
+                "Async backlog growing → downstream I/O bottleneck or thread pool starvation",
+                "Idle workers decreasing → thread pool consumption increasing, risk of starvation",
+                "Blocked threads increasing → growing lock contention or slow I/O operations",
+                "Timer count growing → Timer objects not being disposed (run 'timer-leaks <dump>')",
+                "DB connections growing → connection pool pressure or connections not being returned",
+            ],
+            impact: "Thread pool starvation causes async operations to queue indefinitely. " +
+                    "Under starvation the application may appear completely unresponsive despite normal CPU utilization.");
         {
             string[] MRow(string lbl2, Func<DumpSnapshot, string> fmt, string trend)
                 => [lbl2, .. snaps.Select(fmt), trend];
@@ -420,6 +490,22 @@ public static class TrendAnalysisReport
 
         // ── 4. Event Leak Analysis ────────────────────────────────────────────
         sink.Section("4. Event Leak Analysis");
+        sink.Explain(
+            what: "Event handler subscription counts tracked per event field across all dumps. " +
+                  "An event leak occurs when subscribers remain referenced by publishers after the subscriber should have been released.",
+            why:  "Because the publisher's event field holds delegate references, the garbage collector cannot reclaim " +
+                  "any object in the subscriber's graph. Growing subscriber counts across dumps prove accumulation — " +
+                  "the object graph is growing in direct proportion to the subscription count.",
+            bullets:
+            [
+                "Subscriber count growing across ALL dumps → subscriptions accumulating, no unsubscription happening",
+                "Count stable but critically high → issue is persistent, not recovering",
+                "Single field with very high count → likely a singleton or static publisher",
+            ],
+            impact: "Event leaks cause silent, unbounded memory growth. The subscriber objects appear 'in use' " +
+                    "from the GC's perspective and will never be collected until the publisher is also collected.",
+            action: "Run 'event-analysis <dump>' for the latest dump to see subscriber types and static publisher detection. " +
+                    "Search call sites for '+=' without corresponding '-=' in Dispose().");
         {
             sink.Table(
                 ["Dump", "Total Instances", "Distinct Event Types", "Max on Single Field"],
@@ -478,6 +564,24 @@ public static class TrendAnalysisReport
 
         // ── 5. Finalize Queue Detail ──────────────────────────────────────────
         sink.Section("5. Finalize Queue Detail");
+        sink.Explain(
+            what: "The number and types of objects waiting in the GC's finalization queue across dumps. " +
+                  "Objects enter the queue when they implement a finalizer (Finalize()/destructor) and the GC " +
+                  "has determined they are unreachable but have not yet been cleaned up.",
+            why:  "Objects in the finalizer queue cannot be reclaimed immediately — they must be processed by the " +
+                  "single finalizer thread first. A growing queue delays memory reclamation and can indicate " +
+                  "that IDisposable is not being called before objects are abandoned.",
+            bullets:
+            [
+                "Queue growing across all dumps → continuous creation of finalizable objects without Dispose()",
+                "Queue stable but elevated → a persistent IDisposable violation, not self-recovering",
+                "Queue decreasing → cleanup behavior improved, but if still > 0 the issue is not fully resolved",
+                "SafeHandle/CriticalFinalizerObject types → native handle release is being delayed",
+            ],
+            impact: "A large finalizer queue increases GC pause times, delays native handle release, and can cause " +
+                    "cascading resource exhaustion (handle limits, connection pool exhaustion).",
+            action: "Run 'finalizer-queue <dump>' for the latest dump to identify which types are in the queue. " +
+                    "Audit IDisposable usage — wrap all IDisposable objects in 'using' statements.");
         {
             sink.Table(
                 ["Dump", "Total in Queue"],
@@ -512,6 +616,20 @@ public static class TrendAnalysisReport
 
         // ── 6. Highly Referenced Objects ──────────────────────────────────────
         sink.Section("6. Highly Referenced Objects");
+        sink.Explain(
+            what: "Types with the highest instance counts across dumps, used as a proxy for highly-referenced objects. " +
+                  "Types with many instances are often roots of large retained object graphs.",
+            why:  "Types accumulating across dumps without decreasing are the primary leak suspects. " +
+                  "High instance counts indicate many objects of that type are alive simultaneously — " +
+                  "either intentionally (legitimate caching) or accidentally (leak).",
+            bullets:
+            [
+                "Type count growing monotonically → strong leak suspect — investigate GC roots",
+                "System.String at high count → string duplication or retained string collections",
+                "Task, CancellationTokenSource, HttpClient → async resource leak patterns",
+                "Your own service/model types accumulating → retained in static collections or event handlers",
+            ],
+            action: "Run 'gc-roots <dump> --type <TypeName>' for the top accumulating types to trace why instances are retained.");
         sink.Text("Reference graph analysis requires a live debugging session or WinDbg/SOS.");
         sink.Text("Use: !gcroot <address>  or  DumpDetective gc-roots <dump> to inspect specific objects.");
         sink.Text("Top types by instance count (proxy for high-fanout objects):");

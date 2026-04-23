@@ -11,6 +11,13 @@ public sealed class PinnedObjectsReport
         sink.Section("Pinned Objects");
         if (data.Items.Count == 0) { sink.Alert(AlertLevel.Info, "No pinned GC handles found."); return; }
 
+        sink.Explain(
+            what: "Pinned objects are fixed at a specific memory address and cannot be moved by the GC during heap compaction.",
+            why: "Pinning is required for P/Invoke interop (native code needs stable addresses). But the GC must work around each pinned object, creating memory holes.",
+            impact: "High pinned counts fragment the Small Object Heap (SOH): the GC cannot compact past pins, leaving 'swiss cheese' free space that can cause OOM.",
+            bullets: ["GCHandle.Pinned (explicit) vs Async-Pinned (I/O buffer pinned by the OS) are counted separately", "Pins in Gen0/Gen1 are most damaging — they block compaction in the youngest generations", "byte[] is by far the most common pinned type (socket I/O buffers)"],
+            action: "Replace GCHandle.Alloc(obj, GCHandleType.Pinned) with Memory<T>/MemoryPool<T>, or use fixed() scoped only to the P/Invoke call boundary."
+        );
         RenderSummary(data, sink);
         RenderTypeBreakdown(data, sink);
         RenderGenDistribution(data, sink);

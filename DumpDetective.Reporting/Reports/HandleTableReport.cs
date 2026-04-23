@@ -11,6 +11,13 @@ public sealed class HandleTableReport
         sink.Section("Handle Summary");
         if (data.Total == 0) { sink.Text("No GC handles found."); return; }
 
+        sink.Explain(
+            what: "The GC Handle Table tracks managed objects that must remain alive or fixed in memory — typically for interop with native code or async I/O.",
+            why: "Handles are categorized by type: Strong (prevents GC), Pinned (fixes in memory for native access), Weak (allows GC), AsyncPinned (OS I/O).",
+            impact: "Unreleased Strong handles leak entire object graphs. Excessive Pinned handles fragment the heap. Many handles can indicate resource leaks.",
+            bullets: ["Strong handles keep objects alive indefinitely — verify each has a corresponding Free() call", "Pinned handles in SOH generations block compaction and cause fragmentation", "WeakShort handles: collected at Gen0; WeakLong: collected after finalization"],
+            action: "Ensure GCHandle.Alloc() is always paired with GCHandle.Free() in a finally block or IDisposable.Dispose()."
+        );
         RenderSummaryTable(sink, data);
         RenderPerKindBreakdown(sink, data, topN);
     }

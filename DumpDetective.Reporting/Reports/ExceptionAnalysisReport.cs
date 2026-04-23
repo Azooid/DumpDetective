@@ -16,6 +16,13 @@ public sealed class ExceptionAnalysisReport
     {
         activeByAddr ??= new Dictionary<ulong, (int, uint, string?, string?, int, string?, IReadOnlyList<string>, IReadOnlyList<string>)>();
 
+        sink.Explain(
+            what: "Inventories all exception objects found on the managed heap, plus any exceptions currently active (in-flight) on managed threads.",
+            why: "Exception objects remain on the heap after being caught if anything holds a reference to them (logs, aggregates, retry logic).",
+            impact: "'⚡ Active' exceptions are in-flight at the moment the dump was captured — they directly indicate what caused the incident.",
+            bullets: ["Focus on ⚡ Active first — these are exceptions on live threads at dump time", "High count of a single type = repeated failures in a tight loop (e.g. retry storms)", "Inner exceptions often reveal the true root cause behind wrapper types", "HResult 0x80131620 = System.InvalidOperationException; 0x80131500 = System.Exception"],
+            action: "Start with the ⚡ Active exception's stack trace to find the exact throw site. Cross-reference with thread-analysis to see if the thread was blocked at the time."
+        );
         sink.Section("1. Exceptions on Heap");
 
         if (data.TotalAll == 0)

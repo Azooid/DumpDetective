@@ -75,5 +75,17 @@ public sealed class ConsoleSink : IRenderSink
     public void BeginDetails(string title, bool open = false)
         => AnsiConsole.MarkupLine($"[bold]▸ {Markup.Escape(title)}[/]");
     public void EndDetails() { }
-    public void Dispose()    { }
+
+    public void Explain(string? what, string? why = null, string[]? bullets = null,
+                        string? impact = null, string? action = null)
+    {
+        if (what   is not null) AnsiConsole.MarkupLine($"  [dim]Context:[/] {Markup.Escape(what)}");
+        if (why    is not null) AnsiConsole.MarkupLine($"  [dim]Why it matters:[/] {Markup.Escape(why)}");
+        if (impact is not null) AnsiConsole.MarkupLine($"  [dim]Impact:[/] {Markup.Escape(impact)}");
+        if (bullets is not null)
+            foreach (var b in bullets) AnsiConsole.MarkupLine($"  [dim]  • {Markup.Escape(b)}[/]");
+        if (action is not null) AnsiConsole.MarkupLine($"  [dim]Action:[/] {Markup.Escape(action)}");
+    }
+
+    public void Dispose() { }
 }

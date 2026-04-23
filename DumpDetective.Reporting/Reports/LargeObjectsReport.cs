@@ -11,6 +11,13 @@ public sealed class LargeObjectsReport
     {
         if (data.Objects.Count == 0) { sink.Text($"No objects \u2265 {DumpHelpers.FormatSize(data.MinSize)} found."); return; }
 
+        sink.Explain(
+            what: "Large Object Heap (LOH) analysis — objects ≥ 85,000 bytes (default) are allocated directly in the LOH, bypassing Gen0/Gen1.",
+            why: "The LOH is only collected during Gen2 GC (an expensive full collection). It is not compacted by default, so free space fragments over time.",
+            impact: "LOH fragmentation causes OutOfMemoryException even when total free space appears sufficient. Large array allocations fail first.",
+            bullets: ["'Type Aggregate' shows which types dominate LOH — byte[] and string[] are common culprits", "'Segment Breakdown' shows how much of each LOH segment is free vs used", "High fragmentation with large free spans = GC cannot satisfy new large allocations"],
+            action: "Pool large buffers with ArrayPool<byte>.Shared or MemoryPool<T> to avoid repeated LOH allocation and fragmentation."
+        );
         sink.KeyValues([
             ("Objects found",   data.Objects.Count.ToString("N0")),
             ("Total size",      DumpHelpers.FormatSize(data.TotalSize)),

@@ -11,6 +11,14 @@ public sealed class StaticRefsReport
         sink.Section("Non-Null Static Reference Fields");
         if (data.Total == 0) { sink.Text("No non-null static reference fields found."); return; }
 
+        sink.Explain(
+            what: "Inventories all non-null static reference fields across all loaded types — these are permanent GC roots.",
+            why: "Static fields are never collected unless explicitly nulled or the AppDomain unloads. Everything reachable from a static field lives forever.",
+            impact: "A growing static collection or cache retains all added objects indefinitely, causing steady memory growth that survives GC.",
+            bullets: ["'Collection fields' = static fields typed as List, Dictionary, ConcurrentDictionary, etc. — these grow unbounded", "'Retained size' is the estimated size of the entire object graph reachable from each field", "Largest declaring type often reveals the biggest problematic singleton"],
+            action: "Replace static state with scoped DI registrations. Use WeakReference<T> or bounded caches (ConcurrentDictionary with TryAdd + eviction) for caches."
+        );
+
         int  collections    = data.Fields.Count(f => f.IsCollection);
         var  sizeByDeclType = data.Fields.GroupBy(f => f.DeclType)
                                          .ToDictionary(g => g.Key, g => g.Sum(f => f.RetainedSize));

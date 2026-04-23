@@ -42,6 +42,25 @@ public sealed class ConnectionPoolReport
         sink.Section("Summary");
         long totalSize = connections.Sum(c => c.Size);
 
+        sink.Explain(
+            what: "Database and data connection objects found on the managed heap, grouped by connection string and state. " +
+                  "Shows how many connections are open, executing, idle, or in error states.",
+            why:  "Each database connection consumes a server-side resource. Connection pool exhaustion — when all pool slots " +
+                  "are occupied — causes all new connection requests to queue or time out. " +
+                  "Connections not properly returned to the pool (not disposed) will never be reused.",
+            bullets:
+            [
+                "High active connections \u2192 heavy database load or connections held open too long",
+                "Connections in 'Broken' or 'Closed' state still on heap \u2192 connection objects not properly disposed",
+                "Pool utilization > 80% \u2192 approaching exhaustion threshold, new requests may start timing out",
+                "Many connection strings \u2192 fragmented pools — each unique connection string has its own pool",
+            ],
+            impact: "Connection pool exhaustion causes System.InvalidOperationException: \"Timeout expired. The timeout period " +
+                    "elapsed prior to obtaining a connection from the pool.\" " +
+                    "This blocks ALL database operations until a connection becomes available.",
+            action: "Ensure all connections are in 'using' blocks or explicitly disposed after use. " +
+                    "Run 'connection-pool <dump>' to see per-connection-string utilization. " +
+                    "Check SqlConnection.ClearPool() or adjust pool size if exhaustion is recurring.");
         sink.KeyValues([
             ("Total connection objects",   connections.Count.ToString("N0")),
             ("Total size",                 DumpHelpers.FormatSize(totalSize)),

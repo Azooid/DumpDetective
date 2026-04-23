@@ -53,6 +53,9 @@ public static class ReportDocReplay
                     ReplayElements(det.Elements, sink);
                     sink.EndDetails();
                     break;
+                case ReportExplain ex:
+                    sink.Explain(ex.What, ex.Why, ex.Bullets, ex.Impact, ex.Action);
+                    break;
             }
         }
     }

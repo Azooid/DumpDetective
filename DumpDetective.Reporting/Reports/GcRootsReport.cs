@@ -9,6 +9,13 @@ public sealed class GcRootsReport
     public void Render(GcRootsData data, IRenderSink sink, bool noIndirect = false)
     {
         sink.Section($"GC Roots: {data.TypeName}");
+        sink.Explain(
+            what: "GC root chain analysis — traces every path from a GC root (stack variable, static field, GC handle) down to instances of the requested type.",
+            why: "An object stays in memory as long as at least one reachable GC root holds a reference to it, directly or through a chain of other objects.",
+            impact: "Objects that appear to have been 'released' stay alive if they are still reachable from a static field, finalizer queue, or live thread.",
+            bullets: ["'Root Kind: Stack' = a local variable on a running thread holds this object", "'Root Kind: Static' = a static field keeps this alive for the process lifetime", "'Root Kind: Finalizer' = object is waiting to be finalized — not yet collected", "1-hop referrers show which objects hold a reference to each instance"],
+            action: "Find the outermost root (usually a static field or long-lived scope) and either scope it properly or set it to null on disposal."
+        );
 
         if (data.Targets.Count == 0)
         {

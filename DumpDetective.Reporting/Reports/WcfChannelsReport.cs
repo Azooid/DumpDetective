@@ -10,6 +10,13 @@ public sealed class WcfChannelsReport
         sink.Section("Summary");
         if (data.Objects.Count == 0) { sink.Text("No WCF objects found."); return; }
 
+        sink.Explain(
+            what: "Inspects Windows Communication Foundation (WCF) channel and proxy objects and their current communication state.",
+            why: "WCF channels follow a state machine: Created → Opening → Opened → Closing → Closed / Faulted. A Faulted channel cannot send any more messages.",
+            impact: "Faulted channels throw CommunicationObjectFaultedException on every call. Calling Close() on a faulted channel throws a second exception, masking the original.",
+            bullets: ["Faulted channels must be Abort()-ed, never Close()-d", "Detect faults proactively via ICommunicationObject.Faulted event subscription", "Multiple channels to the same endpoint = possible channel leak (channels not disposed after use)"],
+            action: "Wrap WCF channel usage in try/catch: on exception or Faulted state, call Abort(). Only call Close() on successfully-completed channels."
+        );
         int faultedTotal = data.Objects.Count(o => o.State == "Faulted");
         int openedTotal  = data.Objects.Count(o => o.State == "Opened");
 

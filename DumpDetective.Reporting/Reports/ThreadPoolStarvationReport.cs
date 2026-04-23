@@ -7,6 +7,13 @@ public sealed class ThreadPoolStarvationReport
 {
     public void Render(ThreadPoolStarvationData data, IRenderSink sink, int top = 10)
     {
+        sink.Explain(
+            what: "Thread pool starvation trace analysis — detects WaitHandleWait events and hill-climbing adjustments from ETW / dotnet-trace captures.",
+            why: "Starvation occurs when blocking calls (.Result, .Wait(), Thread.Sleep) occupy all pool threads, starving queued work items.",
+            impact: "The pool's hill-climbing algorithm slowly injects threads (1 per ~500 ms), but response times remain high until the pool grows enough to drain the backlog.",
+            bullets: ["'Starvation adjustments' = the pool detected starvation and forced a new thread injection", "'WaitHandleWait / MonitorWait' events = a thread-pool thread called .Wait() or .Result", "High thread count + low throughput = classic starvation signature"],
+            action: "Replace every Task.Wait() / .Result / .GetAwaiter().GetResult() on thread-pool threads with 'await'. Use async I/O methods throughout the call chain."
+        );
         sink.Section("Trace Summary");
         sink.KeyValues([
             ("Trace",                       data.TraceInfo),

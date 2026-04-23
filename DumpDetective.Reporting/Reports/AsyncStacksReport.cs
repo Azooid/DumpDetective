@@ -10,6 +10,28 @@ public sealed class AsyncStacksReport
         int total = data.Entries.Count;
 
         sink.Section("Summary");
+        sink.Explain(
+            what: "In-flight async/await state machines at the time the dump was captured. Each state machine " +
+                  "represents a method that executed 'await' and is currently suspended waiting for a Task to complete.",
+            why:  "A large number of suspended state machines indicates a bottleneck somewhere in the async pipeline. " +
+                  "The methods with the highest counts are blocked at the deepest bottleneck. " +
+                  "This could be slow I/O, lock contention, thread pool starvation, or a downstream service timeout.",
+            bullets:
+            [
+                "High count of one method → all async continuations are stalling at that exact await point",
+                "Awaiting HttpClient/SqlCommand/Stream → downstream I/O is slow or timing out",
+                "Awaiting SemaphoreSlim/TaskCompletionSource → explicit throttling or internal serialization",
+                "All methods in 'Awaiting' state → none are actively running — thread pool may be starved",
+                "Growing count across dumps → continuations accumulating faster than they complete",
+            ],
+            impact: "A growing async backlog means the application is scheduling more work than it can complete. " +
+                    "Under sustained backlog, memory grows (each state machine allocates), latency degrades, " +
+                    "and eventually the application becomes unresponsive.",
+            action: "Identify the top suspended method. Check what it is awaiting. " +
+                    "If awaiting I/O: check downstream service health. " +
+                    "If awaiting locks: run 'deadlock-detection <dump>'. " +
+                    "If awaiting thread pool: run 'thread-pool-starvation <dump>'.");
+
         var counts = data.Entries
             .GroupBy(e => (e.Method, e.State))
             .ToDictionary(g => g.Key, g => g.Count());

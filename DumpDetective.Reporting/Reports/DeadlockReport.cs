@@ -11,6 +11,23 @@ public sealed class DeadlockReport
         int contested      = data.MonitorLocks.Count(l => l.WaiterManagedIds.Count > 0);
 
         sink.Section("Analysis Summary");
+        sink.Explain(
+            what: "Deadlock detection using Monitor (lock) ownership data from the process's SyncBlock table. " +
+                  "A deadlock occurs when Thread A holds Lock X and waits for Lock Y, while Thread B holds Lock Y and waits for Lock X.",
+            why:  "A single deadlock causes a complete, permanent application hang for all operations sharing those locks. " +
+                  "The application appears running (CPU may be 0%) but cannot process any requests involving the deadlocked code path.",
+            bullets:
+            [
+                "Confirmed cycle \u2192 actual deadlock: two or more threads are in a circular wait, none can proceed",
+                "Contested lock with no cycle \u2192 lock contention (not deadlock): the owner will eventually release the lock",
+                "Many contested locks with no deadlock \u2192 may indicate serialization bottleneck under high concurrency",
+                "Independent waiters \u2192 normal: threads waiting on events, I/O, queues (not lock-related)",
+            ],
+            impact: "A confirmed deadlock means those threads will never make progress without a process restart. " +
+                    "Any request that tries to acquire one of the deadlocked locks will also hang indefinitely.",
+            action: "For confirmed cycles: identify the lock-acquisition order in the involved code. " +
+                    "Enforce a consistent acquisition order (always acquire Lock A before Lock B). " +
+                    "Consider async alternatives with cancellation timeouts (SemaphoreSlim.WaitAsync with CancellationToken).");
         sink.KeyValues([
             ("Threads total",           data.TotalThreadsByRuntime.ToString("N0")),
             ("Inflated monitor locks",  data.MonitorLocks.Count.ToString("N0")),

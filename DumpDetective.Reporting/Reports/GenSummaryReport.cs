@@ -20,6 +20,22 @@ public sealed class GenSummaryReport
     private static void RenderGenBreakdown(GenSummaryData data, IRenderSink sink, long total, long totalObj)
     {
         sink.Section("Generation Size Breakdown");
+        sink.Explain(
+            what: "Memory distribution across the five GC regions: Gen0 (newest objects), Gen1 (survived one collection), " +
+                  "Gen2 (long-lived objects), LOH (large objects > 85 KB), and POH (pinned objects in .NET 5+).",
+            why:  "The generational GC model assumes most objects die young. Gen0 collections are fast and cheap. " +
+                  "Gen2 collections are expensive and slow. If too much memory is in Gen2, the application spends " +
+                  "disproportionate time in slow Gen2 garbage collections.",
+            bullets:
+            [
+                "Gen2 > 70% of heap \u2192 critical: most objects are long-lived, Gen2 GCs are frequent and slow",
+                "LOH large \u2192 large buffers, arrays, or datasets retained in memory",
+                "POH growing \u2192 pinned memory from native interop increasing heap fragmentation",
+                "Gen0 small relative to Gen2 \u2192 new object allocation is low, but old objects are not being released",
+                "Healthy pattern: Gen0 largest, Gen1 smaller, Gen2 smallest",
+            ],
+            impact: "Excessive Gen2 memory means more frequent expensive GC cycles, longer GC pause times, " +
+                    "and eventually OutOfMemoryException as Gen2 approaches system memory limits.");
         sink.KeyValues([
             ("Gen0",   $"{Fmt(data.Gen0Bytes)}{(totalObj > 0 ? $"  ({data.Gen0ObjCount:N0} objects)" : "")}"),
             ("Gen1",   $"{Fmt(data.Gen1Bytes)}{(totalObj > 0 ? $"  ({data.Gen1ObjCount:N0} objects)" : "")}"),

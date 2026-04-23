@@ -115,8 +115,22 @@ public static class AnalyzeReport
                 "Dump Detective — Analysis Report",
                 $"{Path.GetFileName(s.DumpPath)}  |  {s.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {s.ClrVersion ?? "unknown"}  |  Score: {s.HealthScore}/100");
 
-        // Findings
+        // ── Findings ─────────────────────────────────────────────────────────
         sink.Section("Findings");
+
+        sink.Explain(
+            what: "This section lists all diagnostic signals detected in this dump that exceeded configured thresholds. " +
+                  "Each finding represents a measurable condition that is outside the healthy range for .NET application behavior.",
+            why:  "Findings are the fastest way to identify what is wrong. They are prioritized by severity so " +
+                  "critical conditions are always investigated before warnings. Without this, you would need to " +
+                  "manually inspect dozens of raw metrics across all sections.",
+            bullets: BuildFindingsBullets(s),
+            impact: ScoreImpact(s.HealthScore),
+            action: s.Findings.Count > 0
+                ? "Start from the Critical findings. Each row includes a Recommendation column pointing to the " +
+                  "most effective next diagnostic step."
+                : null);
+
         sink.KeyValues(
         [
             ("Health score", $"{s.HealthScore}/100  [{ScoreLabel(s.HealthScore)}]"),
@@ -193,14 +207,41 @@ public static class AnalyzeReport
             if (warnCount > 0) caption += $"  |  ⚠ {warnCount} warning";
             if (infoCount  > 0) caption += $"  |  ℹ {infoCount} info";
             sink.Table(["Severity", "Category", "Finding", "Evidence", "Recommendation"], findingRows, caption);
+
+            // Severity legend
+            sink.Alert(AlertLevel.Info,
+                "Severity definitions",
+                detail: "✗ Critical — likely affecting stability, scalability, or memory health right now. " +
+                        "⚠ Warning — may cause performance degradation or operational instability under load. " +
+                        "ℹ Info — observed but unlikely to impact runtime stability alone.");
         }
         else
         {
             sink.Alert(AlertLevel.Info, "No findings — all monitored signals within acceptable thresholds.");
         }
 
-        // Memory
+        // Cross-metric narrative based on snapshot data
+        string? narrative = BuildCrossMetricNarrative(s);
+        if (narrative is not null)
+            sink.Alert(AlertLevel.Info, "Diagnostic interpretation", detail: narrative);
+
+        // ── Memory ───────────────────────────────────────────────────────────
         sink.Section("Memory");
+        sink.Explain(
+            what: "Managed heap memory is divided into generations. Gen0 holds newly allocated short-lived objects. " +
+                  "Gen1 is an intermediate buffer. Gen2 holds long-lived objects that survived multiple GC cycles. " +
+                  "LOH (Large Object Heap) holds objects over 85 KB — it is rarely compacted.",
+            why:  "The distribution of memory across generations reveals how the garbage collector is managing your objects. " +
+                  "A growing Gen2 or LOH is the most reliable signal of a memory leak.",
+            bullets:
+            [
+                "Gen2 > 50% of total heap → strong memory leak signal — objects accumulating without release",
+                "LOH growing across dumps → large buffers or arrays not being released",
+                "High fragmentation → increased allocation pressure and potential OutOfMemoryException",
+                "Healthy apps: Gen0 is large, Gen2 is small relative to total heap",
+            ],
+            impact: "If Gen2 continues to grow, the application will eventually exhaust available memory, " +
+                    "causing increasingly long GC pauses, request latency spikes, and eventually OutOfMemoryException.");
         sink.KeyValues(
         [
             ("Total heap",    FormatSize(s.TotalHeapBytes)),
@@ -211,15 +252,62 @@ public static class AnalyzeReport
             ("POH",           FormatSize(s.PohBytes)),
             ("Fragmentation", $"{s.FragmentationPct:F1}%"),
         ]);
+        // Dynamic interpretation of memory distribution
+        if (s.TotalHeapBytes > 0)
+        {
+            double gen2Pct = s.Gen2Bytes * 100.0 / s.TotalHeapBytes;
+            double lohPct  = s.LohBytes  * 100.0 / s.TotalHeapBytes;
+            if (gen2Pct > 50)
+                sink.Alert(AlertLevel.Critical,
+                    $"Gen2 holds {gen2Pct:F1}% of heap — strong retention signal",
+                    detail: "Objects are surviving repeated GC cycles. This indicates persistent long-lived references " +
+                            "preventing garbage collection. The application is likely retaining more memory over time.",
+                    advice: "Run 'memory-leak <dump>' to identify which object types are accumulating and trace their GC root chains.");
+            else if (gen2Pct > 30)
+                sink.Alert(AlertLevel.Warning,
+                    $"Gen2 holds {gen2Pct:F1}% of heap — elevated",
+                    detail: "Gen2 is above the typical healthy range. This may indicate slow leak accumulation. " +
+                            "Compare across multiple dumps to confirm growth.",
+                    advice: "Run 'trend-analysis <d1> <d2>' to confirm growth, then 'memory-leak <dump>' for root cause analysis.");
+            if (lohPct > 20)
+                sink.Alert(AlertLevel.Warning,
+                    $"LOH holds {lohPct:F1}% of heap",
+                    detail: "Large Object Heap is elevated. The LOH is rarely compacted — large objects, arrays, " +
+                            "or buffers that are retained here contribute to long-term memory pressure.",
+                    advice: "Run 'large-objects <dump>' to identify which large objects are being retained.");
+            if (s.FragmentationPct > 30)
+                sink.Alert(AlertLevel.Warning,
+                    $"Heap fragmentation is {s.FragmentationPct:F1}%",
+                    detail: $"{FormatSize(s.HeapFreeBytes)} is free space fragmented between live objects. " +
+                            "High fragmentation forces the GC to do more work and can cause allocation failures " +
+                            "even when total free space appears adequate.",
+                    advice: "Run 'heap-fragmentation <dump>' and 'pinned-objects <dump>' to identify pinned handles causing fragmentation.");
+        }
         if (s.TopTypes.Count > 0)
             sink.Table(
                 ["Type", "Count", "Total Size"],
                 s.TopTypes.Take(25).Select(t =>
                     new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
-                "Top types by size");
+                "Top types by size — types with very high counts or large footprints are the primary leak investigation targets");
 
-        // Threads
+        // ── Threads & Thread Pool ─────────────────────────────────────────────
         sink.Section("Threads & Thread Pool");
+        sink.Explain(
+            what: "This section shows the current state of all managed threads and the .NET thread pool at the time " +
+                  "the dump was captured. It reveals whether the application is under execution pressure.",
+            why:  "Blocked threads indicate lock contention or I/O stalls. Low idle thread pool workers mean " +
+                  "new work items queue up instead of executing immediately — this causes response time degradation. " +
+                  "A large async backlog means async continuations are not completing in time.",
+            bullets:
+            [
+                "Blocked threads > 5 → investigate for deadlocks or slow I/O (run 'deadlock-detection <dump>')",
+                "TP idle workers near 0 → thread pool starvation — async work will be delayed",
+                "Async backlog > 1,000 → downstream bottleneck or thread pool starvation",
+                "Threads with exceptions → may indicate crash-related or unhandled exception conditions",
+            ],
+            impact: "Thread pool starvation causes all async operations to queue up. Request processing slows " +
+                    "dramatically. Under sustained starvation, the application can appear completely unresponsive " +
+                    "even though the CPU and memory are not fully saturated.");
         sink.KeyValues(
         [
             ("Total threads",  s.ThreadCount.ToString("N0")),
@@ -228,28 +316,64 @@ public static class AnalyzeReport
             ("TP active",      $"{s.TpActiveWorkers} / {s.TpMaxWorkers} max"),
             ("TP idle",        s.TpIdleWorkers.ToString()),
         ]);
+        if (s.BlockedThreadCount > 5)
+            sink.Alert(AlertLevel.Warning,
+                $"{s.BlockedThreadCount} blocked threads detected",
+                detail: "A significant number of threads are waiting on locks, I/O, or synchronization primitives. " +
+                        "This reduces available parallelism and can contribute to throughput degradation.",
+                advice: "Run 'thread-analysis <dump>' for detailed stack traces of blocked threads. " +
+                        "Run 'deadlock-detection <dump>' to check for circular wait cycles.");
+        if (s.TpIdleWorkers == 0 && s.TpMaxWorkers > 0)
+            sink.Alert(AlertLevel.Warning,
+                "Thread pool has no idle workers",
+                detail: "All thread pool workers are actively executing or the pool is fully saturated. " +
+                        "New work items will queue and may cause measurable latency spikes.",
+                advice: "Run 'thread-pool-starvation <dump>' to diagnose the thread pool queue depth and worker exhaustion.");
         if (s.AsyncBacklogTotal > 0)
         {
+            if (s.AsyncBacklogTotal > 5_000)
+                sink.Alert(AlertLevel.Critical,
+                    $"Async backlog: {s.AsyncBacklogTotal:N0} pending continuations",
+                    detail: "A critically large number of async state machines are suspended waiting to resume. " +
+                            "This indicates a downstream bottleneck — I/O stalls, lock contention, or thread pool starvation — " +
+                            "is preventing async work from completing.",
+                    advice: "Run 'async-stacks <dump>' to identify which async methods are blocking and how many continuations are queued.");
+            else if (s.AsyncBacklogTotal > 500)
+                sink.Alert(AlertLevel.Warning,
+                    $"Async backlog: {s.AsyncBacklogTotal:N0} pending continuations",
+                    advice: "Run 'async-stacks <dump>' for a breakdown of suspended async methods.");
             sink.KeyValues([("Async backlog", s.AsyncBacklogTotal.ToString("N0"))]);
             if (s.TopAsyncMethods.Count > 0)
                 sink.Table(
                     ["Method", "Count"],
                     s.TopAsyncMethods.Take(10).Select(m => new[] { m.Name, m.Count.ToString("N0") }).ToList(),
-                    "Top suspended async methods");
+                    "Top suspended async methods — methods with high counts are awaiting completion at a bottleneck");
         }
 
-        // Exceptions
+        // ── Exceptions ────────────────────────────────────────────────────────
         if (s.ExceptionCounts.Count > 0 || (ctx is not null && ctx.Runtime.Threads.Any(t => t.CurrentException is not null)))
         {
             sink.Section("Exceptions on Heap");
+            sink.Explain(
+                what: "Exceptions found in the managed heap (created but not yet collected) and active exceptions on thread stacks.",
+                why:  "Exception objects on the heap indicate error conditions that occurred during the application's lifetime. " +
+                      "Active exceptions on threads are the most important — they may have caused or be related to the crash.",
+                bullets:
+                [
+                    "Active exceptions on thread stacks (⚡ ACTIVE) → these caused or are directly related to the problem",
+                    "High exception counts on heap → the application is throwing exceptions frequently, degrading throughput",
+                    "OutOfMemoryException → the application ran out of memory at least once",
+                    "StackOverflowException → recursive loop or deep call chain — may indicate a logic error",
+                ],
+                impact: "Frequent exceptions degrade throughput significantly. Each exception allocates memory, " +
+                        "captures a stack trace, and interrupts the normal execution path. " +
+                        "Active exceptions on thread stacks indicate the application was in a failed state at capture time.");
 
-            // Summary table from snapshot
             if (s.ExceptionCounts.Count > 0)
                 sink.Table(
                     ["Exception Type", "Count"],
                     s.ExceptionCounts.Take(15).Select(e => new[] { e.Name, e.Count.ToString("N0") }).ToList());
 
-            // Active exceptions with stack traces from live threads
             if (ctx is not null)
             {
                 var activeThreads = ctx.Runtime.Threads
@@ -274,7 +398,6 @@ public static class AnalyzeReport
                         infoRows.Add(["Address", $"0x{ex.Address:X16}"]);
                         sink.Table(["Field", "Value"], infoRows);
 
-                        // Original throw stack from ClrException.StackTrace
                         var throwFrames = ex.StackTrace
                             .Select(f => f.ToString() ?? "")
                             .Where(f => f.Length > 0)
@@ -285,7 +408,6 @@ public static class AnalyzeReport
                         else
                             sink.Text("⚠ Original throw stack not available.");
 
-                        // Live thread call stack
                         var threadFrames = t.EnumerateStackTrace(includeContext: false)
                             .Select(f => f.ToString() ?? "")
                             .Where(f => f.Length > 0)
@@ -300,8 +422,24 @@ public static class AnalyzeReport
             }
         }
 
-        // Leaks & Handles
+        // ── Leaks & Handles ───────────────────────────────────────────────────
         sink.Section("Leaks & Handles");
+        sink.Explain(
+            what: "Resource and handle tracking: finalizer queue depth, GC handles, timers, WCF channels, and database connections.",
+            why:  "These metrics identify resources that were created but not properly released. Unlike managed memory leaks, " +
+                  "resource leaks can exhaust system-level limits — connection pool exhaustion, handle limit errors, " +
+                  "or native resource pressure — before memory pressure becomes visible.",
+            bullets:
+            [
+                "Large finalizer queue → objects with Finalize() waiting for cleanup — IDisposable not being called",
+                "High pinned handles → objects pinned for native interop, causing heap fragmentation",
+                "Many timers → Timer objects not being disposed — their callbacks and closures remain alive",
+                "WCF faulted channels → WCF connections in error state not being properly closed",
+                "High DB connections → connection pool under pressure or connections not being returned",
+            ],
+            impact: "Resource leaks can cause: connection pool exhaustion (new DB requests fail), " +
+                    "native handle limit errors, WCF communication failures, and finalizer thread backup " +
+                    "which prevents GC from reclaiming memory efficiently.");
         sink.KeyValues(
         [
             ("Finalizer queue", s.FinalizerQueueDepth.ToString("N0")),
@@ -312,30 +450,85 @@ public static class AnalyzeReport
             ("WCF objects",     $"{s.WcfObjectCount:N0}  (faulted: {s.WcfFaultedCount:N0})"),
             ("DB connections",  s.ConnectionCount.ToString("N0")),
         ]);
+        if (s.FinalizerQueueDepth >= 500)
+            sink.Alert(AlertLevel.Critical,
+                $"Finalizer queue: {s.FinalizerQueueDepth:N0} objects pending cleanup",
+                detail: "A large finalizer queue means hundreds of objects are waiting for their Finalize() " +
+                        "method to run. The finalizer thread is a single thread — a backlog here delays all " +
+                        "resource cleanup and prevents those objects' memory from being reclaimed.",
+                advice: "Run 'finalizer-queue <dump>' to see which types are in the queue. " +
+                        "Audit IDisposable usage — call Dispose() or use 'using' statements to avoid finalizer pressure.");
+        else if (s.FinalizerQueueDepth >= 100)
+            sink.Alert(AlertLevel.Warning,
+                $"Finalizer queue: {s.FinalizerQueueDepth:N0} objects pending cleanup",
+                advice: "Run 'finalizer-queue <dump>' for type breakdown.");
+        if (s.WcfFaultedCount > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{s.WcfFaultedCount:N0} faulted WCF channel(s) detected",
+                detail: "Faulted WCF channels must be explicitly closed with Abort() — they cannot be reused. " +
+                        "Accumulated faulted channels retain memory and their associated resources.",
+                advice: "Run 'wcf-channels <dump>' for channel state details. Ensure WCF clients call Abort() on faulted channels.");
         if (s.TopFinalizerTypes.Count > 0)
             sink.Table(
                 ["Type", "Count"],
                 s.TopFinalizerTypes.Select(t => new[] { t.Name, t.Count.ToString("N0") }).ToList(),
-                "Top finalizer queue types");
+                "Top finalizer queue types — types with high counts are the primary IDisposable violation suspects");
 
-        // Event Leaks (full mode)
+        // ── Event Leaks (full mode) ───────────────────────────────────────────
         if (s.IsFullMode)
         {
             sink.Section("Event Leaks");
+            sink.Explain(
+                what: "Event handler subscriptions found on the heap. An event leak occurs when subscriber objects " +
+                      "remain referenced by publishers after the subscriber should have been released.",
+                why:  "Because the publisher still holds delegate references pointing to the subscriber, " +
+                      "the garbage collector cannot reclaim the subscriber object graph. A single long-lived " +
+                      "publisher — especially a static one — can silently retain thousands of objects indefinitely.",
+                bullets:
+                [
+                    "Static publishers → subscribers on that event will NEVER be garbage collected",
+                    "Growing subscriber count across dumps → subscriptions accumulating without unsubscription",
+                    "High retained bytes → large object graphs are being kept alive by event references",
+                    "Lambda/closure subscribers → the closure captures additional objects in its scope",
+                ],
+                impact: "Event leaks cause silent, unbounded memory growth. They are particularly dangerous because " +
+                        "the retained objects appear to be 'in use' from the GC's perspective — no tool will flag them " +
+                        "as garbage. The only resolution is fixing the subscription lifecycle.",
+                action: "Audit event subscription ownership. Ensure -=  is called in Dispose(), during shutdown, " +
+                        "or use WeakEventManager/IDisposable patterns. Run 'event-analysis <dump>' for full detail.");
             sink.KeyValues(
             [
                 ("Leak fields",       s.EventLeakFieldCount.ToString("N0")),
                 ("Total subscribers", s.EventSubscriberTotal.ToString("N0")),
                 ("Max on one field",  s.EventLeakMaxOnField.ToString("N0")),
             ]);
+            if (s.EventLeakMaxOnField > 1_000)
+                sink.Alert(AlertLevel.Critical,
+                    $"Single event field has {s.EventLeakMaxOnField:N0} subscribers",
+                    detail: "A single event field with over 1,000 subscribers indicates a severe subscription leak. " +
+                            "This is likely a singleton or static publisher accumulating subscriptions over time.",
+                    advice: "Run 'event-analysis <dump>' to identify the publisher and field. Review all += call sites.");
             if (s.TopEventLeaks.Count > 0)
                 sink.Table(
                     ["Publisher Type", "Field", "Subscribers"],
                     s.TopEventLeaks.Select(e =>
                         new[] { e.PublisherType, e.FieldName, e.Subscribers.ToString("N0") }).ToList(),
-                    "Top event leak fields");
+                    "Top event leak fields — highest subscriber counts indicate the most severe leak sources");
 
             sink.Section("String Duplicates");
+            sink.Explain(
+                what: "Identical string values stored in multiple separate String objects on the heap.",
+                why:  "Duplicate strings waste memory — each copy occupies heap space independently. " +
+                      "A large number of duplicates may indicate repeated serialization, redundant cache entries, " +
+                      "or data patterns that could be consolidated.",
+                bullets:
+                [
+                    "High wasted bytes → significant memory could be reclaimed by deduplication",
+                    "Common in HTTP servers: request URLs, header values, JSON keys repeated per-request",
+                    "Connection strings and configuration values often duplicated per-component",
+                ],
+                action: "Run 'string-duplicates <dump>' for the full duplicate list. " +
+                        "Consider string.Intern(), shared constants, or a string pool for high-frequency values.");
             sink.KeyValues(
             [
                 ("Duplicate groups",   s.StringDuplicateGroups.ToString("N0")),
@@ -344,7 +537,7 @@ public static class AnalyzeReport
             ]);
         }
 
-        // Modules
+        // ── Modules ───────────────────────────────────────────────────────────
         sink.Section("Modules");
         sink.KeyValues(
         [
@@ -353,8 +546,28 @@ public static class AnalyzeReport
             ("System/framework", (s.ModuleCount - s.AppModuleCount).ToString("N0")),
         ]);
 
-        // Memory Leak Summary
+        // ── Memory Leak Analysis ──────────────────────────────────────────────
         sink.Section("Memory Leak Analysis");
+        sink.Explain(
+            what: "A focused analysis of memory retention patterns. Gen2 percentage and LOH usage are the primary " +
+                  "indicators of whether the application has a managed memory leak.",
+            why:  "Unlike native leaks, managed memory leaks are caused by objects that are still referenced — " +
+                  "either intentionally (caches, static fields) or accidentally (forgotten event handlers, " +
+                  "static collections, long-lived closures). The GC cannot reclaim any object that is reachable from a root.",
+            bullets:
+            [
+                "Gen2 > 50% → critical leak signal: objects are surviving multiple GC cycles",
+                "Gen2 > 30% → elevated: monitor across dumps to confirm growth",
+                "LOH growth → large buffers or datasets not being released",
+                "High-count types (> 10,000 instances) → accumulating types are primary suspects",
+                "System.String at high count → string duplication or retained string collections",
+            ],
+            impact: "A managed memory leak will eventually cause OutOfMemoryException. " +
+                    "Before that threshold, the application experiences increasing GC pause times, " +
+                    "higher CPU usage from garbage collection, and degraded throughput as the GC " +
+                    "performs increasingly expensive Gen2 collections.",
+            action: "Run 'memory-leak <dump>' for a full suspect analysis including GC root chains. " +
+                    "Run 'gc-roots <dump> --type <TypeName>' to trace why specific objects are retained.");
         {
             double gen2Pct = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
             var strType    = s.TopTypes.FirstOrDefault(t => t.Name == "System.String");
@@ -372,12 +585,16 @@ public static class AnalyzeReport
             if (gen2Pct > 50)
                 sink.Alert(AlertLevel.Critical,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap",
-                    detail: "Objects are surviving multiple GC cycles — strong managed memory leak signal.",
+                    detail: "Objects are surviving multiple GC cycles — strong managed memory leak signal. " +
+                            "The application is retaining object graphs that should have been collected. " +
+                            "This will worsen over time without intervention.",
                     advice: "Run: memory-leak <dump>  for full suspect analysis with GC root chains.");
             else if (gen2Pct > 30)
                 sink.Alert(AlertLevel.Warning,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap",
-                    detail: "Gen2 is elevated. Monitor for growth across multiple dumps.",
+                    detail: "Gen2 is elevated. Monitor for growth across multiple dumps. " +
+                            "A single elevated snapshot may be normal after a workload peak. " +
+                            "Consistent elevation across snapshots is a leak signal.",
                     advice: "Run: trend-analysis <d1> <d2> to confirm growth, then memory-leak <dump>.");
             else
                 sink.Alert(AlertLevel.Info,
@@ -395,9 +612,75 @@ public static class AnalyzeReport
                     ["Type", "Count", "Total Size"],
                     suspects.Select(t =>
                         new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
-                    "High-count / large types — accumulating types are leak suspects. " +
-                    "Run 'memory-leak <dump>' for full Gen2/LOH breakdown + GC root chains.");
+                    "High-count / large types — types accumulating without release are leak suspects. " +
+                    "Run 'memory-leak <dump>' for Gen2/LOH breakdown + GC root chains.");
         }
+    }
+
+    // ── Interpretation helpers ────────────────────────────────────────────────
+
+    private static string[] BuildFindingsBullets(DumpSnapshot s)
+    {
+        int critCount = s.Findings.Count(f => f.Severity == FindingSeverity.Critical);
+        int warnCount = s.Findings.Count(f => f.Severity == FindingSeverity.Warning);
+        var bullets = new List<string>();
+        if (critCount > 0)
+            bullets.Add($"✗ {critCount} critical finding(s) — these require immediate investigation");
+        if (warnCount > 0)
+            bullets.Add($"⚠ {warnCount} warning(s) — review these after addressing critical issues");
+        bullets.Add("Each row includes Evidence (measured values) and a Recommendation pointing to the next step");
+        bullets.Add("A finding means the metric exceeded its configured threshold at the time of capture");
+        bullets.Add("A stable but critically elevated metric may still represent a severe unresolved issue");
+        return [.. bullets];
+    }
+
+    private static string ScoreImpact(int score) => score switch
+    {
+        < 40 => "The application is in a critically degraded state. One or more conditions are likely affecting " +
+                "stability, scalability, or memory health right now. Immediate investigation is warranted.",
+        < 70 => "The application shows signs of degradation. Performance may be impacted and conditions could " +
+                "worsen under additional load. Investigation is recommended before the next production deployment.",
+        _    => "The application appears healthy. All monitored signals are within acceptable ranges. " +
+                "Continue monitoring across multiple dumps to confirm stability.",
+    };
+
+    private static string? BuildCrossMetricNarrative(DumpSnapshot s)
+    {
+        double gen2Pct = s.TotalHeapBytes > 0 ? s.Gen2Bytes * 100.0 / s.TotalHeapBytes : 0;
+        bool highGen2 = gen2Pct > 30;
+        bool highFinalizer = s.FinalizerQueueDepth >= 100;
+        bool highAsync = s.AsyncBacklogTotal > 500;
+        bool highBlocked = s.BlockedThreadCount > 5;
+        bool highEventLeaks = s.EventSubscriberTotal > 500;
+        bool threadPoolPressure = s.TpIdleWorkers == 0 && s.TpMaxWorkers > 0;
+
+        var parts = new List<string>();
+
+        if (highGen2 && highFinalizer)
+            parts.Add($"Gen2 memory retention ({gen2Pct:F1}%) combined with a large finalizer queue ({s.FinalizerQueueDepth:N0} objects) " +
+                      "suggests objects are not being disposed properly — they are surviving to Gen2 and then queuing for finalization instead of " +
+                      "being collected immediately via Dispose().");
+
+        if (highAsync && threadPoolPressure)
+            parts.Add($"A high async backlog ({s.AsyncBacklogTotal:N0} continuations) combined with no idle thread pool workers indicates " +
+                      "async work is completing slowly because worker threads are exhausted. New continuations queue up faster than they are processed.");
+
+        if (highAsync && highBlocked)
+            parts.Add($"Both async backlog ({s.AsyncBacklogTotal:N0}) and blocked threads ({s.BlockedThreadCount:N0}) are elevated. " +
+                      "This pattern often indicates lock contention: async operations are awaiting locks held by blocked threads.");
+
+        if (highGen2 && highEventLeaks)
+            parts.Add($"Gen2 retention and event subscriber accumulation ({s.EventSubscriberTotal:N0} total subscribers) are both elevated. " +
+                      "Event leaks are a common cause of Gen2 growth — the subscriber object graphs cannot be collected because " +
+                      "the publisher's event field still references them.");
+
+        if (highFinalizer && !highGen2)
+            parts.Add($"The finalizer queue is elevated ({s.FinalizerQueueDepth:N0} objects) but Gen2 memory is within range. " +
+                      "This may indicate heavy IDisposable usage without explicit Dispose() calls. The objects are being finalized " +
+                      "rather than disposed, adding pressure to the finalizer thread.");
+
+        if (parts.Count == 0) return null;
+        return string.Join(" — ", parts);
     }
 
     public static string ScoreLabel(int s) => s >= 70 ? "HEALTHY" : s >= 40 ? "DEGRADED" : "CRITICAL";

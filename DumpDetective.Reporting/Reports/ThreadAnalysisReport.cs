@@ -11,6 +11,24 @@ public sealed class ThreadAnalysisReport
     {
         int gcCoop = data.Threads.Count(t => t.GcMode == "Cooperative");
         sink.Section("Thread Summary");
+        sink.Explain(
+            what: "All managed threads in the process at the time of capture: state, wait reason, stack category, " +
+                  "and current exception status.",
+            why:  "Thread state reveals execution health. Monitor-blocked threads are waiting for a lock someone else holds. " +
+                  "Independent waiters are doing normal async work. Many blocked threads means lock contention or potential deadlock.",
+            bullets:
+            [
+                "Monitor-blocked \u2192 waiting to enter a lock (run 'deadlock-detection <dump>' to check for cyclic waits)",
+                "Independent waiting \u2192 expected behavior: timers, event loops, I/O completions, background workers",
+                "With exception \u2192 thread has an active unhandled exception at time of capture",
+                "GC cooperative mode \u2192 thread is in managed code and participating in GC suspension",
+                "High total thread count \u2192 investigate for thread leaks (threads created but not stopped)",
+            ],
+            impact: "Blocked threads reduce available parallelism. If all thread pool workers are blocked, " +
+                    "the pool must spin up new threads (slow) or queue work indefinitely (latency). " +
+                    "Deadlocked threads permanently reduce the thread pool until the process restarts.",
+            action: "If MonitorBlockedCount is high, run 'deadlock-detection <dump>' immediately. " +
+                    "Run 'thread-pool <dump>' for thread pool queue depth and 'async-stacks <dump>' for async backlog.");
         sink.KeyValues([
             ("Total threads",       data.TotalCount.ToString("N0")),
             ("Alive",               data.AliveCount.ToString("N0")),

@@ -68,5 +68,18 @@ public sealed class TextSink : IRenderSink
     public void Reference(string label, string url) => _w.WriteLine($"  📖 {label}: {url}");
     public void BeginDetails(string title, bool open = false) => _w.WriteLine($"  ▸ {title}");
     public void EndDetails() => _w.WriteLine();
-    public void Dispose()    => _w.Dispose();
+
+    public void Explain(string? what, string? why = null, string[]? bullets = null,
+                        string? impact = null, string? action = null)
+    {
+        if (what   is not null) _w.WriteLine($"  [CONTEXT] {what}");
+        if (why    is not null) _w.WriteLine($"  [WHY]     {why}");
+        if (impact is not null) _w.WriteLine($"  [IMPACT]  {impact}");
+        if (bullets is not null)
+            foreach (var b in bullets) _w.WriteLine($"    • {b}");
+        if (action is not null) _w.WriteLine($"  [ACTION]  {action}");
+        _w.WriteLine();
+    }
+
+    public void Dispose() => _w.Dispose();
 }
