@@ -5,6 +5,12 @@ using DumpDetective.Reporting;
 using Spectre.Console;
 
 Console.OutputEncoding = Encoding.UTF8;
+
+// Resolve version from entry assembly (e.g. "1.0.4823") and expose it to all sinks.
+var ver = System.Reflection.Assembly.GetEntryAssembly()?.GetName().Version;
+DumpDetective.Core.Utilities.AppInfo.Version =
+    ver is not null ? $"v{ver.Major}.{ver.Minor}.{ver.Build}.{ver.Revision}" : "dev";
+
 ReportingBootstrap.Register();
 DumpDetective.Core.Utilities.CommandBase.FullAnalyzeCommandsProvider = () => CommandRegistry.FullAnalyzeCommands;
 

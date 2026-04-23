@@ -52,7 +52,7 @@ public sealed class AnalyzeCommand : ICommand
         if (!File.Exists(dumpPath)) { AnsiConsole.MarkupLine($"[bold red]✗[/] file not found: {Markup.Escape(dumpPath)}"); return 1; }
 
         var log = new ProgressLogger();
-        log.SectionHeader("DumpDetective Analysis");
+        log.SectionHeader($"DumpDetective Analysis  {DumpDetective.Core.Utilities.AppInfo.Version}");
         log.Info($"Analyzing dump: {Path.GetFileName(dumpPath)}");
         log.Info("Loading dump file...", indent: true);
 

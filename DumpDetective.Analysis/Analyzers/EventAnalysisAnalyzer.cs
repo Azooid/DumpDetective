@@ -78,7 +78,10 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     // Detailed scan: builds static roots, then walks heap collecting per-subscriber detail.
     private static EventAnalysisData AnalyzeDetailed(DumpContext ctx)
     {
-        var staticRoots = BuildStaticRoots(ctx);
+        // BuildStaticRoots enumerates all modules/types/static fields — can take tens of seconds;
+        // wrapping in RunStatus makes this phase visible in the └─ trace.
+        HashSet<ulong> staticRoots = [];
+        CommandBase.RunStatus("Building static root map...", () => staticRoots = BuildStaticRoots(ctx));
 
         // (publisher, field) → list of subscriber detail
         var rawGroups = new Dictionary<(string Publisher, string Field), List<EventSubscriberInfo>>(128);

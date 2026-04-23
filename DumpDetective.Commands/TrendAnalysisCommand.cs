@@ -95,7 +95,7 @@ public sealed class TrendAnalysisCommand : ICommand
         dumpPaths = [.. dumpPaths.OrderBy(File.GetLastWriteTime)];
 
         var log = new ProgressLogger();
-        log.SectionHeader("DumpDetective Trend Analysis");
+        log.SectionHeader($"DumpDetective Trend Analysis  {DumpDetective.Core.Utilities.AppInfo.Version}");
         log.Info($"{dumpPaths.Count} dump(s) found  [{(full ? "full" : "lightweight")} mode]");
         log.Blank();
 

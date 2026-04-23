@@ -12,6 +12,11 @@
     <RootNamespace>DumpDetective.Cli</RootNamespace>
     <PublishAot>true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- Major.Minor are set here; Patch auto-increments on each build (days since 2000-01-01). -->
+    <!-- Disable deterministic builds so the * wildcard is evaluated at build time.            -->
+    <AssemblyVersion>2.0.*</AssemblyVersion>
+    <Deterministic>false</Deterministic>
+    <NoWarn>$(NoWarn);7035</NoWarn>
   </PropertyGroup>
 
 </Project>

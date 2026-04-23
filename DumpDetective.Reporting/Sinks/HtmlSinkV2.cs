@@ -5,30 +5,26 @@ using DumpDetective.Core.Utilities;
 namespace DumpDetective.Reporting.Sinks;
 
 /// <summary>
-/// Self-contained HTML report output — fully offline, no external dependencies.
-/// Optimised for large combined reports (full analyze / trend-full):
-///   • Auto-built sticky sidebar navigation from chapter headers
-///   • Collapsible card sections (click h2 heading to toggle)
-///   • Client-side table sort (click any column header)
-///   • Live table search / filter input per section
-///   • Virtual scroll for tables with > 200 rows (only renders visible rows)
-///   • Back-to-top button
-///   • Print-friendly styles
-///   • Score badges, alert colour coding, responsive layout
+/// Modern redesign of the HTML sink — fully offline, no external dependencies.
+/// Same features as <see cref="HtmlSink"/> but with a refreshed visual theme:
+///   • Indigo-accent color palette with clean slate sidebar
+///   • Pill-badge labels on Explain blocks
+///   • Tighter card shadows, improved typography
+///   • All layout and interaction features preserved
 /// </summary>
-public sealed class HtmlSink : IRenderSink
+public sealed class HtmlSinkV2 : IRenderSink
 {
     readonly StreamWriter _w;
     bool _inSection;
-    bool _chapterBodyOpen;  // true when a <div class="chapter-body"> is open
-    int  _sectionSeq;      // unique id per section card
-    int  _tableSeq;        // unique id per table (for sort/search)
-    int  _chapterSeq;      // unique id per hero (chapter)
+    bool _chapterBodyOpen;
+    int  _sectionSeq;
+    int  _tableSeq;
+    int  _chapterSeq;
 
     public bool    IsFile   => true;
     public string? FilePath => (_w.BaseStream as FileStream)?.Name;
 
-    public HtmlSink(string path)
+    public HtmlSinkV2(string path)
     {
         _w = new StreamWriter(path, append: false, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
         WriteDocHeader();
@@ -48,7 +44,6 @@ public sealed class HtmlSink : IRenderSink
                 .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(p =>
                 {
-                    // Score chips get colour-coded badge
                     string cls = "chip";
                     if (p.StartsWith("Score:", StringComparison.OrdinalIgnoreCase))
                     {
@@ -64,15 +59,9 @@ public sealed class HtmlSink : IRenderSink
             meta = $"<div class=\"hero-meta\">{string.Join(string.Empty, parts)}</div>";
         }
 
-        // Close the previous chapter-body before opening a new hero.
-        // Without this every chapter-body nests inside the first, breaking the nav.
         if (_chapterBodyOpen)
             _w.WriteLine("</div> <!-- /chapter-body -->");
 
-        // Determine nav level: caller may override via navLevel param (e.g. ReportDocReplay).
-        // Fallback: SuppressVerbose==true → level 2, otherwise level 1.
-        // "Per-Dump Report:" chapters are level 1 (top-level, same as Trend Analysis);
-        // sub-command chapters inside per-dump replays are level 2.
         int resolvedLevel;
         if (navLevelOverride > 0)
             resolvedLevel = navLevelOverride;
@@ -81,7 +70,6 @@ public sealed class HtmlSink : IRenderSink
         else
             resolvedLevel = 1;
 
-        // Strip repetitive prefix for level 2/3 headers
         string displayTitle = resolvedLevel >= 2
             ? System.Text.RegularExpressions.Regex.Replace(title, @"^Dump Detective\s*[—\-]\s*", string.Empty, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
             : title;
@@ -100,11 +88,10 @@ public sealed class HtmlSink : IRenderSink
     {
         CloseSection();
         int id = ++_sectionSeq;
-        // Use sectionKey for tooltip lookup first (stable), fallback to title-matching
         string tip = sectionKey is not null ? TipHtmlByKey(sectionKey) ?? TipHtml(title) : TipHtml(title);
         _w.WriteLine($"""
             <div class="card" id="s{id}">
-              <h2 class="card-title" onclick="toggleCard('s{id}')" title="Click to collapse/expand">
+              <h2 class="card-title" onclick="toggleCard('s{id}')">
                 <span class="card-arrow">▾</span>{H(title)}{tip}
               </h2>
               <div class="card-body">
@@ -118,7 +105,7 @@ public sealed class HtmlSink : IRenderSink
             if (k.Equals(key, StringComparison.OrdinalIgnoreCase))
             {
                 string lines = string.Join("<br>", text.Split('\n'));
-                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+                return $""" <span class="tip-wrap" data-tip="{lines}" onmouseenter="showTip(this)" onmouseleave="hideTip()" onclick="event.stopPropagation()"><span class="tip-icon">?</span></span>""";
             }
         return null;
     }
@@ -129,7 +116,7 @@ public sealed class HtmlSink : IRenderSink
             if (title.Contains(key, StringComparison.OrdinalIgnoreCase))
             {
                 string lines = string.Join("<br>", text.Split('\n'));
-                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+                return $""" <span class="tip-wrap" data-tip="{lines}" onmouseenter="showTip(this)" onmouseleave="hideTip()" onclick="event.stopPropagation()"><span class="tip-icon">?</span></span>""";
             }
         return string.Empty;
     }
@@ -170,7 +157,6 @@ public sealed class HtmlSink : IRenderSink
         ("Module List",             "Loaded .NET assemblies and native modules.\nUnexpected modules may indicate dynamic injection or leaks."),
     ];
 
-    // Stable key → tooltip text; used when sectionKey is provided (avoids title-matching fragility)
     static readonly (string Key, string Text)[] s_tooltipsByKey =
     [
         ("findings",              "Scored health signals detected in this dump.\nCritical findings require immediate investigation."),
@@ -194,18 +180,15 @@ public sealed class HtmlSink : IRenderSink
         _w.WriteLine("<div class=\"kv-grid\">");
         foreach (var (k, v) in pairs)
         {
-            // Try to detect score lines for colour badge
             string valHtml = H(v);
             if (k.Contains("score", StringComparison.OrdinalIgnoreCase) ||
                 k.Contains("health", StringComparison.OrdinalIgnoreCase))
             {
                 if (v.Contains('→'))
                 {
-                    // "95/100 HEALTHY  →  80/100 HEALTHY  (↓ −15 pts)" — render two badges + delta
                     var arrow = v.IndexOf('→');
                     string left  = v[..arrow].Trim();
                     string right = v[(arrow + 1)..].Trim();
-                    // Split trailing delta "(…)" from the right score
                     string delta = string.Empty;
                     var dm = System.Text.RegularExpressions.Regex.Match(right, @"^(.*?)(\s*\([^)]+\))\s*$");
                     if (dm.Success) { right = dm.Groups[1].Value.Trim(); delta = dm.Groups[2].Value.Trim(); }
@@ -244,7 +227,6 @@ public sealed class HtmlSink : IRenderSink
 
         if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
 
-        // Search input
         _w.WriteLine($"""
             <div class="table-toolbar">
               <input class="tbl-search" id="ts{tid}" placeholder="Filter rows…" oninput="filterTable({tid})" autocomplete="off">
@@ -260,8 +242,6 @@ public sealed class HtmlSink : IRenderSink
         _w.WriteLine("</tr></thead>");
         _w.WriteLine("<tbody>");
 
-        // For large tables write all rows but mark overflow rows as lazy (display:none initially)
-        // JS virtual scroll engine will show/hide based on scroll position
         for (int r = 0; r < rows.Count; r++)
         {
             var row = rows[r];
@@ -270,13 +250,11 @@ public sealed class HtmlSink : IRenderSink
             for (int i = 0; i < headers.Length; i++)
             {
                 string cell = i < row.Length ? row[i] : string.Empty;
-                // Color-code cells containing ↑↑ / ↑ / ↓ trend arrows
                 string cellCls = "";
                 if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
                 else if (cell is "↑" or "↑ ↑")  cellCls = " class=\"trend-up\"";
                 else if (cell.StartsWith("↓"))    cellCls = " class=\"trend-dn\"";
                 else if (cell.Length > 80)        cellCls = " class=\"long-text\"";
-                // Colour-code alert-level cells
                 else if (cell is "Critical")      cellCls = " class=\"sev-crit\"";
                 else if (cell is "Warning")       cellCls = " class=\"sev-warn\"";
                 else if (cell is "Info")          cellCls = " class=\"sev-info\"";
@@ -317,7 +295,10 @@ public sealed class HtmlSink : IRenderSink
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
     {
-        _w.WriteLine("<div class=\"explain-block\">");
+        // Rendered as a collapsed accordion in V2 — keeps reports clean;
+        // click "About this section" to expand inline help.
+        _w.WriteLine("<details class=\"explain-accordion\"><summary class=\"explain-summary\"><span class=\"explain-summary-icon\">ℹ</span>About this section</summary>");
+        _w.WriteLine("<div class=\"explain-body\">");
         if (what is not null)
         {
             _w.WriteLine("<div class=\"explain-item\">");
@@ -355,7 +336,7 @@ public sealed class HtmlSink : IRenderSink
             _w.WriteLine($"<p class=\"explain-text\">{H(action)}</p>");
             _w.WriteLine("</div>");
         }
-        _w.WriteLine("</div>");
+        _w.WriteLine("</div></details>");
     }
 
     public void Dispose()
@@ -373,7 +354,7 @@ public sealed class HtmlSink : IRenderSink
     {
         if (_inSection)
         {
-            _w.WriteLine("</div></div>"); // .card-body + .card
+            _w.WriteLine("</div></div>");
             _inSection = false;
         }
     }
@@ -384,10 +365,12 @@ public sealed class HtmlSink : IRenderSink
          .Replace(">", "&gt;")
          .Replace("\"", "&quot;");
 
-    // ── Document head + CSS + skeleton ───────────────────────────────────────
+    void WriteDocHeader() =>
+        _w.Write(DocHeader.Replace("{APP_VERSION}", DumpDetective.Core.Utilities.AppInfo.Version));
 
-    void WriteDocHeader() => _w.Write(DocHeader);
+    // ── Document head + CSS ───────────────────────────────────────────────────
 
+    // {APP_VERSION} is replaced at write time with AppInfo.Version (set from the entry assembly).
     const string DocHeader = """
         <!DOCTYPE html>
         <html lang="en">
@@ -396,170 +379,204 @@ public sealed class HtmlSink : IRenderSink
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Dump Detective Report</title>
         <style>
-        /* ── Reset / Base ─────────────────────────────────────────────── */
+        /* ── Reset / Base ───────────────────────────────────────────────────────── */
         *{box-sizing:border-box;margin:0;padding:0}
         html{scroll-behavior:smooth}
-        body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f0f4f8;color:#1a202c;font-size:14px;line-height:1.55;display:flex;min-height:100vh}
+        body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;background:#f3f4f8;color:#1a1f2e;font-size:13px;line-height:1.55;display:flex;min-height:100vh}
 
-        /* ── Sidebar nav ──────────────────────────────────────────────── */
-        #sidebar{position:sticky;top:0;height:100vh;width:200px;min-width:180px;overflow-y:auto;background:#1e293b;color:#cbd5e1;padding:.75rem .6rem;flex-shrink:0;font-size:12px}
-        #sidebar h3{color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;font-size:10px;margin-bottom:.5rem;padding-bottom:.3rem;border-bottom:1px solid #334155}
-        #sidebar a{display:block;padding:.25rem .45rem;color:#94a3b8;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .12s,color .12s;font-size:11.5px}
-        #sidebar a:hover,#sidebar a.active{background:#334155;color:#e2e8f0}
-        .nav-chapter{margin-top:.55rem}
-        .nav-chapter>.nav-title{display:block;padding:.25rem .45rem;color:#e2e8f0;font-weight:600;font-size:11.5px;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .nav-chapter>.nav-title:hover{background:#334155}
-        .nav-card{padding-left:1rem!important;font-size:11px!important;color:#7e93b5!important}
-        .nav-subreports{display:block;padding:.2rem .45rem .2rem 1rem;font-size:11px;color:#475569;cursor:pointer;border-radius:4px;text-decoration:none;user-select:none}
-        .nav-subreports:hover{background:#334155;color:#94a3b8}
-        .nav-sub-chapters{display:none;border-left:1px solid #334155;margin:.1rem 0 .1rem .55rem}
+        /* ── Sidebar nav (light, tree-style) ────────────────────────────────────── */
+        #sidebar{position:sticky;top:0;height:100vh;width:220px;min-width:195px;overflow-y:auto;background:#fff;border-right:1px solid #e5e7eb;flex-shrink:0;display:flex;flex-direction:column;scrollbar-width:thin;scrollbar-color:#e5e7eb transparent}
+        #sidebar::-webkit-scrollbar{width:4px}
+        #sidebar::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px}
+        /* Brand bar */
+        .nav-brand{display:flex;align-items:center;gap:.6rem;padding:.75rem .85rem .7rem;border-bottom:1px solid #e9eaf0;flex-shrink:0;background:#fff}
+        .nav-brand-icon{width:28px;height:28px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:900;flex-shrink:0;letter-spacing:-.5px;box-shadow:0 2px 6px rgba(79,70,229,.3)}
+        .nav-brand-text{display:flex;flex-direction:column;overflow:hidden}
+        .nav-brand-title{font-size:12px;font-weight:700;color:#1a1f2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .nav-brand-sub{font-size:9px;color:#9ca3af;letter-spacing:.06em;text-transform:uppercase}
+        /* Search */
+        .nav-search-wrap{padding:.5rem .75rem .45rem;border-bottom:1px solid #f3f4f6;flex-shrink:0}
+        #search-box{width:100%;padding:.3rem .6rem .3rem 1.8rem;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") .5rem center/12px no-repeat;color:#374151;font-size:11px;outline:none;transition:border-color .12s,background .12s}
+        #search-box::placeholder{color:#9ca3af}
+        #search-box:focus{border-color:#4f46e5;background:#fff}
+        /* Nav content */
+        .nav-inner{padding:.4rem .6rem .8rem;flex:1}
+        .nav-section-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#9ca3af;padding:.6rem .4rem .2rem;margin-top:.1rem}
+        #sidebar a{display:block;padding:.24rem .55rem;color:#6b7280;text-decoration:none;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .1s,color .1s;font-size:11.5px;line-height:1.45}
+        #sidebar a:hover{background:#f3f4f8;color:#1a1f2e}
+        #sidebar a.active{background:#ede9fe;color:#4f46e5;font-weight:600}
+        /* Chapter groups */
+        .nav-chapter{margin-top:.3rem}
+        .nav-chapter>.nav-title{display:flex;align-items:center;gap:.3rem;padding:.26rem .55rem;color:#374151;font-weight:700;font-size:11.5px;text-decoration:none;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .nav-chapter>.nav-title::before{content:"▸";font-size:.65rem;color:#4f46e5;flex-shrink:0}
+        .nav-chapter>.nav-title:hover{background:#f3f4f8;color:#1a1f2e}
+        .nav-card{padding-left:1.1rem!important;font-size:11px!important;color:#9ca3af!important}
+        .nav-card:hover{color:#374151!important;background:#f3f4f8!important}
+        /* Sub-reports toggle */
+        .nav-subreports{display:block;padding:.2rem .55rem .2rem 1.05rem;font-size:11px;color:#9ca3af;cursor:pointer;border-radius:5px;text-decoration:none;user-select:none;transition:background .1s,color .1s}
+        .nav-subreports:hover{background:#f3f4f8;color:#374151}
+        .nav-sub-chapters{display:none;margin:.06rem 0 .06rem .55rem;border-left:2px solid #f3f4f6}
         .nav-sub-chapters.open{display:block}
-        .nav-sub-chapters a{padding-left:.6rem!important;font-size:11px!important;color:#64748b!important}
-        .nav-sub-chapters a:hover,.nav-sub-chapters a.active{color:#e2e8f0!important}
-        /* Level-2 (per-dump) entries inside the Per-Dump group */
-        .nav-chapter-l2{margin-top:.25rem;margin-left:.3rem}
-        .nav-chapter-l2>.nav-title-l2{display:block;padding:.2rem .4rem;color:#94a3b8;font-weight:600;font-size:11px;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .nav-chapter-l2>.nav-title-l2:hover{background:#334155;color:#e2e8f0}
-        /* Level-3 sub-reports inside each per-dump */
-        .nav-subreports-l3{padding:.15rem .4rem .15rem 1.2rem!important;font-size:10.5px!important}
-        .nav-sub-l3{margin-left:.8rem}
-        .nav-sub-l3 a{padding-left:.5rem!important;font-size:10.5px!important;color:#475569!important}
-        .nav-sub-l3 a:hover,.nav-sub-l3 a.active{color:#e2e8f0!important}
-        #search-box{width:100%;padding:.3rem .45rem;border-radius:4px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:11.5px;margin-bottom:.6rem;outline:none}
-        #search-box::placeholder{color:#64748b}
+        .nav-sub-chapters a{padding-left:.6rem!important;font-size:11px!important;color:#9ca3af!important}
+        .nav-sub-chapters a:hover{color:#374151!important;background:#f3f4f8!important}
+        .nav-sub-chapters a.active{color:#4f46e5!important;background:#ede9fe!important;font-weight:600}
 
-        /* ── Main content ─────────────────────────────────────────────── */
-        #content{flex:1;min-width:0;overflow:auto}
-        main{max-width:1280px;margin:0 auto;padding:.75rem 1.25rem 3rem}
+        /* ── Main content ───────────────────────────────────────────────────────── */
+        #content{flex:1;min-width:0;overflow:auto;background:#f3f4f8}
+        main{max-width:1240px;margin:0 auto;padding:.8rem 1.25rem 3rem}
 
-        /* ── Hero / Chapter header ────────────────────────────────────── */
-        /* Level-1 hero: main chapter header (blue gradient) */
-        .hero{background:linear-gradient(135deg,#1e293b 0%,#1e3a5f 100%);color:#fff;padding:1.5rem 1.5rem .9rem;margin-top:.75rem;border-bottom:3px solid #3b82f6}
-        .hero-title{font-size:1.35rem;font-weight:700;margin-bottom:.45rem;line-height:1.25}
-        .hero-meta{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.3rem}
-        .chip{display:inline-flex;align-items:center;padding:.2rem .55rem;border-radius:999px;background:rgba(148,163,184,.18);border:1px solid rgba(148,163,184,.3);color:#cbd5e1;font-size:.73rem}
-        .chip-ok  {background:rgba(34,197,94,.18);border-color:rgba(34,197,94,.4);color:#bbf7d0}
-        .chip-warn{background:rgba(251,191,36,.18);border-color:rgba(251,191,36,.4);color:#fef08a}
-        .chip-crit{background:rgba(239,68,68,.18);border-color:rgba(239,68,68,.4);color:#fecaca}
-        /* Level-2 hero: sub-command header (compact, no gradient) */
-        .hero[data-nav-level="2"]{background:#eef2f7;color:#1e293b;padding:.6rem 1.5rem;margin-top:.5rem;border-bottom:1px solid #cbd5e1;border-left:4px solid #3b82f6}
-        .hero[data-nav-level="2"] .hero-title{font-size:1rem;color:#1e3a5f;margin-bottom:.2rem}
-        .hero[data-nav-level="2"] .chip{background:rgba(59,130,246,.1);border-color:rgba(59,130,246,.25);color:#334155}
-        .hero[data-nav-level="2"] .chip-ok  {background:rgba(34,197,94,.12);color:#166534}
-        .hero[data-nav-level="2"] .chip-warn{background:rgba(245,158,11,.12);color:#92400e}
-        .hero[data-nav-level="2"] .chip-crit{background:rgba(239,68,68,.12);color:#991b1b}
-        .chapter-body{margin-bottom:.5rem}
+        /* ── Hero / Chapter header (top banner strip) ───────────────────────────── */
+        .hero{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:.85rem 1.25rem .75rem;margin-top:.75rem;border-left:4px solid #4f46e5;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+        .hero-title{font-size:1.15rem;font-weight:700;color:#1a1f2e;letter-spacing:-.01em;line-height:1.25;margin-bottom:.35rem}
+        .hero-meta{display:flex;flex-wrap:wrap;gap:.3rem;margin-top:.25rem;align-items:center}
+        .chip{display:inline-flex;align-items:center;padding:.15rem .55rem;border-radius:5px;background:#f3f4f8;border:1px solid #e5e7eb;color:#4b5563;font-size:11px;font-weight:500}
+        .chip-ok  {background:#f0fdf4;border-color:#bbf7d0;color:#166534}
+        .chip-warn{background:#fffbeb;border-color:#fde68a;color:#854d0e}
+        .chip-crit{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
+        /* Sub-command hero (level 2) — compact, indented */
+        .hero[data-nav-level="2"]{border-left-color:#7c3aed;background:#faf9ff;margin-top:.4rem;padding:.5rem 1.25rem}
+        .hero[data-nav-level="2"] .hero-title{font-size:.95rem;color:#3730a3}
+        .hero[data-nav-level="2"] .chip{background:#ede9fe;border-color:#ddd6fe;color:#4338ca}
+        .hero[data-nav-level="2"] .chip-ok  {background:#f0fdf4;border-color:#bbf7d0;color:#166534}
+        .hero[data-nav-level="2"] .chip-warn{background:#fffbeb;border-color:#fde68a;color:#854d0e}
+        .hero[data-nav-level="2"] .chip-crit{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
+        .chapter-body{margin-bottom:.4rem}
 
-        /* ── Card / Section ───────────────────────────────────────────── */
-        .card{background:#fff;border-radius:8px;margin:.65rem 0;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.05);overflow:visible}
-        .card-title{font-size:1rem;font-weight:700;color:#1e3a5f;padding:.75rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid #e2e8f0;border-radius:8px 8px 0 0;position:relative}
-        .card.collapsed .card-title{border-radius:8px}
-        .card-title:hover{background:#f8fafc}
-        .card-arrow{font-size:.7rem;transition:transform .18s;color:#64748b;flex-shrink:0}
+        /* ── Card / Section ─────────────────────────────────────────────────────── */
+        .card{background:#fff;border-radius:8px;margin:.5rem 0;border:1px solid #e5e7eb;box-shadow:0 1px 3px rgba(0,0,0,.04)}
+        .card-title{font-size:.9rem;font-weight:700;color:#1a1f2e;padding:.6rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.35rem;border-bottom:1px solid #f3f4f6;border-radius:8px 8px 0 0}
+        .card.collapsed .card-title{border-radius:8px;border-bottom-color:transparent}
+        .card-title:hover{background:#fafafa}
+        .card-arrow{font-size:.6rem;transition:transform .15s;color:#9ca3af;flex-shrink:0}
         .card.collapsed .card-arrow{transform:rotate(-90deg)}
         .card.collapsed .card-body{display:none}
-        .card-body{padding:.75rem 1rem 1rem}
-        h3{font-size:.9rem;font-weight:600;color:#374151;margin:.65rem 0 .35rem}
+        .card-body{padding:.65rem 1rem .85rem}
+        h3{font-size:.82rem;font-weight:600;color:#374151;margin:.55rem 0 .3rem}
 
-        /* ── Key-Value grid ───────────────────────────────────────────── */
-        .kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:.35rem .75rem;margin:.4rem 0 .65rem}
-        .kv-row{display:flex;gap:.5rem;align-items:baseline;padding:.2rem .4rem;border-radius:4px;background:#fafafa;border:1px solid #f0f0f0}
-        .kv-key{color:#64748b;font-size:12.5px;white-space:nowrap;flex-shrink:0;min-width:160px}
-        .kv-val{font-weight:600;color:#111827;font-size:13px;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem}
-        .kv-arrow{color:#94a3b8;font-size:12px}
-        .kv-delta{color:#64748b;font-size:12px;font-weight:400}
-        .score-badge{display:inline-block;padding:.15rem .55rem;border-radius:4px;font-weight:700;font-size:13px}
+        /* ── Key-Value grid ─────────────────────────────────────────────────────── */
+        .kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:.28rem .7rem;margin:.35rem 0 .6rem}
+        .kv-row{display:flex;gap:.45rem;align-items:baseline;padding:.18rem .45rem;border-radius:5px;background:#f9fafb;border:1px solid #f3f4f6}
+        .kv-key{color:#6b7280;font-size:12px;white-space:nowrap;flex-shrink:0;min-width:155px}
+        .kv-val{font-weight:600;color:#111827;font-size:12.5px;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;align-items:center;gap:.25rem}
+        .kv-arrow{color:#9ca3af;font-size:11.5px}
+        .kv-delta{color:#6b7280;font-size:11.5px;font-weight:400}
+        .score-badge{display:inline-block;padding:.12rem .55rem;border-radius:5px;font-weight:700;font-size:12.5px}
         .badge-ok  {background:#dcfce7;color:#15803d}
         .badge-warn{background:#fef9c3;color:#854d0e}
         .badge-crit{background:#fee2e2;color:#b91c1c}
 
-        /* ── Tables ───────────────────────────────────────────────────── */
-        .table-toolbar{display:flex;align-items:center;gap:.75rem;margin:.35rem 0 .25rem}
-        .tbl-search{flex:1;max-width:340px;padding:.3rem .6rem;border:1px solid #d1d5db;border-radius:4px;font-size:12.5px;outline:none}
-        .tbl-search:focus{border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,.15)}
-        .row-count{font-size:11.5px;color:#9ca3af;white-space:nowrap}
-        .table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
-        .tbl-large{max-height:520px;overflow-y:auto}
-        table.data-table{width:100%;border-collapse:collapse;font-size:12.5px}
+        /* ── Tables ─────────────────────────────────────────────────────────────── */
+        /* Search bar ABOVE the table, outside the table-wrap */
+        .table-toolbar{display:flex;align-items:center;gap:.65rem;margin:.3rem 0 .4rem}
+        .tbl-search{padding:.27rem .65rem .27rem 1.9rem;border:1px solid #e5e7eb;border-radius:6px;font-size:11.5px;outline:none;background:#f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") .5rem center/12px no-repeat;transition:border-color .12s,background .12s;min-width:200px;max-width:320px}
+        .tbl-search:focus{border-color:#4f46e5;background:#fff;box-shadow:0 0 0 2px rgba(79,70,229,.09)}
+        .row-count{font-size:11px;color:#9ca3af;white-space:nowrap;margin-left:.1rem}
+        .table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #e5e7eb;border-radius:7px;margin-top:.1rem}
+        .tbl-large{max-height:480px;overflow-y:auto}
+        table.data-table{width:100%;border-collapse:collapse;font-size:12px}
         table.data-table thead{position:sticky;top:0;z-index:2}
-        th{background:#f1f5f9;padding:.4rem .65rem;text-align:left;font-weight:600;font-size:12px;color:#475569;border-bottom:2px solid #cbd5e1;white-space:nowrap;cursor:pointer;user-select:none;position:relative}
-        th:hover{background:#e2e8f0}
-        .sort-icon{margin-left:.25rem;opacity:.4;font-size:.7rem}
-        th.sort-asc .sort-icon::after{content:"↑";opacity:1}
-        th.sort-desc .sort-icon::after{content:"↓";opacity:1}
-        th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1}
-        td{padding:.32rem .65rem;border-bottom:1px solid #f1f5f9;vertical-align:top;white-space:nowrap}
-        tr:hover td{background:#f8fafc}
+        th{background:#f8f9fc;padding:.38rem .7rem;text-align:left;font-weight:600;font-size:11px;color:#374151;border-bottom:1px solid #e5e7eb;white-space:nowrap;cursor:pointer;user-select:none}
+        th:hover{background:#ede9fe;color:#4f46e5}
+        .sort-icon{margin-left:.22rem;opacity:.3;font-size:.6rem}
+        th.sort-asc .sort-icon::after{content:"↑"}
+        th.sort-desc .sort-icon::after{content:"↓"}
+        th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1;color:#4f46e5}
+        td{padding:.32rem .7rem;border-bottom:1px solid #f3f4f6;vertical-align:top;white-space:nowrap;font-size:12px;color:#1a1f2e}
+        tr:last-child td{border-bottom:none}
+        tr:nth-child(even) td{background:#fafbff}
+        tr:hover td{background:#f5f3ff}
         tr.vr{display:none}
-        td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:420px;line-height:1.35}
-        p.caption{font-size:11.5px;color:#94a3b8;margin:.15rem 0 .35rem;font-style:italic}
+        td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:400px;line-height:1.4}
+        p.caption{font-size:11px;color:#9ca3af;margin:.12rem 0 .3rem;font-style:italic}
         td.trend-up2{color:#dc2626;font-weight:700}
-        td.trend-up {color:#f97316;font-weight:600}
+        td.trend-up {color:#ea580c;font-weight:600}
         td.trend-dn {color:#16a34a}
         td.sev-crit {color:#dc2626;font-weight:700}
         td.sev-warn {color:#d97706;font-weight:600}
-        td.sev-info {color:#2563eb}
+        td.sev-info {color:#4f46e5}
 
-        /* ── Alerts ───────────────────────────────────────────────────── */
-        .alert{padding:.55rem .85rem;border-radius:6px;margin:.35rem 0;font-size:13px;border:1px solid transparent}
-        .alert-crit{background:#fef2f2;border-color:#fecaca;border-left:4px solid #ef4444}
+        /* ── Alerts ─────────────────────────────────────────────────────────────── */
+        .alert{padding:.5rem .85rem;border-radius:7px;margin:.3rem 0;font-size:12.5px;border:1px solid transparent}
+        .alert-crit{background:#fff1f2;border-color:#fecdd3;border-left:4px solid #ef4444}
         .alert-warn{background:#fffbeb;border-color:#fde68a;border-left:4px solid #f59e0b}
-        .alert-info{background:#eff6ff;border-color:#bfdbfe;border-left:4px solid #3b82f6}
-        .alert-title{font-weight:600;margin-bottom:.2rem}
-        .alert-icon{margin-right:.35rem}
-        .alert-detail{color:#4b5563;font-size:12px;margin-top:.2rem;font-style:italic}
-        .alert-advice{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #16a34a;border-radius:4px;padding:.35rem .6rem;margin-top:.45rem;font-size:12.5px;color:#14532d;line-height:1.5}
-        .advice-label{display:block;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#15803d;margin-bottom:.15rem}
+        .alert-info{background:#f5f3ff;border-color:#ddd6fe;border-left:4px solid #4f46e5}
+        .alert-title{font-weight:700;margin-bottom:.2rem;font-size:12.5px;display:flex;align-items:center;gap:.3rem}
+        .alert-icon{font-size:.95rem}
+        .alert-detail{color:#4b5563;font-size:11.5px;margin-top:.18rem;font-style:italic}
+        .alert-advice{background:#1a3a2e;border-radius:6px;padding:.5rem .8rem;margin-top:.45rem;font-size:12.5px;color:#d1fae5;line-height:1.55}
+        .advice-label{display:flex;align-items:center;gap:.35rem;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#6ee7b7;margin-bottom:.2rem}
 
-        /* ── Details accordion ────────────────────────────────────────── */
-        details{border:1px solid #e2e8f0;border-radius:6px;margin:.4rem 0;overflow:hidden}
-        details+details{margin-top:.3rem}
-        summary.det-sum{padding:.5rem .8rem;cursor:pointer;font-weight:600;font-size:.855rem;color:#1e3a6e;list-style:none;background:#f8fafc;display:flex;align-items:center;gap:.4rem}
+        /* ── Details accordion ──────────────────────────────────────────────────── */
+        details{border:1px solid #e5e7eb;border-radius:7px;margin:.35rem 0;overflow:hidden}
+        details+details{margin-top:.25rem}
+        summary.det-sum{padding:.42rem .8rem;cursor:pointer;font-weight:600;font-size:.825rem;color:#1a1f2e;list-style:none;background:#f8f9fc;display:flex;align-items:center;gap:.35rem}
         summary.det-sum::-webkit-details-marker{display:none}
-        summary.det-sum::before{content:"▶";font-size:.6rem;transition:transform .15s;color:#7e93b5;flex-shrink:0}
+        summary.det-sum::before{content:"▶";font-size:.55rem;transition:transform .13s;color:#4f46e5;flex-shrink:0}
         details[open] summary.det-sum::before{transform:rotate(90deg)}
-        details[open] summary.det-sum{border-bottom:1px solid #e2e8f0}
-        .details-body{padding:.5rem .8rem}
-        /* ── Explain block ─────────────────────────────────────────────────────────────────── */
-        .explain-block{background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;padding:.65rem .9rem;margin:.45rem 0 .75rem;display:flex;flex-direction:column;gap:.45rem}
-        .explain-item{display:flex;flex-direction:column;gap:.1rem}
-        .explain-label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#2563eb}
-        .explain-text{font-size:12.5px;color:#1e3a5f;line-height:1.6;margin:0}
-        .explain-bullets{margin:.15rem 0 0 1.1rem;padding:0;list-style:disc;color:#1e3a5f;font-size:12.5px;line-height:1.65}
-        .explain-action{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #16a34a;border-radius:4px;padding:.35rem .6rem}
-        .explain-action .explain-label{color:#15803d}
-        /* ── Misc ─────────────────────────────────────────────────────── */
-        .body-text{color:#374151;margin:.3rem 0;font-size:13px}
-        .ref-link{color:#6b7280;font-size:12px;margin:.4rem 0 .2rem;font-style:italic}.ref-link a{color:#2563eb;text-decoration:none}.ref-link a:hover{text-decoration:underline}
-        .spacer{height:.5rem}
-        #back-top{position:fixed;bottom:1.5rem;right:1.5rem;background:#1e3a5f;color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:1.1rem;cursor:pointer;opacity:0;transition:opacity .2s;z-index:100;display:flex;align-items:center;justify-content:center}
+        details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
+        .details-body{padding:.45rem .8rem}
+
+        /* ── Explain block ──────────────────────────────────────────────────────── */
+        /* ── Explain accordion ("About this section") ──────────────────────────── */
+        .explain-accordion{border:1px solid #e5e7eb;border-radius:7px;margin:.4rem 0 .65rem;overflow:hidden;background:#fafafa}
+        .explain-accordion[open]{background:#fff}
+        .explain-summary{padding:.32rem .75rem;cursor:pointer;list-style:none;display:flex;align-items:center;gap:.45rem;font-size:11.5px;font-weight:600;color:#6b7280;user-select:none;background:#f9fafb;border-bottom:1px solid transparent;transition:color .12s,background .12s}
+        .explain-accordion[open] .explain-summary{color:#4f46e5;background:#f5f3ff;border-bottom-color:#e5e7eb}
+        .explain-summary::-webkit-details-marker{display:none}
+        .explain-summary-icon{font-size:12px;line-height:1;flex-shrink:0;color:#a5b4fc}
+        .explain-accordion[open] .explain-summary-icon{color:#4f46e5}
+        .explain-body{display:flex;flex-direction:column}
+        .explain-item{padding:.4rem .85rem;border-bottom:1px solid #f3f4f6;display:flex;flex-direction:column;gap:.12rem}
+        .explain-item:last-child{border-bottom:none}
+        .explain-label{display:inline-flex;align-items:center;background:#ede9fe;color:#4f46e5;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;border-radius:999px;padding:.14em .65em;margin-bottom:.08rem;width:fit-content}
+        .explain-text{font-size:12.5px;color:#374151;line-height:1.6;margin:0}
+        .explain-bullets{margin:.12rem 0 0 1.1rem;padding:0;list-style:disc;color:#374151;font-size:12.5px;line-height:1.6}
+        .explain-action{background:#f0fdf4}
+        .explain-action .explain-label{background:#dcfce7;color:#15803d}
+
+        /* ── Misc ────────────────────────────────────────────────────────────────── */
+        .body-text{color:#374151;margin:.25rem 0;font-size:13px;line-height:1.6}
+        .ref-link{color:#6b7280;font-size:11.5px;margin:.35rem 0 .15rem;font-style:italic}
+        .ref-link a{color:#4f46e5;text-decoration:none}
+        .ref-link a:hover{text-decoration:underline}
+        .spacer{height:.4rem}
+        #back-top{position:fixed;bottom:1.5rem;right:1.5rem;background:#4f46e5;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:1rem;cursor:pointer;opacity:0;transition:opacity .2s;z-index:100;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(79,70,229,.35)}
         #back-top.vis{opacity:.85}
-        #back-top:hover{opacity:1}
+        #back-top:hover{opacity:1;background:#3730a3}
 
-        /* ── Metric Tooltips ──────────────────────────────────────────── */
-        .tip-wrap{position:relative;display:inline-flex;align-items:center;margin-left:.4rem;flex-shrink:0;cursor:default}
-        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#94a3b8;color:#fff;font-size:9px;font-weight:700;line-height:1;user-select:none;flex-shrink:0}
-        .tip-wrap:hover .tip-icon{background:#3b82f6}
-        .tip-box{visibility:hidden;opacity:0;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#e2e8f0;font-size:12px;font-weight:400;line-height:1.55;padding:.55rem .75rem;border-radius:6px;white-space:normal;width:360px;box-shadow:0 4px 12px rgba(0,0,0,.3);pointer-events:none;transition:opacity .15s,visibility .15s;z-index:50;text-align:left}
-        .tip-box::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#1e293b}
-        .tip-wrap:hover .tip-box{visibility:visible;opacity:1}
+        /* ── Metric Tooltips ─────────────────────────────────────────────────────── */
+        .tip-wrap{display:inline-flex;align-items:center;margin-left:.35rem;flex-shrink:0;cursor:default}
+        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ddd6fe;color:#4f46e5;font-size:8px;font-weight:700;line-height:1;user-select:none;flex-shrink:0;transition:background .1s,color .1s}
+        .tip-wrap:hover .tip-icon{background:#4f46e5;color:#fff}
+        #ftip{display:none;position:fixed;background:#1e1b4b;color:#e0e7ff;font-size:11.5px;font-weight:400;line-height:1.5;padding:.5rem .75rem;border-radius:7px;white-space:normal;width:280px;box-shadow:0 4px 16px rgba(0,0,0,.25);pointer-events:none;z-index:9999;text-align:left}
 
-        /* ── Print ────────────────────────────────────────────────────── */
+        /* ── Print ───────────────────────────────────────────────────────────────── */
         @media print{
           #sidebar,#back-top{display:none}
           body{background:#fff;font-size:11px}
           .card{box-shadow:none;border:1px solid #ccc;break-inside:avoid}
           .tbl-large{max-height:none;overflow-y:visible}
           tr.vr{display:table-row!important}
-          .hero{background:#000!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+          .hero{background:#fff!important;border-bottom:1px solid #e5e7eb!important;position:static!important}
         }
         </style>
         </head>
         <body>
         <nav id="sidebar">
-          <input id="search-box" placeholder="Search nav…" oninput="filterNav(this.value)">
-          <h3>Contents</h3>
-          <div id="nav-list"></div>
+          <div class="nav-brand">
+            <div class="nav-brand-icon">DD</div>
+            <div class="nav-brand-text">
+              <span class="nav-brand-title">Dump Detective</span>
+              <span class="nav-brand-sub">{APP_VERSION}</span>
+            </div>
+          </div>
+          <div class="nav-search-wrap">
+            <input id="search-box" placeholder="Filter hierarchy…" oninput="filterNav(this.value)">
+          </div>
+          <div class="nav-inner">
+            <div class="nav-section-label">Sections</div>
+            <div id="nav-list"></div>
+          </div>
         </nav>
         <div id="content"><main id="report-root">
         """;
@@ -568,22 +585,15 @@ public sealed class HtmlSink : IRenderSink
         </main></div>
         <button id="back-top" title="Back to top" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
         <script>
-        /* ── Navigation builder ───────────────────────────────────────── */
+        /* ── Navigation builder ───────────────────────────────────────────────── */
         (function(){
           const nav  = document.getElementById('nav-list');
           const root = document.getElementById('report-root');
           function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,'').replace(/^Per-Dump\s+/i,''); }
 
-          // Three-tier hierarchy:
-          //   Level 1 → top-level chapter (Trend Analysis Report, Per-Dump Report: Dn)
-          //     └ section cards (for Trend Analysis: Diagnosis Summary, 0. Dump Timeline, …)
-          //     └ Sub-reports collapsible (for Per-Dump Report entries)
-          //   Level 2 → sub-command chapters inside per-dump (Heap Statistics, Thread Analysis, …)
-          //   Level 3 → currently unused
-
-          let curL1Div = null;  // current level-1 nav-chapter div
-          let subList  = null;  // collapsible "Sub-reports" list under level-1
-          let subToggle= null;  // the ▸/▾ toggle
+          let curL1Div = null;
+          let subList  = null;
+          let subToggle= null;
           let subCount = 0;
 
           root.querySelectorAll('.hero').forEach(function(h){
@@ -593,7 +603,6 @@ public sealed class HtmlSink : IRenderSink
             const level = parseInt(h.dataset.navLevel ?? '1');
 
             if(level === 1){
-              // ── Level 1: top-level chapter ────────────────────────────────
               curL1Div = document.createElement('div');
               curL1Div.className = 'nav-chapter';
               subList = null; subToggle = null; subCount = 0;
@@ -605,7 +614,6 @@ public sealed class HtmlSink : IRenderSink
               titleA.title = raw;
               curL1Div.appendChild(titleA);
 
-              // Section cards directly inside this chapter body (e.g. Trend Analysis sections)
               const chBody = document.getElementById('chb' + num);
               if(chBody){
                 chBody.querySelectorAll(':scope > .card').forEach(function(c){
@@ -622,10 +630,8 @@ public sealed class HtmlSink : IRenderSink
               nav.appendChild(curL1Div);
 
             } else if(level === 2){
-              // ── Level 2: sub-command inside per-dump ─────────────────────
               if(!curL1Div) return;
 
-              // Create the "Sub-reports" collapsible on first encounter under this level-1
               if(!subList){
                 subList = document.createElement('div');
                 subList.className = 'nav-sub-chapters';
@@ -655,12 +661,11 @@ public sealed class HtmlSink : IRenderSink
           });
         })();
 
-        /* ── Nav filter ───────────────────────────────────────────────── */
+        /* ── Nav filter ───────────────────────────────────────────────────────── */
         function filterNav(q){
           q = q.toLowerCase();
           const allLinks = document.querySelectorAll('#nav-list a');
           if(!q){
-            // Clear all inline overrides — CSS class controls visibility again
             allLinks.forEach(function(a){ a.style.display = ''; });
             document.querySelectorAll('.nav-sub-chapters').forEach(function(sc){ sc.style.display = ''; });
             document.querySelectorAll('.nav-subreports').forEach(function(t){ t.style.display = ''; });
@@ -669,7 +674,6 @@ public sealed class HtmlSink : IRenderSink
           allLinks.forEach(function(a){
             a.style.display = a.textContent.toLowerCase().includes(q) ? '' : 'none';
           });
-          // Auto-expand sub-chapter containers whose children match; hide toggle if none match
           document.querySelectorAll('.nav-sub-chapters').forEach(function(sc){
             const anyVis = Array.from(sc.querySelectorAll('a')).some(function(a){ return a.style.display !== 'none'; });
             sc.style.display = anyVis ? 'block' : 'none';
@@ -679,7 +683,7 @@ public sealed class HtmlSink : IRenderSink
           });
         }
 
-        /* ── Active nav highlight on scroll ──────────────────────────── */
+        /* ── Active nav highlight on scroll ──────────────────────────────────── */
         (function(){
           const targets = Array.from(document.querySelectorAll('.hero,.card'));
           const navLinks = document.querySelectorAll('#nav-list a');
@@ -700,7 +704,31 @@ public sealed class HtmlSink : IRenderSink
           window.addEventListener('scroll', update, {passive:true});
         })();
 
-        /* ── Back-to-top button ───────────────────────────────────────── */
+        /* ── Floating tooltips ────────────────────────────────────────────────── */
+        (function(){
+          var ftip = document.createElement('div');
+          ftip.id = 'ftip';
+          document.body.appendChild(ftip);
+          window.showTip = function(el){
+            var t = el.dataset.tip;
+            if(!t) return;
+            ftip.innerHTML = t;
+            ftip.style.display = 'block';
+            var r = el.getBoundingClientRect();
+            var tw = ftip.offsetWidth;
+            var th = ftip.offsetHeight;
+            var x = r.right + 10;
+            if(x + tw > window.innerWidth - 8) x = r.left - tw - 10;
+            var y = r.top + r.height / 2 - th / 2;
+            if(y < 8) y = 8;
+            if(y + th > window.innerHeight - 8) y = window.innerHeight - th - 8;
+            ftip.style.left = x + 'px';
+            ftip.style.top  = y + 'px';
+          };
+          window.hideTip = function(){ ftip.style.display = 'none'; };
+        })();
+
+        /* ── Back-to-top button ───────────────────────────────────────────────── */
         (function(){
           const btn = document.getElementById('back-top');
           window.addEventListener('scroll', function(){
@@ -708,16 +736,13 @@ public sealed class HtmlSink : IRenderSink
           }, {passive:true});
         })();
 
-
-
-
-        /* ── Card collapse ────────────────────────────────────────────── */
+        /* ── Card collapse ────────────────────────────────────────────────────── */
         function toggleCard(id){
           const el = document.getElementById(id);
           if(el) el.classList.toggle('collapsed');
         }
 
-        /* ── Table sort ───────────────────────────────────────────────── */
+        /* ── Table sort ───────────────────────────────────────────────────────── */
         var _sortState = {};
         function sortTable(tid, col){
           const tbl = document.getElementById('t' + tid);
@@ -725,7 +750,6 @@ public sealed class HtmlSink : IRenderSink
           const key = tid + '_' + col;
           const asc = _sortState[key] !== true;
           _sortState[key] = asc;
-          // Update sort icons
           tbl.querySelectorAll('th').forEach(function(th,i){
             th.classList.remove('sort-asc','sort-desc');
             if(i === col) th.classList.add(asc ? 'sort-asc' : 'sort-desc');
@@ -735,8 +759,6 @@ public sealed class HtmlSink : IRenderSink
           rows.sort(function(a, b){
             const av = (a.cells[col]?.textContent ?? '').trim();
             const bv = (b.cells[col]?.textContent ?? '').trim();
-            // Size strings first (KB/MB/GB/TB) — must run before parseFloat
-            // because parseFloat("1.04 MB") === 1.04 which loses the unit
             const toBytes = function(s){
               const m = s.match(/^([\d,.]+)\s*(B|KB|MB|GB|TB)$/i);
               if(!m) return NaN;
@@ -745,7 +767,6 @@ public sealed class HtmlSink : IRenderSink
             };
             const ab = toBytes(av), bb = toBytes(bv);
             if(!isNaN(ab) && !isNaN(bb)) return asc ? ab-bb : bb-ab;
-            // Plain numbers (strip commas/spaces before parse)
             const an = parseFloat(av.replace(/[, ]/g,''));
             const bn = parseFloat(bv.replace(/[, ]/g,''));
             if(!isNaN(an) && !isNaN(bn)) return asc ? an-bn : bn-an;
@@ -754,7 +775,7 @@ public sealed class HtmlSink : IRenderSink
           rows.forEach(function(r){ tbody.appendChild(r); });
         }
 
-        /* ── Table filter / search ────────────────────────────────────── */
+        /* ── Table filter / search ────────────────────────────────────────────── */
         function filterTable(tid){
           const q = (document.getElementById('ts' + tid)?.value ?? '').toLowerCase();
           const tbl = document.getElementById('t' + tid);
@@ -763,7 +784,6 @@ public sealed class HtmlSink : IRenderSink
           Array.from(tbl.tBodies[0].rows).forEach(function(r){
             const match = !q || r.textContent.toLowerCase().includes(q);
             r.style.display = match ? '' : 'none';
-            // When filtering, show all rows (override virtual-scroll hidden class)
             if(match){ r.classList.remove('vr'); vis++; }
           });
           const rc = document.getElementById('rc' + tid);
@@ -773,4 +793,3 @@ public sealed class HtmlSink : IRenderSink
         </body></html>
         """;
 }
-

@@ -55,17 +55,28 @@ public sealed class LargeObjectsAnalyzer
         // LOH free space analysis — iterate LOH segments directly (skip all non-LOH objects)
         long lohCommitted = 0, lohFree = 0, lohLive = 0;
         var  freeType     = ctx.Heap.FreeType;
-        foreach (var seg in ctx.Heap.Segments.Where(s => s.Kind == GCSegmentKind.Large))
+        CommandBase.RunStatus("Analysing LOH free space...", update =>
         {
-            lohCommitted += (long)seg.CommittedMemory.Length;
-            foreach (var obj in seg.EnumerateObjects())
+            long count = 0;
+            var  sw    = System.Diagnostics.Stopwatch.StartNew();
+            foreach (var seg in ctx.Heap.Segments.Where(s => s.Kind == GCSegmentKind.Large))
             {
-                if (!obj.IsValid) continue;
-                long sz = (long)obj.Size;
-                if (obj.Type == freeType) lohFree += sz;
-                else                      lohLive += sz;
+                lohCommitted += (long)seg.CommittedMemory.Length;
+                foreach (var obj in seg.EnumerateObjects())
+                {
+                    if (!obj.IsValid) continue;
+                    count++;
+                    if ((count & 0x3FF) == 0 && sw.ElapsedMilliseconds >= 200)
+                    {
+                        update($"Analysing LOH free space — {count:N0} objects  •  live:{DumpHelpers.FormatSize(lohLive)}  free:{DumpHelpers.FormatSize(lohFree)}...");
+                        sw.Restart();
+                    }
+                    long sz = (long)obj.Size;
+                    if (obj.Type == freeType) lohFree += sz;
+                    else                      lohLive += sz;
+                }
             }
-        }
+        });
 
         return new LargeObjectsData(objects, total, segments, lohCommitted, lohLive, lohFree, minSize);
     }

@@ -13,7 +13,12 @@ public sealed class FinalizerQueueAnalyzer
         var stats      = ScanQueue(ctx, collectAddresses);
         int total      = stats.Values.Sum(v => v.Count);
         long totalSize = stats.Values.Sum(v => v.Size);
-        int resurrect  = CountResurrectionCandidates(ctx);
+
+        // CountResurrectionCandidates re-enumerates finalizableObjects + handles;
+        // wrapping in RunStatus makes this phase visible in the └─ trace.
+        int resurrect = 0;
+        CommandBase.RunStatus("Checking resurrection candidates...",
+            () => resurrect = CountResurrectionCandidates(ctx));
 
         return new FinalizerQueueData(stats, total, totalSize, finBlocked, finFrames, resurrect,
             finThread?.ManagedThreadId ?? 0, finThread?.OSThreadId ?? 0);

@@ -18,16 +18,16 @@ public sealed class StaticRefsAnalyzer
         var fields    = new List<StaticFieldEntry>();
         long totalSz  = 0;
 
-        CommandBase.RunStatus("Scanning static fields...", update =>
+        CommandBase.RunStatus("Scanning static fields + BFS retained sizes...", update =>
         {
             int modules = 0;
             int found   = 0;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             foreach (var appDomain in ctx.Runtime.AppDomains)
             {
                 foreach (var module in appDomain.Modules)
                 {
                     modules++;
-                    update($"Scanning static fields — module {modules}  •  {found} fields found...");
                     foreach (var (mt, _) in module.EnumerateTypeDefToMethodTableMap())
                     {
                         if (mt == 0) continue;
@@ -53,9 +53,9 @@ public sealed class StaticRefsAnalyzer
                                 var obj = sf.ReadObject(appDomain);
                                 if (!obj.IsValid || obj.IsNull) continue;
 
-                                string fieldType   = obj.Type?.Name ?? "<unknown>";
+                                string fieldType    = obj.Type?.Name ?? "<unknown>";
                                 bool   isCollection = IsCollectionType(fieldType);
-                                long   retained    = EstimateRetained(ctx.Heap, obj);
+                                long   retained     = EstimateRetained(ctx.Heap, obj);
                                 totalSz += retained;
 
                                 fields.Add(new StaticFieldEntry(
@@ -66,6 +66,14 @@ public sealed class StaticRefsAnalyzer
                                     RetainedSize: retained,
                                     Addr:         obj.Address));
                                 found++;
+
+                                // Rate-limited update after each BFS so progress is visible
+                                // during long-running retained-size estimations.
+                                if (sw.ElapsedMilliseconds >= 200)
+                                {
+                                    update($"Scanning static fields — module {modules}  •  {found} fields  •  {DumpHelpers.FormatSize(totalSz)} retained (BFS)...");
+                                    sw.Restart();
+                                }
                             }
                             catch { }
                         }

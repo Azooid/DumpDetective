@@ -35,9 +35,10 @@ public static class TrendRawSerializer
         using var writer = new Utf8JsonWriter(fs, opts);
 
         writer.WriteStartObject();
-        writer.WriteString("format",     "trend-raw");
+        writer.WriteString("format",      "trend-raw");
         writer.WriteString("exportedAt", DateTime.UtcNow.ToString("o"));
         writer.WriteString("version",    "3");
+        writer.WriteString("toolVersion", DumpDetective.Core.Utilities.AppInfo.Version);
         writer.WritePropertyName("snapshots");
         writer.WriteStartArray();
         foreach (var s in snapshots)
