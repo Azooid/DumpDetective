@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\DumpDetective.Commands\DumpDetective.Commands.csproj" />
@@ -10,13 +10,31 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>DumpDetective.Cli</RootNamespace>
-    <PublishAot>true</PublishAot>
+    <PublishAot Condition="'$(RuntimeIdentifier)' != ''">true</PublishAot>
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- Major.Minor are set here; Patch auto-increments on each build (days since 2000-01-01). -->
     <!-- Disable deterministic builds so the * wildcard is evaluated at build time.            -->
-    <AssemblyVersion>2.1.*</AssemblyVersion>
+    <AssemblyVersion>2.1.0.*</AssemblyVersion>
     <Deterministic>false</Deterministic>
     <NoWarn>$(NoWarn);7035</NoWarn>
+	<PackAsTool>true</PackAsTool>
+    <ToolCommandName>DumpDetective</ToolCommandName>
+    <PackageOutputPath>./nupkg</PackageOutputPath>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PackageVersion>2.1.0</PackageVersion>
+    <Version>2.1.0</Version>
+    <PackageId>DumpDetective.Cli</PackageId>
+    <Description>CLI tool for analysing .NET memory dumps (.dmp / .mdmp) and .nettrace files. Heap stats, trend analysis, deadlock detection, and more.</Description>
+    <Authors>RohitM-IN</Authors>
+    <PackageTags>dotnet-tool;clrmd;memory-dump;diagnostics;windbg</PackageTags>
+    <PackageProjectUrl>https://github.com/Azooid/DumpDetective</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/Azooid/DumpDetective</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
+  <ItemGroup>
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>
+  
