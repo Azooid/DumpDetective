@@ -231,6 +231,7 @@ public sealed class HtmlSinkV2 : IRenderSink
             <div class="table-toolbar">
               <input class="tbl-search" id="ts{tid}" placeholder="Filter rows…" oninput="filterTable({tid})" autocomplete="off">
               <span class="row-count" id="rc{tid}">{rows.Count:N0} rows</span>
+              <button class="tbl-csv-btn" onclick="exportCsv({tid})" title="Export visible rows as CSV">⬇ CSV</button>
             </div>
             """);
 
@@ -245,28 +246,25 @@ public sealed class HtmlSinkV2 : IRenderSink
         for (int r = 0; r < rows.Count; r++)
         {
             var row = rows[r];
-            string rowClass = large && r >= 200 ? " class=\"vr\"" : "";
-            _w.Write($"<tr{rowClass}>");
+            _w.Write("<tr>");
             for (int i = 0; i < headers.Length; i++)
             {
                 string cell = i < row.Length ? row[i] : string.Empty;
                 string cellCls = "";
+                string cellContent = H(cell);
                 if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
                 else if (cell is "↑" or "↑ ↑")  cellCls = " class=\"trend-up\"";
                 else if (cell.StartsWith("↓"))    cellCls = " class=\"trend-dn\"";
                 else if (cell.Length > 80)        cellCls = " class=\"long-text\"";
-                else if (cell is "Critical")      cellCls = " class=\"sev-crit\"";
-                else if (cell is "Warning")       cellCls = " class=\"sev-warn\"";
-                else if (cell is "Info")          cellCls = " class=\"sev-info\"";
-                _w.Write($"<td{cellCls}>{H(cell)}</td>");
+                else if (cell is "Critical")      { cellCls = " class=\"sev-crit\""; cellContent = "<span class=\"sev-badge sev-badge-crit\">✗ Critical</span>"; }
+                else if (cell is "Warning")       { cellCls = " class=\"sev-warn\""; cellContent = "<span class=\"sev-badge sev-badge-warn\">⚠ Warning</span>"; }
+                else if (cell is "Info")          { cellCls = " class=\"sev-info\""; cellContent = "<span class=\"sev-badge sev-badge-info\">ℹ Info</span>"; }
+                _w.Write($"<td{cellCls}>{cellContent}</td>");
             }
             _w.WriteLine("</tr>");
         }
 
         _w.WriteLine("</tbody></table></div>");
-
-        if (large)
-            _w.WriteLine($"<p class=\"caption\">⚡ {rows.Count:N0} rows — showing first 200; type in the filter box to search all rows.</p>");
     }
 
     public void Alert(AlertLevel level, string title, string? detail = null, string? advice = null)
@@ -401,10 +399,13 @@ public sealed class HtmlSinkV2 : IRenderSink
         .nav-brand-title{font-size:12px;font-weight:700;color:#1a1f2e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
         .nav-brand-sub{font-size:9px;color:#9ca3af;letter-spacing:.06em;text-transform:uppercase}
         /* Search */
-        .nav-search-wrap{padding:.5rem .75rem .45rem;border-bottom:1px solid #f3f4f6;flex-shrink:0}
-        #search-box{width:100%;padding:.3rem .6rem .3rem 1.8rem;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") .5rem center/12px no-repeat;color:#374151;font-size:11px;outline:none;transition:border-color .12s,background .12s}
+        .nav-search-wrap{padding:.5rem .75rem .45rem;border-bottom:1px solid #f3f4f6;flex-shrink:0;position:relative}
+        #search-box{width:100%;padding:.3rem;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") .5rem center/12px no-repeat;color:#374151;font-size:11px;outline:none;transition:border-color .12s,background .12s}
         #search-box::placeholder{color:#9ca3af}
         #search-box:focus{border-color:#4f46e5;background:#fff}
+        #search-clear{position:absolute;right:1rem;top:50%;transform:translateY(-50%);width:15px;height:15px;border-radius:50%;background:#d1d5db;color:#6b7280;border:none;cursor:pointer;font-size:9px;font-weight:700;display:none;align-items:center;justify-content:center;line-height:1;padding:0;transition:background .1s,color .1s}
+        #search-clear:hover{background:#9ca3af;color:#fff}
+        #search-clear.vis{display:flex}
         /* Nav content */
         .nav-inner{padding:.4rem .6rem .8rem;flex:1}
         .nav-section-label{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.1em;color:#9ca3af;padding:.6rem .4rem .2rem;margin-top:.1rem}
@@ -491,15 +492,18 @@ public sealed class HtmlSinkV2 : IRenderSink
         tr:last-child td{border-bottom:none}
         tr:nth-child(even) td{background:#fafbff}
         tr:hover td{background:#f5f3ff}
-        tr.vr{display:none}
         td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:400px;line-height:1.4}
         p.caption{font-size:11px;color:#9ca3af;margin:.12rem 0 .3rem;font-style:italic}
         td.trend-up2{color:#dc2626;font-weight:700}
         td.trend-up {color:#ea580c;font-weight:600}
         td.trend-dn {color:#16a34a}
-        td.sev-crit {color:#dc2626;font-weight:700}
-        td.sev-warn {color:#d97706;font-weight:600}
-        td.sev-info {color:#4f46e5}
+        td.sev-crit {}
+        td.sev-warn {}
+        td.sev-info {}
+        .sev-badge{display:inline-flex;align-items:center;gap:.28rem;padding:.14rem .55rem;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
+        .sev-badge-crit{background:#fff1f2;border:1px solid #fecdd3;color:#be123c}
+        .sev-badge-warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
+        .sev-badge-info{background:#f5f3ff;border:1px solid #ddd6fe;color:#3730a3}
 
         /* ── Alerts ─────────────────────────────────────────────────────────────── */
         .alert{padding:.5rem .85rem;border-radius:7px;margin:.3rem 0;font-size:12.5px;border:1px solid transparent}
@@ -560,6 +564,27 @@ public sealed class HtmlSinkV2 : IRenderSink
         ::-webkit-scrollbar-thumb:hover{background:#9ca3af}
         ::-webkit-scrollbar-corner{background:transparent}
 
+        /* ── Severity summary bar (sidebar) ─────────────────────────────────────── */
+        #sev-bar{display:flex;gap:.25rem;padding:.3rem .6rem;border-bottom:1px solid #f3f4f6;flex-shrink:0;flex-wrap:nowrap;align-items:center}
+        .sev-pill{display:inline-flex;align-items:center;gap:.2rem;padding:.1rem .35rem;border-radius:999px;font-size:10px;font-weight:700;cursor:pointer;border:1px solid transparent;transition:opacity .12s,background .1s;user-select:none;white-space:nowrap;line-height:1.4}
+        .sev-pill-crit{background:#fff1f2;border-color:#fecdd3;color:#9f1239}
+        .sev-pill-warn{background:#fffbeb;border-color:#fde68a;color:#854d0e}
+        .sev-pill-info{background:#f5f3ff;border-color:#ddd6fe;color:#4338ca}
+        .sev-pill:hover{opacity:.75}
+        /* ── Expand / Collapse toolbar ───────────────────────────────────────────── */
+        #expand-bar{display:flex;align-items:center;gap:.45rem;padding:.38rem 1.25rem;background:#fff;border-bottom:1px solid #e5e7eb;position:sticky;top:0;z-index:10;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+        .exp-btn{padding:.2rem .65rem;border:1px solid #e5e7eb;border-radius:5px;background:#f9fafb;color:#374151;font-size:11px;font-weight:600;cursor:pointer;transition:background .1s,border-color .1s;line-height:1.4}
+        .exp-btn:hover{background:#ede9fe;border-color:#a5b4fc;color:#4f46e5}
+        #exp-bar-sep{width:1px;height:14px;background:#e5e7eb;margin:0 .1rem;flex-shrink:0}
+        #exp-bar-label{font-size:10.5px;color:#9ca3af}
+        /* ── CSV export button ───────────────────────────────────────────────────── */
+        .tbl-csv-btn{padding:.2rem .6rem;border:1px solid #e5e7eb;border-radius:5px;background:#f9fafb;color:#374151;font-size:11px;font-weight:600;cursor:pointer;transition:background .1s,border-color .1s;margin-left:auto;line-height:1.4}
+        .tbl-csv-btn:hover{background:#ede9fe;border-color:#a5b4fc;color:#4f46e5}
+        /* ── Jump-to-critical floating button ────────────────────────────────────── */
+        #jump-crit{position:fixed;bottom:4.2rem;right:1.5rem;background:#ef4444;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:.85rem;cursor:pointer;opacity:0;transition:opacity .2s;z-index:100;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(239,68,68,.4);pointer-events:none}
+        #jump-crit.vis{opacity:.85;pointer-events:auto}
+        #jump-crit:hover{opacity:1;background:#dc2626}
+
         /* ── Metric Tooltips ─────────────────────────────────────────────────────── */
         .tip-wrap{display:inline-flex;align-items:center;margin-left:.35rem;flex-shrink:0;cursor:default}
         .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ddd6fe;color:#4f46e5;font-size:8px;font-weight:700;line-height:1;user-select:none;flex-shrink:0;transition:background .1s,color .1s}
@@ -572,7 +597,6 @@ public sealed class HtmlSinkV2 : IRenderSink
           body{background:#fff;font-size:11px}
           .card{box-shadow:none;border:1px solid #ccc;break-inside:avoid}
           .tbl-large{max-height:none;overflow-y:visible}
-          tr.vr{display:table-row!important}
           .hero{background:#fff!important;border-bottom:1px solid #e5e7eb!important;position:static!important}
         }
 
@@ -586,6 +610,8 @@ public sealed class HtmlSinkV2 : IRenderSink
         [data-theme="dark"] .nav-search-wrap{border-bottom-color:#1e2035}
         [data-theme="dark"] #search-box{background:#1e2035;border-color:#2e3154;color:#d1d5e0}
         [data-theme="dark"] #search-box:focus{border-color:#6366f1;background:#252840}
+        [data-theme="dark"] #search-clear{background:#2e3154;color:#8892b0}
+        [data-theme="dark"] #search-clear:hover{background:#4a5070;color:#d1d5e0}
         [data-theme="dark"] #sidebar a{color:#8892b0}
         [data-theme="dark"] #sidebar a:hover{background:#1e2035;color:#e2e8f0}
         [data-theme="dark"] #sidebar a.active{background:#2d2b5e;color:#818cf8}
@@ -670,13 +696,33 @@ public sealed class HtmlSinkV2 : IRenderSink
         [data-theme="dark"] td.trend-up2{color:#f87171}
         [data-theme="dark"] td.trend-up {color:#fb923c}
         [data-theme="dark"] td.trend-dn {color:#4ade80}
-        [data-theme="dark"] td.sev-crit {color:#f87171}
-        [data-theme="dark"] td.sev-warn {color:#fbbf24}
-        [data-theme="dark"] td.sev-info {color:#818cf8}
+        [data-theme="dark"] td.sev-crit {}
+        [data-theme="dark"] td.sev-warn {}
+        [data-theme="dark"] td.sev-info {}
+        [data-theme="dark"] .sev-badge-crit{background:#2a1218;border-color:#7f1d1d;color:#fca5a5}
+        [data-theme="dark"] .sev-badge-warn{background:#1f1a0c;border-color:#78350f;color:#fcd34d}
+        [data-theme="dark"] .sev-badge-info{background:#17152e;border-color:#312e7a;color:#a5b4fc}
         /* kv helpers */
         [data-theme="dark"] .kv-arrow{color:#4a5070}
         [data-theme="dark"] .kv-delta{color:#5b6280}
 
+        /* Severity bar dark */
+        [data-theme="dark"] #sev-bar{border-bottom-color:#1e2035}
+        [data-theme="dark"] .sev-pill-crit{background:#2a1218;border-color:#7f1d1d;color:#fca5a5}
+        [data-theme="dark"] .sev-pill-warn{background:#1f1a0c;border-color:#78350f;color:#fcd34d}
+        [data-theme="dark"] .sev-pill-info{background:#17152e;border-color:#312e7a;color:#a5b4fc}
+        /* Expand bar dark */
+        [data-theme="dark"] #expand-bar{background:#13151f;border-bottom-color:#252840;box-shadow:0 1px 4px rgba(0,0,0,.3)}
+        [data-theme="dark"] .exp-btn{background:#1a1d2b;border-color:#2e3154;color:#8892b0}
+        [data-theme="dark"] .exp-btn:hover{background:#2d2b5e;border-color:#4338ca;color:#a5b4fc}
+        [data-theme="dark"] #exp-bar-label{color:#4a5070}
+        [data-theme="dark"] #exp-bar-sep{background:#252840}
+        /* CSV button dark */
+        [data-theme="dark"] .tbl-csv-btn{background:#1a1d2b;border-color:#2e3154;color:#8892b0}
+        [data-theme="dark"] .tbl-csv-btn:hover{background:#2d2b5e;border-color:#4338ca;color:#a5b4fc}
+        /* Jump-to-critical dark */
+        [data-theme="dark"] #jump-crit{background:#b91c1c;box-shadow:0 2px 8px rgba(185,28,28,.5)}
+        [data-theme="dark"] #jump-crit:hover{background:#991b1b}
         /* Toggle button */
         #dark-toggle{display:flex;align-items:center;justify-content:center;margin-left:auto;width:24px;height:24px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;color:#6b7280;font-size:13px;cursor:pointer;flex-shrink:0;transition:background .12s,color .12s,border-color .12s;padding:0;line-height:1}
         #dark-toggle:hover{background:#f3f4f8;color:#1a1f2e}
@@ -693,19 +739,24 @@ public sealed class HtmlSinkV2 : IRenderSink
             <button id="dark-toggle" onclick="toggleDark()" title="Toggle dark/light mode"><span id="dark-icon">🌙</span></button>
           </div>
           <div class="nav-search-wrap">
-            <input id="search-box" placeholder="Filter hierarchy…" oninput="filterNav(this.value)">
+            <input id="search-box" placeholder="Filter ..." oninput="filterNav(this.value)">
+            <button id="search-clear" title="Clear search" onclick="clearNavSearch()">×</button>
           </div>
+          <div id="sev-bar"></div>
           <div class="nav-inner">
             <div class="nav-section-label">Sections</div>
             <div id="nav-list"></div>
           </div>
         </nav>
-        <div id="content"><main id="report-root">
+        <div id="content">
+        <div id="expand-bar"><span id="exp-bar-label">Sections:</span><div id="exp-bar-sep"></div><button class="exp-btn" onclick="expandAll()" title="Expand all sections">⊞ Expand All</button><button class="exp-btn" onclick="collapseAll()" title="Collapse all sections">⊟ Collapse All</button></div>
+        <main id="report-root">
         """;
 
     const string Footer = """
         </main></div>
         <button id="back-top" title="Back to top" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+        <button id="jump-crit" title="Jump to next critical alert" onclick="jumpCrit()">⚠</button>
         <script>
         /* ── Navigation builder ───────────────────────────────────────────────── */
         (function(){
@@ -785,6 +836,9 @@ public sealed class HtmlSinkV2 : IRenderSink
 
         /* ── Nav filter ───────────────────────────────────────────────────────── */
         function filterNav(q){
+          q = q.trim();
+          const btn = document.getElementById('search-clear');
+          if(btn) btn.classList.toggle('vis', q.length > 0);
           q = q.toLowerCase();
           const allLinks = document.querySelectorAll('#nav-list a');
           if(!q){
@@ -803,6 +857,10 @@ public sealed class HtmlSinkV2 : IRenderSink
             if(toggle && toggle.classList.contains('nav-subreports'))
               toggle.style.display = anyVis ? '' : 'none';
           });
+        }
+        function clearNavSearch(){
+          const sb = document.getElementById('search-box');
+          if(sb){ sb.value = ''; sb.focus(); filterNav(''); }
         }
 
         /* ── Active nav highlight on scroll ──────────────────────────────────── */
@@ -917,18 +975,147 @@ public sealed class HtmlSinkV2 : IRenderSink
 
         /* ── Table filter / search ────────────────────────────────────────────── */
         function filterTable(tid){
-          const q = (document.getElementById('ts' + tid)?.value ?? '').toLowerCase();
+          const q = (document.getElementById('ts' + tid)?.value ?? '').trim().toLowerCase();
           const tbl = document.getElementById('t' + tid);
           if(!tbl) return;
+          const allRows = Array.from(tbl.tBodies[0].rows);
+          const total = allRows.length;
           let vis = 0;
-          Array.from(tbl.tBodies[0].rows).forEach(function(r){
+          allRows.forEach(function(r){
             const match = !q || r.textContent.toLowerCase().includes(q);
             r.style.display = match ? '' : 'none';
-            if(match){ r.classList.remove('vr'); vis++; }
+            if(match) vis++;
           });
           const rc = document.getElementById('rc' + tid);
-          if(rc) rc.textContent = (q ? vis + ' match' + (vis !== 1 ? 'es' : '') : tbl.tBodies[0].rows.length + ' rows');
+          if(rc){
+            if(!q) rc.textContent = total.toLocaleString() + ' rows';
+            else rc.textContent = vis.toLocaleString() + ' of ' + total.toLocaleString() + ' rows';
+          }
         }
+
+        /* ── CSV export ───────────────────────────────────────────────────────── */
+        window.exportCsv = function(tid){
+          const tbl = document.getElementById('t' + tid);
+          if(!tbl) return;
+          const lines = [];
+          lines.push(Array.from(tbl.querySelectorAll('thead th')).map(function(th){
+            return '"' + th.textContent.replace(/[⇅↑↓]/g,'').trim().replace(/"/g,'""') + '"';
+          }).join(','));
+          Array.from(tbl.tBodies[0].rows).forEach(function(r){
+            if(r.style.display === 'none') return;
+            lines.push(Array.from(r.cells).map(function(c){
+              return '"' + c.textContent.trim().replace(/"/g,'""') + '"';
+            }).join(','));
+          });
+          const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
+          const a = document.createElement('a');
+          a.href = URL.createObjectURL(blob);
+          a.download = 'export_t' + tid + '.csv';
+          a.click();
+          URL.revokeObjectURL(a.href);
+        };
+
+        /* ── Expand / Collapse all sections ──────────────────────────────────── */
+        window.expandAll = function(){
+          document.querySelectorAll('.card.collapsed').forEach(function(c){ c.classList.remove('collapsed'); });
+        };
+        window.collapseAll = function(){
+          document.querySelectorAll('.card:not(.collapsed)').forEach(function(c){ c.classList.add('collapsed'); });
+        };
+
+        /* ── Alert navigation (severity bar pills + jump-to-critical button) ─── */
+        (function(){
+          const _idx = {};
+          /* Expand any collapsed card ancestor so the element is visible */
+          function ensureVisible(el){
+            var p = el.parentElement;
+            while(p){
+              if(p.classList && p.classList.contains('card') && p.classList.contains('collapsed'))
+                p.classList.remove('collapsed');
+              p = p.parentElement;
+            }
+          }
+          /* Collect elements matching sel; for badge spans inside tds use the td as scroll target */
+          function gather(sel){
+            return Array.from(document.querySelectorAll(sel)).map(function(el){
+              return (el.tagName === 'SPAN' && el.closest('td')) ? el.closest('td') : el;
+            });
+          }
+          window.jumpToAlert = function(sel){
+            const items = gather(sel);
+            if(!items.length) return;
+            if(_idx[sel] === undefined) _idx[sel] = -1;
+            _idx[sel] = (_idx[sel] + 1) % items.length;
+            const el = items[_idx[sel]];
+            ensureVisible(el);
+            el.scrollIntoView({behavior:'smooth', block:'center'});
+            el.style.outline = '2px solid currentColor';
+            setTimeout(function(){ el.style.outline = ''; }, 1500);
+          };
+          /* Use badge spans as anchors — they exist for both alerts and table cells */
+          const CRIT_SEL = '.alert-crit, .sev-badge-crit';
+          const WARN_SEL = '.alert-warn, .sev-badge-warn';
+          const INFO_SEL = '.alert-info, .sev-badge-info';
+          window.jumpCrit = function(){ window.jumpToAlert(CRIT_SEL); };
+          const jb = document.getElementById('jump-crit');
+          if(jb && document.querySelector(CRIT_SEL)) jb.classList.add('vis');
+
+          /* ── Severity summary bar ─────────────────────────────────────────── */
+          const bar = document.getElementById('sev-bar');
+          if(bar){
+            const crits = document.querySelectorAll(CRIT_SEL).length;
+            const warns = document.querySelectorAll(WARN_SEL).length;
+            const infos = document.querySelectorAll(INFO_SEL).length;
+            if(!crits && !warns && !infos){ bar.style.display='none'; }
+            else {
+              function dot(bg){ return '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:'+bg+';flex-shrink:0"></span>'; }
+              let html = '';
+              if(crits) html += '<span class="sev-pill sev-pill-crit" onclick="jumpToAlert(\''+CRIT_SEL+'\')" title="'+crits+' critical — click to cycle">&#10007; '+crits+'</span>';
+              if(warns) html += '<span class="sev-pill sev-pill-warn" onclick="jumpToAlert(\''+WARN_SEL+'\')" title="'+warns+' warnings — click to cycle">&#9888; '+warns+'</span>';
+              if(infos) html += '<span class="sev-pill sev-pill-info" onclick="jumpToAlert(\''+INFO_SEL+'\')" title="'+infos+' info — click to cycle">&#8505; '+infos+'</span>';
+              bar.innerHTML = html;
+            }
+          }
+        })();
+
+        /* ── Keyboard shortcuts ─────────────────────────────────────────────── */
+        /* / = focus nav filter | j/k = next/prev section | t = next table      */
+        (function(){
+          let _sIdx = -1, _tIdx = -1;
+          document.addEventListener('keydown', function(e){
+            if(e.target.tagName==='INPUT'||e.target.tagName==='TEXTAREA'||e.target.isContentEditable) return;
+            if(e.ctrlKey||e.metaKey||e.altKey) return;
+            switch(e.key){
+              case '/':{
+                e.preventDefault();
+                const sb = document.getElementById('search-box');
+                if(sb){ sb.focus(); sb.select(); }
+                break;
+              }
+              case 'j':{
+                const ss = Array.from(document.querySelectorAll('.card'));
+                if(!ss.length) break;
+                _sIdx = Math.min(_sIdx+1, ss.length-1);
+                ss[_sIdx].scrollIntoView({behavior:'smooth', block:'start'});
+                break;
+              }
+              case 'k':{
+                const ss = Array.from(document.querySelectorAll('.card'));
+                if(!ss.length) break;
+                _sIdx = Math.max(_sIdx-1, 0);
+                ss[_sIdx].scrollIntoView({behavior:'smooth', block:'start'});
+                break;
+              }
+              case 't':{
+                const ts = Array.from(document.querySelectorAll('.table-wrap'));
+                if(!ts.length) break;
+                _tIdx = (_tIdx+1) % ts.length;
+                ts[_tIdx].scrollIntoView({behavior:'smooth', block:'start'});
+                break;
+              }
+            }
+          });
+        })();
         </script>
         </body></html>
         """;
