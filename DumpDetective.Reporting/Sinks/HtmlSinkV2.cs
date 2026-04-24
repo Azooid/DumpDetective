@@ -363,8 +363,15 @@ public sealed class HtmlSinkV2 : IRenderSink
          .Replace(">", "&gt;")
          .Replace("\"", "&quot;");
 
-    void WriteDocHeader() =>
-        _w.Write(DocHeader.Replace("{APP_VERSION}", DumpDetective.Core.Utilities.AppInfo.Version));
+    void WriteDocHeader()
+    {
+        var now = DateTime.Now;
+        _w.Write(DocHeader
+            .Replace("{APP_VERSION}", DumpDetective.Core.Utilities.AppInfo.Version)
+            .Replace("{GEN_DATE}", now.ToString("yyyy-MM-dd"))
+            .Replace("{GEN_TIME}", now.ToString("HH:mm:ss"))
+            .Replace("{GEN_DATETIME}", now.ToString("yyyy-MM-dd HH:mm:ss")));
+    }
 
     // ── Document head + CSS ───────────────────────────────────────────────────
 
@@ -375,7 +382,7 @@ public sealed class HtmlSinkV2 : IRenderSink
         <head>
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Dump Detective Report</title>
+        <title>Dump Detective Report — {GEN_DATE}</title>
         <script>
         /* Apply theme before first paint to prevent white flash */
         (function(){
@@ -734,7 +741,7 @@ public sealed class HtmlSinkV2 : IRenderSink
             <div class="nav-brand-icon">DD</div>
             <div class="nav-brand-text">
               <span class="nav-brand-title">Dump Detective</span>
-              <span class="nav-brand-sub">{APP_VERSION}</span>
+              <span class="nav-brand-sub" title="Generated {GEN_DATETIME}">{APP_VERSION} · {GEN_TIME}</span>
             </div>
             <button id="dark-toggle" onclick="toggleDark()" title="Toggle dark/light mode"><span id="dark-icon">🌙</span></button>
           </div>

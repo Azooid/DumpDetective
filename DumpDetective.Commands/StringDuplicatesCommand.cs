@@ -42,7 +42,11 @@ public sealed class StringDuplicatesCommand : ICommand
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
-        RenderWith(ctx, sink, 100, 2, 0, null);
+        RenderWith(ctx, sink,
+            top:      CommandBase.GetOverrideInt("top",       100),
+            minCount: CommandBase.GetOverrideInt("min-count",   2),
+            minWaste: CommandBase.GetOverrideLong("min-waste",   0),
+            pattern:  null);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,

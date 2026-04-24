@@ -30,13 +30,17 @@ public sealed class AnalyzeCommand : ICommand
                      significantly slower.
 
         Options:
-          --full               Full combined report (scored summary + all sub-reports)
-          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
-          -h, --help           Show this help
+          --full                   Full combined report (scored summary + all sub-reports)
+          --str-top <n>            string-duplicates: max groups shown (default 100)
+          --str-min-count <n>      string-duplicates: min duplicate count (default 2)
+          --str-min-waste <bytes>  string-duplicates: min wasted bytes (default 0)
+          -o, --output <file>      Write report to file (.html / .md / .txt / .json)
+          -h, --help               Show this help
 
         Examples:
           DumpDetective analyze app.dmp
           DumpDetective analyze app.dmp --full --output full-report.html
+          DumpDetective analyze app.dmp --full --str-min-waste 1048576
         """;
 
     public int Run(string[] args)
@@ -45,6 +49,9 @@ public sealed class AnalyzeCommand : ICommand
 
         var     a          = CliArgs.Parse(args);
         bool    full       = a.HasFlag("full");
+        int     strTop     = a.GetInt("str-top",       100);
+        int     strMinCnt  = a.GetInt("str-min-count",   2);
+        long    strMinWaste= a.GetInt("str-min-waste",   0);
         string? dumpPath   = a.DumpPath;
         string? outputPath = a.OutputPath;
 
@@ -87,7 +94,13 @@ public sealed class AnalyzeCommand : ICommand
             log.Check("Summary report rendered.");
 
             if (full)
+            {
+                CommandBase.SetOverride("top",       strTop.ToString());
+                CommandBase.SetOverride("min-count", strMinCnt.ToString());
+                CommandBase.SetOverride("min-waste", strMinWaste.ToString());
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);
+                CommandBase.ClearOverrides();
+            }
 
             if (sink.IsFile && sink.FilePath is not null)
             {

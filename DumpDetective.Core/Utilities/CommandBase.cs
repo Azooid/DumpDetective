@@ -20,6 +20,33 @@ public static class CommandBase
     [ThreadStatic] private static bool _suppressVerbose;
     public static bool SuppressVerbose { get => _suppressVerbose; set => _suppressVerbose = value; }
 
+    /// <summary>
+    /// Per-thread parameter overrides set by orchestrators (e.g. <c>analyze --full</c>,
+    /// <c>trend-analysis --full</c>) before running sub-commands in parallel.
+    /// Sub-commands read these via <see cref="GetOverride"/> to apply caller-specified
+    /// filter params (e.g. <c>--min-waste</c>, <c>--top</c>).
+    /// Keyed by the same names used in <see cref="CliArgs"/> (lowercase, no dashes).
+    /// </summary>
+    [ThreadStatic] private static Dictionary<string, string>? _overrides;
+
+    /// <summary>Sets a per-thread parameter override for the duration of a sub-command call.</summary>
+    public static void SetOverride(string key, string value)
+    {
+        _overrides ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        _overrides[key] = value;
+    }
+
+    /// <summary>Clears all per-thread overrides.</summary>
+    public static void ClearOverrides() => _overrides = null;
+
+    /// <summary>Returns a per-thread override value, or <paramref name="default"/> if not set.</summary>
+    public static int GetOverrideInt(string key, int @default) =>
+        _overrides is not null && _overrides.TryGetValue(key, out var v) && int.TryParse(v, out var n) ? n : @default;
+
+    /// <summary>Returns a per-thread override value, or <paramref name="default"/> if not set.</summary>
+    public static long GetOverrideLong(string key, long @default) =>
+        _overrides is not null && _overrides.TryGetValue(key, out var v) && long.TryParse(v, out var n) ? n : @default;
+
     // ── Per-command operation trace ───────────────────────────────────────────
     // [ThreadStatic] so parallel full-analyze workers each have their own trace.
 

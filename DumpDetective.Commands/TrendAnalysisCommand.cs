@@ -28,6 +28,9 @@ public sealed class TrendAnalysisCommand : ICommand
                                  trend arrows and comparisons (default: 1 = first dump)
           --ignore-event <type>  Exclude publisher types containing <type> from the
                                  Event Leak Analysis table. Repeatable.
+          --str-top <n>          string-duplicates: max groups shown (default 100)
+          --str-min-count <n>    string-duplicates: min duplicate count (default 2)
+          --str-min-waste <bytes> string-duplicates: min wasted bytes (default 0)
           -o, --output <f>       Write report to file (.html / .md / .txt / .json)
           -h, --help             Show this help
 
@@ -50,6 +53,9 @@ public sealed class TrendAnalysisCommand : ICommand
         bool full        = a.HasFlag("full");
         var ignoreEvents = a.GetAll("ignore-event").ToList();
         int baselineArg  = a.GetInt("baseline", 1);
+        int strTop       = a.GetInt("str-top",       100);
+        int strMinCnt    = a.GetInt("str-min-count",   2);
+        long strMinWaste = a.GetInt("str-min-waste",   0);
         if (baselineArg < 1)
         {
             AnsiConsole.MarkupLine("[bold red]Error:[/] --baseline must be a positive integer.");
@@ -141,7 +147,11 @@ public sealed class TrendAnalysisCommand : ICommand
                             $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
                             $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {clrVer}  |  Score: {snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}");
                         AnalyzeReport.RenderReport(snap, cap, includeHeader: false);
+                        CommandBase.SetOverride("top",       strTop.ToString());
+                        CommandBase.SetOverride("min-count", strMinCnt.ToString());
+                        CommandBase.SetOverride("min-waste", strMinWaste.ToString());
                         AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, log);
+                        CommandBase.ClearOverrides();
                         capturedSubReports[i] = cap.GetDoc();
                     }
                     catch (Exception ex)

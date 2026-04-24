@@ -55,6 +55,16 @@ public static class AnalyzeReport
                         csw.Stop();
                         log.CompleteParallelItem(cmds[i].Name, csw.ElapsedMilliseconds, details);
                     }
+                    catch (Exception ex)
+                    {
+                        CommandBase.EndTrace();
+                        csw.Stop();
+                        log.Warn($"{cmds[i].Name} failed: {ex.Message}", indent: true);
+                        captures[i].Alert(AlertLevel.Warning,
+                            $"⚠ {cmds[i].Name} could not complete",
+                            ex.Message,
+                            "This sub-report was skipped. All other reports are unaffected.");
+                    }
                     finally { CommandBase.SuppressVerbose = false; }
                 });
 
@@ -91,6 +101,14 @@ public static class AnalyzeReport
                                 task.Description = n >= total
                                     ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
                                     : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(cmds[i].Description)}[/]";
+                            }
+                            catch (Exception ex)
+                            {
+                                captures[i].Alert(AlertLevel.Warning,
+                                    $"⚠ {cmds[i].Name} could not complete",
+                                    ex.Message,
+                                    "This sub-report was skipped. All other reports are unaffected.");
+                                task.Increment(1);
                             }
                             finally
                             {

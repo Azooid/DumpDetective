@@ -20,6 +20,15 @@ if (args.Length == 0 || args[0] is "--help" or "-h")
     return 0;
 }
 
+if (args[0] is "--version" or "-v")
+{
+    var v    = DumpDetective.Core.Utilities.AppInfo.Version;
+    AnsiConsole.Write(new FigletText("DumpDetective").Color(Color.MediumPurple1));
+    AnsiConsole.MarkupLine($"  [bold mediumpurple1]{v}[/]   [dim].NET 10 Native AOT  \u00b7  ClrMD 3.x  \u00b7  Windows[/]");
+    AnsiConsole.WriteLine();
+    return 0;
+}
+
 bool showMemory = args.Contains("--debug");
 var rawArgs     = args[1..].Where(static a => a != "--debug").ToArray();
 bool isHelp     = rawArgs.Contains("--help") || rawArgs.Contains("-h");
