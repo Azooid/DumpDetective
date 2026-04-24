@@ -28,6 +28,8 @@ public sealed class TrendAnalysisCommand : ICommand
                                  trend arrows and comparisons (default: 1 = first dump)
           --ignore-event <type>  Exclude publisher types containing <type> from the
                                  Event Leak Analysis table. Repeatable.
+          --prefix <p>          Prefix used for dump labels (default: D → labels are D1, D2, D3).
+                                 E.g. --prefix W1 → W11, W12, W13.
           --str-top <n>          string-duplicates: max groups shown (default 100)
           --str-min-count <n>    string-duplicates: min duplicate count (default 2)
           --str-min-waste <bytes> string-duplicates: min wasted bytes (default 0)
@@ -53,6 +55,7 @@ public sealed class TrendAnalysisCommand : ICommand
         bool full        = a.HasFlag("full");
         var ignoreEvents = a.GetAll("ignore-event").ToList();
         int baselineArg  = a.GetInt("baseline", 1);
+        string dumpPrefix = a.GetString("prefix", "D");
         int strTop       = a.GetInt("str-top",       100);
         int strMinCnt    = a.GetInt("str-min-count",   2);
         long strMinWaste = a.GetInt("str-min-waste",   0);
@@ -110,7 +113,7 @@ public sealed class TrendAnalysisCommand : ICommand
 
         for (int i = 0; i < dumpPaths.Count; i++)
         {
-            var label    = $"D{i + 1}";
+            var label    = $"{dumpPrefix}{i + 1}";
             var path     = dumpPaths[i];
             var dispName = ShortName(path);
             DumpSnapshot? snap = null;
@@ -180,18 +183,31 @@ public sealed class TrendAnalysisCommand : ICommand
         }
 
         // .json output = save raw snapshots
-        if (a.OutputPath is not null && a.OutputPath.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
+        // Build effective output path: explicit --output wins; otherwise derive from
+        // command name + format (or html default) placed next to the first dump file.
+        string? effectiveOutput = a.OutputPath;
+        if (effectiveOutput is null)
         {
-            TrendRawSerializer.Save(snapshots, a.OutputPath, capturedSubReports);
-            log.Success($"Raw snapshot data written to: {a.OutputPath}");
+            string dir = dumpPaths.Count > 0
+                ? (Path.GetDirectoryName(dumpPaths[0]) ?? ".")
+                : ".";
+            string ext = a.Format ?? "html";
+            effectiveOutput = Path.Combine(dir, $"trend-analysis.{ext}");
+        }
+
+        if (effectiveOutput.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+             effectiveOutput.EndsWith(".bin",  StringComparison.OrdinalIgnoreCase))
+        {
+            TrendRawSerializer.Save(snapshots, effectiveOutput, capturedSubReports, dumpPrefix);
+            log.Success($"Raw snapshot data written to: {effectiveOutput}");
             log.Info("Use 'trend-render' to convert to HTML/Markdown/text at any time.");
             return 0;
         }
 
         log.SectionHeader("Rendering Output");
         log.Info("Building trend report...");
-        using var sink = SinkFactory.Create(a.OutputPath);
-        TrendAnalysisReport.RenderTrend(snapshots, sink, ignoreEvents, baselineIndex);
+        using var sink = SinkFactory.Create(effectiveOutput);
+        TrendAnalysisReport.RenderTrend(snapshots, sink, ignoreEvents, baselineIndex, dumpPrefix);
         log.Check("Trend report rendered.");
 
         if (capturedSubReports is not null)
@@ -199,7 +215,7 @@ public sealed class TrendAnalysisCommand : ICommand
             log.Info($"Rendering {dumpPaths.Count} per-dump detailed report(s)...");
             for (int i = 0; i < dumpPaths.Count; i++)
             {
-                var label = $"D{i + 1}";
+                var label = $"{dumpPrefix}{i + 1}";
                 var snap  = snapshots[i];
                 var sc    = TrendAnalysisReport.ScoreColor(snap.HealthScore);
                 log.InfoM(

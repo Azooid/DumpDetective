@@ -16,14 +16,15 @@ public static class TrendAnalysisReport
         List<DumpSnapshot>     snaps,
         IRenderSink            sink,
         IReadOnlyList<string>? ignoreEventTypes = null,
-        int                    baselineIndex    = 0)
+        int                    baselineIndex    = 0,
+        string                 dumpPrefix       = "D")
     {
         baselineIndex = Math.Clamp(baselineIndex, 0, snaps.Count - 1);
 
         var    s0    = snaps[baselineIndex];
         var    sN    = snaps[^1];
         bool   full  = snaps.Any(s => s.IsFullMode);
-        var    labels = snaps.Select((_, i) => $"D{i + 1}").ToArray();
+        var    labels = snaps.Select((_, i) => $"{dumpPrefix}{i + 1}").ToArray();
         string baselineLabel = labels[baselineIndex];
         string baselineNote  = baselineIndex == 0 ? "" : $"  |  Baseline: {baselineLabel}";
 

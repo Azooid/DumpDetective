@@ -182,38 +182,54 @@ public sealed class HtmlSinkV2 : IRenderSink
         {
             string valHtml = H(v);
             if (k.Contains("score", StringComparison.OrdinalIgnoreCase) ||
-                k.Contains("health", StringComparison.OrdinalIgnoreCase))
+              k.Contains("health", StringComparison.OrdinalIgnoreCase))
             {
-                if (v.Contains('→'))
+              static string BadgeHtml(string part)
+              {
+                var numPart = part.Split('/')[0].Trim();
+                if (int.TryParse(numPart, out int score))
                 {
-                    var arrow = v.IndexOf('→');
-                    string left  = v[..arrow].Trim();
-                    string right = v[(arrow + 1)..].Trim();
-                    string delta = string.Empty;
-                    var dm = System.Text.RegularExpressions.Regex.Match(right, @"^(.*?)(\s*\([^)]+\))\s*$");
-                    if (dm.Success) { right = dm.Groups[1].Value.Trim(); delta = dm.Groups[2].Value.Trim(); }
-                    static (string cls, string html) ScoreBadge(string part) {
-                        var n = part.Split('/')[0].Trim();
-                        if (int.TryParse(n, out int sc)) {
-                            string cls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
-                            return (cls, $"<span class=\"score-badge {cls}\">{H(part)}</span>");
-                        }
-                        return ("", H(part));
-                    }
-                    var (_, lHtml) = ScoreBadge(left);
-                    var (_, rHtml) = ScoreBadge(right);
-                    string deltaHtml = delta.Length > 0 ? $" <span class=\"kv-delta\">{H(delta)}</span>" : string.Empty;
-                    valHtml = $"{lHtml} <span class=\"kv-arrow\">&rarr;</span> {rHtml}{deltaHtml}";
+                  string badgeCls = score >= 70 ? "badge-ok" : score >= 40 ? "badge-warn" : "badge-crit";
+                  return $"<span class=\"score-badge {badgeCls}\">{H(part)}</span>";
                 }
-                else
+
+                return H(part);
+              }
+
+              static string RenderScoreTrend(string text)
+              {
+                int arrowIdx = text.IndexOf(" → ", StringComparison.Ordinal);
+                if (arrowIdx < 0)
+                  return BadgeHtml(text.Trim());
+
+                string left = text[..arrowIdx].Trim();
+                string right = text[(arrowIdx + 3)..].Trim();
+                string delta = string.Empty;
+                var deltaMatch = System.Text.RegularExpressions.Regex.Match(right, @"^(.*?)(\s*\([^)]+\))\s*$");
+                if (deltaMatch.Success)
                 {
-                    var numStr = v.Split('/')[0].Trim();
-                    if (int.TryParse(numStr, out int sc))
-                    {
-                        string badgeCls = sc >= 70 ? "badge-ok" : sc >= 40 ? "badge-warn" : "badge-crit";
-                        valHtml = $"<span class=\"score-badge {badgeCls}\">{H(v)}</span>";
-                    }
+                  right = deltaMatch.Groups[1].Value.Trim();
+                  delta = deltaMatch.Groups[2].Value.Trim();
                 }
+
+                string deltaHtml = delta.Length > 0 ? $" <span class=\"kv-delta\">{H(delta)}</span>" : string.Empty;
+                return $"{BadgeHtml(left)} <span class=\"kv-arrow\">&rarr;</span> {BadgeHtml(right)}{deltaHtml}";
+              }
+
+              int diffSepIdx = v.IndexOf(" ⟹ ", StringComparison.Ordinal);
+              if (diffSepIdx < 0)
+                diffSepIdx = v.IndexOf("⟹", StringComparison.Ordinal);
+
+              if (diffSepIdx >= 0)
+              {
+                string left = v[..diffSepIdx].Trim();
+                string right = v[(v[diffSepIdx] == '⟹' ? diffSepIdx + 1 : diffSepIdx + 3)..].Trim();
+                valHtml = $"{RenderScoreTrend(left)} <span class=\"kv-arrow\">⟹</span> {RenderScoreTrend(right)}";
+              }
+              else
+              {
+                valHtml = RenderScoreTrend(v);
+              }
             }
             _w.WriteLine($"<div class=\"kv-row\"><span class=\"kv-key\">{H(k)}</span><span class=\"kv-val\">{valHtml}</span></div>");
         }

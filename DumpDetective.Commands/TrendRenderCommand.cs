@@ -180,7 +180,8 @@ public sealed class TrendRenderCommand : ICommand
 
         // ── Trend-raw JSON ────────────────────────────────────────────────────
         List<DumpSnapshot> snapshots;
-        try { snapshots = TrendRawSerializer.Load(rawFile); }
+        string dumpPrefix;
+        try { (snapshots, dumpPrefix) = TrendRawSerializer.Load(rawFile); }
         catch (Exception ex) { AnsiConsole.MarkupLine($"[bold red]Error reading raw trend data:[/] {Markup.Escape(ex.Message)}"); return 1; }
 
         if (snapshots.Count < 2)
@@ -267,11 +268,11 @@ public sealed class TrendRenderCommand : ICommand
 
         AnsiConsole.MarkupLine(
             $"Rendering trend report from {Markup.Escape(Path.GetFileName(rawFile))}  " +
-            $"({snapshots.Count} snapshots)  baseline: D{baselineArg}" +
+            $"({snapshots.Count} snapshots)  baseline: {dumpPrefix}{baselineArg}" +
             (mini ? "  [dim](--mini: sub-reports suppressed)[/]" : string.Empty));
 
         using var trendSink = SinkFactory.Create(outputPath);
-        TrendAnalysisReport.RenderTrend(snapshots, trendSink, ignoreEvents, baselineIndex);
+        TrendAnalysisReport.RenderTrend(snapshots, trendSink, ignoreEvents, baselineIndex, dumpPrefix);
 
         if (!mini)
         {
@@ -283,7 +284,7 @@ public sealed class TrendRenderCommand : ICommand
                 {
                     var snap = snapshots[i];
                     if (snap.SubReport is null) continue;
-                    AnsiConsole.MarkupLine($"  D{i + 1}  {Markup.Escape(Path.GetFileName(snap.DumpPath))}  {snap.HealthScore}/100");
+                    AnsiConsole.MarkupLine($"  {dumpPrefix}{i + 1}  {Markup.Escape(Path.GetFileName(snap.DumpPath))}  {snap.HealthScore}/100");
                     ReportDocReplay.Replay(snap.SubReport, trendSink);
                 }
             }

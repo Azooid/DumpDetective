@@ -178,7 +178,9 @@ public sealed class CliArgs
         // Fall back to DD_DUMP environment variable
         dumpPath ??= Environment.GetEnvironmentVariable("DD_DUMP");
 
-        // --format synthesises an output path when --output is absent
+        // --format synthesises an output path when --output is absent.
+        // Only applies when a dump file path is known (not directories — those commands
+        // own their own output path defaulting).
         if (outputPath is null && format is not null &&
             !format.Equals("console", StringComparison.OrdinalIgnoreCase) &&
             dumpPath is not null)

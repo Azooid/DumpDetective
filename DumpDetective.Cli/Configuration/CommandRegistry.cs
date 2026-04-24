@@ -152,6 +152,9 @@ public static class CommandRegistry
         new TrendAnalysisCommand(),
         new TrendRenderCommand(),
         new RenderCommand(),
+
+        // ── diff ──────────────────────────────────────────────────────────────
+        new DiffCommand(),
     ];
 
     /// <summary>All registered commands.</summary>

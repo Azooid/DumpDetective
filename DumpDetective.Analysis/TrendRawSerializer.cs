@@ -23,7 +23,8 @@ public static class TrendRawSerializer
     public static void Save(
         IReadOnlyList<DumpSnapshot> snapshots,
         string path,
-        ReportDoc?[]? subReports = null)
+        ReportDoc?[]? subReports = null,
+        string dumpPrefix = "D")
     {
         // Attach sub-reports before serializing, then detach to avoid mutating caller's data
         for (int i = 0; i < snapshots.Count; i++)
@@ -37,15 +38,15 @@ public static class TrendRawSerializer
         if (compress)
         {
             using var brotli = new BrotliStream(fs, CompressionLevel.SmallestSize, leaveOpen: false);
-            WriteJson(brotli, snapshots, indented: false);
+            WriteJson(brotli, snapshots, dumpPrefix, indented: false);
         }
         else
         {
-            WriteJson(fs, snapshots, indented: true);
+            WriteJson(fs, snapshots, dumpPrefix, indented: true);
         }
     }
 
-    private static void WriteJson(Stream stream, IReadOnlyList<DumpSnapshot> snapshots, bool indented)
+    private static void WriteJson(Stream stream, IReadOnlyList<DumpSnapshot> snapshots, string dumpPrefix, bool indented)
     {
         var opts = new JsonWriterOptions { Indented = indented };
         using var writer = new Utf8JsonWriter(stream, opts);
@@ -54,6 +55,7 @@ public static class TrendRawSerializer
         writer.WriteString("exportedAt", DateTime.UtcNow.ToString("o"));
         writer.WriteString("version",    "3");
         writer.WriteString("toolVersion", DumpDetective.Core.Utilities.AppInfo.Version);
+        writer.WriteString("dumpPrefix",  dumpPrefix);
         writer.WritePropertyName("snapshots");
         writer.WriteStartArray();
         foreach (var s in snapshots)
@@ -63,7 +65,8 @@ public static class TrendRawSerializer
         writer.Flush();
     }
 
-    public static List<DumpSnapshot> Load(string path)
+    /// <summary>Loads snapshots and the optional dump-prefix stored when saving.</summary>
+    public static (List<DumpSnapshot> Snapshots, string DumpPrefix) Load(string path)
     {
         string json;
         if (path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
@@ -85,6 +88,10 @@ public static class TrendRawSerializer
         if (!doc.RootElement.TryGetProperty("snapshots", out var arr))
             throw new InvalidOperationException($"File has no 'snapshots' array: {path}");
 
+        string dumpPrefix = "D";
+        if (doc.RootElement.TryGetProperty("dumpPrefix", out var pfxElem))
+            dumpPrefix = pfxElem.GetString() ?? "D";
+
         var result = new List<DumpSnapshot>();
         foreach (var elem in arr.EnumerateArray())
         {
@@ -92,6 +99,6 @@ public static class TrendRawSerializer
                     ?? throw new InvalidOperationException("Could not deserialize snapshot entry.");
             result.Add(s);
         }
-        return result;
+        return (result, dumpPrefix);
     }
 }
