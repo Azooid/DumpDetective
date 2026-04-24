@@ -2,7 +2,7 @@
 
 A command-line tool for analysing .NET memory dumps (`.dmp` / `.mdmp`). Built on **ClrMD 3.x** and **.NET 10 Native AOT**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, JSON, or compressed binary**.
 
-Every command writes an HTML report alongside the dump file by default. Use `--output report.json` (or `.bin`) to save a structured report, then `DumpDetective.Cli render report.json` (or `render report.bin`) to convert it to any format at any time without re-opening the dump.
+Every command writes an HTML report alongside the dump file by default. Use `--output report.json` (or `.bin`) to save a structured report, then `DumpDetective render report.json` (or `render report.bin`) to convert it to any format at any time without re-opening the dump.
 
 ---
 
@@ -13,6 +13,34 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 | .NET SDK | 10.0+ |
 | Target dump runtime | .NET Framework 4.x / .NET Core / .NET 5+ |
 | OS | Windows (WinDbg-style dumps) |
+
+---
+
+## Installation
+
+Install as a global .NET tool from [NuGet.org](https://www.nuget.org/packages/DumpDetective.Cli):
+
+```bash
+dotnet tool install --global DumpDetective.Cli --version 2.2.0
+```
+
+Once installed, the tool is available as:
+
+```bash
+DumpDetective <command>
+```
+
+To update to the latest version:
+
+```bash
+dotnet tool update --global DumpDetective.Cli
+```
+
+To uninstall:
+
+```bash
+dotnet tool uninstall --global DumpDetective.Cli
+```
 
 ---
 
@@ -39,47 +67,47 @@ The output is a single native binary: `DumpDetective.Cli.exe`.
 $env:DD_DUMP = "C:\dumps\w3wp.dmp"
 
 # Default: writes report as app.html alongside the dump file
-DumpDetective.Cli analyze app.dmp
+DumpDetective analyze app.dmp
 
 # Full report (all sub-analyses) exported to HTML
-DumpDetective.Cli analyze app.dmp --full
+DumpDetective analyze app.dmp --full
 
 # Full report with peak memory diagnostics printed at the end
-DumpDetective.Cli analyze app.dmp --full --debug
+DumpDetective analyze app.dmp --full --debug
 
 # Choose format without specifying a filename
-DumpDetective.Cli heap-stats app.dmp --format md      # -> app.md
-DumpDetective.Cli heap-stats app.dmp --format bin     # -> app.bin (Brotli-compressed)
-DumpDetective.Cli heap-stats app.dmp --format console # -> terminal output
+DumpDetective heap-stats app.dmp --format md      # -> app.md
+DumpDetective heap-stats app.dmp --format bin     # -> app.bin (Brotli-compressed)
+DumpDetective heap-stats app.dmp --format console # -> terminal output
 
 # Save full report as JSON, convert to HTML later -- no dump file needed
-DumpDetective.Cli analyze app.dmp --full --output report.json
-DumpDetective.Cli render report.json
+DumpDetective analyze app.dmp --full --output report.json
+DumpDetective render report.json
 
 # Save as compressed binary (Brotli), convert later
-DumpDetective.Cli analyze app.dmp --full --output report.bin
-DumpDetective.Cli render report.bin
+DumpDetective analyze app.dmp --full --output report.bin
+DumpDetective render report.bin
 
 # Write both HTML and bin in one pass
-DumpDetective.Cli analyze app.dmp --full -o report.html -o report.bin
-DumpDetective.Cli analyze app.dmp --full --format html --format bin
+DumpDetective analyze app.dmp --full -o report.html -o report.bin
+DumpDetective analyze app.dmp --full --format html --format bin
 
 # Trend report across a series of dumps
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp
 
 # Save raw trend data as JSON (includes all per-dump sub-reports when --full)
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
 
 # Re-render the raw JSON at a different baseline or format -- no dump files needed
-DumpDetective.Cli render snapshots.json --baseline 2 --output report.html
+DumpDetective render snapshots.json --baseline 2 --output report.html
 
 # Or point at a folder -- picks up all .dmp files sorted by timestamp
-DumpDetective.Cli trend-analysis C:\dumps\
+DumpDetective trend-analysis C:\dumps\
 
 # Compare two saved trend files (no dump files needed)
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output week1.bin
-DumpDetective.Cli trend-analysis d4.dmp d5.dmp d6.dmp --full --output week2.bin
-DumpDetective.Cli diff week1.bin week2.bin -o delta.html
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output week1.bin
+DumpDetective trend-analysis d4.dmp d5.dmp d6.dmp --full --output week2.bin
+DumpDetective diff week1.bin week2.bin -o delta.html
 ```
 
 ---
@@ -99,7 +127,7 @@ DumpDetective.Cli diff week1.bin week2.bin -o delta.html
 Scored health report for a single dump.
 
 ```
-DumpDetective.Cli analyze <dump-file> [options]
+DumpDetective analyze <dump-file> [options]
 
 Options:
   --full               Full combined report (scored summary + all sub-reports in parallel)
@@ -124,12 +152,12 @@ Options:
 
 **Examples:**
 ```bash
-DumpDetective.Cli analyze app.dmp
-DumpDetective.Cli analyze app.dmp --full
-DumpDetective.Cli analyze app.dmp --full --output full-report.html
-DumpDetective.Cli analyze app.dmp --full --output full-report.html --debug
-DumpDetective.Cli analyze app.dmp --format bin     # Brotli-compressed output
-DumpDetective.Cli analyze app.dmp --output console # terminal only
+DumpDetective analyze app.dmp
+DumpDetective analyze app.dmp --full
+DumpDetective analyze app.dmp --full --output full-report.html
+DumpDetective analyze app.dmp --full --output full-report.html --debug
+DumpDetective analyze app.dmp --format bin     # Brotli-compressed output
+DumpDetective analyze app.dmp --output console # terminal only
 ```
 
 ---
@@ -139,9 +167,9 @@ DumpDetective.Cli analyze app.dmp --output console # terminal only
 Cross-dump trend report comparing two or more snapshots over time.
 
 ```
-DumpDetective.Cli trend-analysis <dump1> <dump2> [<dump3>...] [options]
-DumpDetective.Cli trend-analysis <directory> [options]
-DumpDetective.Cli trend-analysis --list <file.txt> [options]
+DumpDetective trend-analysis <dump1> <dump2> [<dump3>...] [options]
+DumpDetective trend-analysis <directory> [options]
+DumpDetective trend-analysis --list <file.txt> [options]
 
 Options:
   --full                   Full collection per dump (event leaks, string duplicates,
@@ -176,15 +204,15 @@ Options:
 
 **Examples:**
 ```bash
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.bin  # compressed
-DumpDetective.Cli trend-analysis C:\dumps\ --full --output report.html
-DumpDetective.Cli trend-analysis --list dumps.txt --full --output report.md
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --prefix W --output week1.html
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.bin  # compressed
+DumpDetective trend-analysis C:\dumps\ --full --output report.html
+DumpDetective trend-analysis --list dumps.txt --full --output report.md
+DumpDetective trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
+DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --prefix W --output week1.html
 ```
 
 ---
@@ -194,7 +222,7 @@ DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --prefix W --output week1.
 Compares two saved report files (`.json` or `.bin`) and produces a diff report. No dump file required.
 
 ```
-DumpDetective.Cli diff <before.json|before.bin> <after.json|after.bin> [options]
+DumpDetective diff <before.json|before.bin> <after.json|after.bin> [options]
 
 Supported input formats:
   report     Produced by any single-dump command with -o *.json or -o *.bin
@@ -223,19 +251,19 @@ Options:
 **Examples:**
 ```bash
 # Single-dump report diff
-DumpDetective.Cli analyze before.dmp --full -o before.bin
-DumpDetective.Cli analyze after.dmp  --full -o after.bin
-DumpDetective.Cli diff before.bin after.bin -o delta.html
+DumpDetective analyze before.dmp --full -o before.bin
+DumpDetective analyze after.dmp  --full -o after.bin
+DumpDetective diff before.bin after.bin -o delta.html
 
 # Trend-raw diff (week-over-week)
-DumpDetective.Cli diff week1.bin week2.bin -o trend-delta.html
-DumpDetective.Cli diff week1.bin week2.bin --changed-only -o delta.html
+DumpDetective diff week1.bin week2.bin -o trend-delta.html
+DumpDetective diff week1.bin week2.bin --changed-only -o delta.html
 
 # Diff only the memory-leak sub-report across two trend files
-DumpDetective.Cli diff week1.bin week2.bin --command memory-leak -o memleak-delta.html
+DumpDetective diff week1.bin week2.bin --command memory-leak -o memleak-delta.html
 
 # Multiple commands at once
-DumpDetective.Cli diff week1.bin week2.bin --command memory-leak --command heap-stats -o subset.html
+DumpDetective diff week1.bin week2.bin --command memory-leak --command heap-stats -o subset.html
 ```
 
 ---
@@ -245,7 +273,7 @@ DumpDetective.Cli diff week1.bin week2.bin --command memory-leak --command heap-
 Converts any DumpDetective JSON or compressed binary file to HTML, Markdown, plain text, or console output -- **no dump file required**.
 
 ```
-DumpDetective.Cli render <file.json|file.bin> [options]
+DumpDetective render <file.json|file.bin> [options]
 
 Accepted input:
   report     JSON or .bin produced by any single-dump command with --output *.json / *.bin
@@ -274,37 +302,37 @@ Options:
 **Examples:**
 ```bash
 # Default: renders to report.html
-DumpDetective.Cli render snapshots.json
-DumpDetective.Cli render report.bin
+DumpDetective render snapshots.json
+DumpDetective render report.bin
 
 # Explicit output format
-DumpDetective.Cli render snapshots.json --output report.html
-DumpDetective.Cli render snapshots.json --format md
+DumpDetective render snapshots.json --output report.html
+DumpDetective render snapshots.json --format md
 
 # Print to terminal
-DumpDetective.Cli render snapshots.json --output console
+DumpDetective render snapshots.json --output console
 
 # Trend summary only (no per-dump sub-reports)
-DumpDetective.Cli render snapshots.json --mini --output trend-only.html
+DumpDetective render snapshots.json --mini --output trend-only.html
 
 # Re-render at a different baseline
-DumpDetective.Cli render snapshots.json --baseline 2 --output report-d2base.html
+DumpDetective render snapshots.json --baseline 2 --output report-d2base.html
 
 # Extract dump #4's full sub-report as a standalone file
-DumpDetective.Cli render snapshots.json --from 4 --output d4-full.html
+DumpDetective render snapshots.json --from 4 --output d4-full.html
 
 # Extract just the memory-leak chapter from dump #4
-DumpDetective.Cli render snapshots.json --from 4 --command memory-leak --output d4-memleak.html
+DumpDetective render snapshots.json --from 4 --command memory-leak --output d4-memleak.html
 
 # Extract memory-leak from every dump, stacked in one file
-DumpDetective.Cli render snapshots.json --command memory-leak --output all-memleak.html
+DumpDetective render snapshots.json --command memory-leak --output all-memleak.html
 
 # Multiple commands from dump #2
-DumpDetective.Cli render snapshots.json --from 2 --command memory-leak --command heap-stats --output d2-subset.html
+DumpDetective render snapshots.json --from 2 --command memory-leak --command heap-stats --output d2-subset.html
 
 # Convert a single-dump report JSON / bin to HTML
-DumpDetective.Cli render heap-stats.json
-DumpDetective.Cli render heap-stats.bin
+DumpDetective render heap-stats.json
+DumpDetective render heap-stats.bin
 ```
 
 > **Note:** `--from` and `--command` require `trend-raw` JSON saved with `--full`.
@@ -373,27 +401,27 @@ Both `-o` / `--output` and `--format` are **repeatable** — you can write multi
 
 ```bash
 # Two explicit output files
-DumpDetective.Cli heap-stats app.dmp -o report.html -o report.bin
+DumpDetective heap-stats app.dmp -o report.html -o report.bin
 
 # Two formats — files auto-named from dump name
-DumpDetective.Cli heap-stats app.dmp --format html --format bin   # -> app.html + app.bin
+DumpDetective heap-stats app.dmp --format html --format bin   # -> app.html + app.bin
 
 # Mix -o and --format: explicit path plus extra format(s)
-DumpDetective.Cli analyze app.dmp --full -o report.html --format bin   # -> report.html + report.bin
+DumpDetective analyze app.dmp --full -o report.html --format bin   # -> report.html + report.bin
 
 # trend-analysis: write snapshot data AND the rendered report in one pass
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --format html --format bin  # -> trend-analysis.html + trend-analysis.bin
+DumpDetective trend-analysis d1.dmp d2.dmp --full --format html --format bin  # -> trend-analysis.html + trend-analysis.bin
 
 # render: convert to two formats at once
-DumpDetective.Cli render snapshots.json -o report.html -o report.md
+DumpDetective render snapshots.json -o report.html -o report.md
 ```
 
 `--format` without a full filename auto-names the file after the dump (or input file for `render`):
 
 ```bash
-DumpDetective.Cli heap-stats app.dmp --format md      # -> app.md
-DumpDetective.Cli heap-stats app.dmp --format bin     # -> app.bin
-DumpDetective.Cli render snapshots.json --format md   # -> snapshots.md
+DumpDetective heap-stats app.dmp --format md      # -> app.md
+DumpDetective heap-stats app.dmp --format bin     # -> app.bin
+DumpDetective render snapshots.json --format md   # -> snapshots.md
 ```
 
 ### Dark mode (HTML output)
@@ -411,14 +439,14 @@ There are two structured formats:
 | `"report"` | Any single-dump command with `--output *.json` / `*.bin` | Full rendered report document |
 | `"trend-raw"` | `trend-analysis --output *.json` / `*.bin` | Raw snapshot metrics + optional captured sub-reports |
 
-Both are handled transparently by `DumpDetective.Cli render` — it auto-detects the format and decompresses `.bin` automatically:
+Both are handled transparently by `DumpDetective render` — it auto-detects the format and decompresses `.bin` automatically:
 
 ```bash
-DumpDetective.Cli render heap-stats.json
-DumpDetective.Cli render heap-stats.bin
-DumpDetective.Cli render analyze-full.json  --output report.md
-DumpDetective.Cli render snapshots.json     --baseline 2 --output report.html
-DumpDetective.Cli render snapshots.bin      --baseline 2 --output report.html
+DumpDetective render heap-stats.json
+DumpDetective render heap-stats.bin
+DumpDetective render analyze-full.json  --output report.md
+DumpDetective render snapshots.json     --baseline 2 --output report.html
+DumpDetective render snapshots.bin      --baseline 2 --output report.html
 ```
 
 The `trend-raw` format is especially useful: save once with `--full`, then re-render at any baseline, format, or time without touching the original dump files. Use `.bin` for long-term archival — it is typically **50–70% smaller** than the equivalent `.json`.
