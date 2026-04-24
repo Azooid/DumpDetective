@@ -39,7 +39,7 @@ public sealed class LargeObjectsCommand : ICommand
         bool    showAddr      = a.ShowAddresses;
         bool    typeBreakdown = a.HasFlag("type-breakdown");
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, minSize, filter, showAddr, typeBreakdown));
     }
 

@@ -89,7 +89,7 @@ public sealed class AnalyzeCommand : ICommand
             log.Blank();
             log.SectionHeader("Rendering Output");
 
-            using var sink = SinkFactory.Create(outputPath);
+            using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
             AnalyzeReport.RenderReport(snap, sink, ctx: dumpCtx);
             log.Check("Summary report rendered.");
 
@@ -102,10 +102,12 @@ public sealed class AnalyzeCommand : ICommand
                 CommandBase.ClearOverrides();
             }
 
-            if (sink.IsFile && sink.FilePath is not null)
+            if (sink.IsFile)
             {
                 log.Blank();
-                log.Success($"Written to: {sink.FilePath}");
+                foreach (var p in (a.EffectiveOutputPaths.Count > 0 ? (IEnumerable<string>)a.EffectiveOutputPaths : [sink.FilePath ?? outputPath ?? string.Empty]))
+                    if (!string.IsNullOrEmpty(p) && !p.Equals("console", StringComparison.OrdinalIgnoreCase))
+                        log.Success($"Written to: {p}");
             }
             return 0;
         }

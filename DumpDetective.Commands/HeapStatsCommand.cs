@@ -39,7 +39,7 @@ public sealed class HeapStatsCommand : ICommand
         string? filter    = a.Filter;
         string? genFilter = a.GetOption("gen");
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, minSize, sortBy, filter, genFilter));
     }
 

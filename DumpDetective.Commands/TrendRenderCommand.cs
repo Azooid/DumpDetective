@@ -91,22 +91,31 @@ public sealed class TrendRenderCommand : ICommand
 
         // Default output is HTML; "--output console" or "--format console" explicitly requests console output.
         // "--format md" (etc.) without "--output" overrides the extension of the auto-generated path.
-        string? outputPath;
-        if (a.OutputPath is not null)
+        // Multiple -o and multiple --format values are both supported for multi-format output.
+        List<string> outputPaths;
+        if (a.OutputPaths.Count > 0)
         {
-            outputPath = a.OutputPath; // explicit --output wins
-        }
-        else if (a.Format is not null && !a.Format.Equals("console", StringComparison.OrdinalIgnoreCase) && rawFile is not null)
-        {
-            outputPath = Path.ChangeExtension(rawFile, a.Format);
-        }
-        else if (a.Format?.Equals("console", StringComparison.OrdinalIgnoreCase) == true)
-        {
-            outputPath = null; // explicit console
+            outputPaths = [.. a.OutputPaths];
         }
         else
         {
-            outputPath = rawFile is not null ? Path.ChangeExtension(rawFile, ".html") : null;
+            var formats = a.GetAll("format");
+            if (formats.Count > 0)
+            {
+                // Console-only?
+                if (formats.All(f => f.Equals("console", StringComparison.OrdinalIgnoreCase)))
+                    outputPaths = ["console"];
+                else
+                    outputPaths = [..formats
+                        .Where(f => !f.Equals("console", StringComparison.OrdinalIgnoreCase))
+                        .Select(f => rawFile is not null
+                            ? Path.ChangeExtension(rawFile, f)
+                            : $"output.{f}")];
+            }
+            else
+            {
+                outputPaths = rawFile is not null ? [Path.ChangeExtension(rawFile, ".html")] : ["console"];
+            }
         }
 
         if (baselineArg < 1)
@@ -171,10 +180,10 @@ public sealed class TrendRenderCommand : ICommand
             }
 
             AnsiConsole.MarkupLine($"Rendering report from {Markup.Escape(Path.GetFileName(rawFile))}");
-            using var sink2 = SinkFactory.Create(outputPath);
+            using var sink2 = SinkFactory.CreateMulti(outputPaths);
             ReportDocReplay.Replay(envelope.Doc, sink2);
-            if (sink2.IsFile && sink2.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink2.FilePath)}");
+            foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
             return 0;
         }
 
@@ -222,7 +231,7 @@ public sealed class TrendRenderCommand : ICommand
                 return 1;
             }
 
-            using var sink = SinkFactory.Create(outputPath);
+            using var sink = SinkFactory.CreateMulti(outputPaths);
 
             for (int i = 0; i < targets.Count; i++)
             {
@@ -252,8 +261,9 @@ public sealed class TrendRenderCommand : ICommand
                 ReportDocReplay.Replay(doc, sink);
             }
 
-            if (sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+            if (sink.IsFile)
+                foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+                    AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
             return 0;
         }
 
@@ -271,7 +281,7 @@ public sealed class TrendRenderCommand : ICommand
             $"({snapshots.Count} snapshots)  baseline: {dumpPrefix}{baselineArg}" +
             (mini ? "  [dim](--mini: sub-reports suppressed)[/]" : string.Empty));
 
-        using var trendSink = SinkFactory.Create(outputPath);
+        using var trendSink = SinkFactory.CreateMulti(outputPaths);
         TrendAnalysisReport.RenderTrend(snapshots, trendSink, ignoreEvents, baselineIndex, dumpPrefix);
 
         if (!mini)
@@ -290,8 +300,9 @@ public sealed class TrendRenderCommand : ICommand
             }
         }
 
-        if (trendSink.IsFile && trendSink.FilePath is not null)
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(trendSink.FilePath)}");
+        if (trendSink.IsFile)
+            foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
         return 0;
     }
 

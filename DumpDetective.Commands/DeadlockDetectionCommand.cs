@@ -38,7 +38,7 @@ public sealed class DeadlockDetectionCommand : ICommand
         var a = CliArgs.Parse(args);
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath, Render);
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths, Render);
     }
 
     public void Render(DumpContext ctx, IRenderSink sink)

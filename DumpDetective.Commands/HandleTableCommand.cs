@@ -32,7 +32,7 @@ public sealed class HandleTableCommand : ICommand
 
         int     top    = a.GetInt("top", 5);
         string? filter = a.Filter;
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, filter));
     }
 

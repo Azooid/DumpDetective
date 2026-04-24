@@ -37,7 +37,7 @@ public sealed class ThreadAnalysisCommand : ICommand
         string? nameFilter   = a.GetOption("name");
         string? stateFilter  = a.GetOption("state")?.ToLowerInvariant();
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, showStacks, blockedOnly, nameFilter, stateFilter));
     }
 

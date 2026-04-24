@@ -37,7 +37,7 @@ public sealed class MemoryLeakCommand : ICommand
         bool noRootTrace  = a.HasFlag("no-root-trace");
         bool inclSystem   = a.HasFlag("include-system");
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, minCount, noRootTrace, inclSystem));
     }
 

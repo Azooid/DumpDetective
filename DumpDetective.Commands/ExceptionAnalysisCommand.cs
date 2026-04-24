@@ -37,7 +37,7 @@ public sealed class ExceptionAnalysisCommand : ICommand
         bool    showAddr  = a.ShowAddresses;
         bool    showStack = a.HasFlag("stack")     || a.HasFlag("s");
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, filter, showAddr, showStack));
     }
 

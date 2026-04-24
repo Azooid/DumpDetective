@@ -30,7 +30,7 @@ public sealed class EventAnalysisCommand : ICommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         int top = a.GetInt("top", 20);
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top));
     }
 

@@ -34,7 +34,7 @@ public sealed class AsyncStacksCommand : ICommand
         int     top      = a.GetInt("top", 50);
         bool    showAddr = a.ShowAddresses;
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, showAddr));
     }
 

@@ -27,6 +27,63 @@ public sealed class CliArgs
 
     public string?               DumpPath    { get; }
     public string?               OutputPath  { get; }
+    /// <summary>All values supplied via <c>--output</c> / <c>-o</c> (explicit only, never synthesised).</summary>
+    public IReadOnlyList<string> OutputPaths => GetAll("output");
+
+    /// <summary>
+    /// Effective output path list for commands that produce dump-file-based output.
+    /// Returns explicit <c>-o</c> paths when any were supplied; otherwise synthesises
+    /// one path per <c>--format</c> value against <see cref="DumpPath"/>;
+    /// falls back to <see cref="OutputPath"/> (which may already be synthesised from a
+    /// single <c>--format</c>) if nothing else resolves.
+    /// </summary>
+    public IReadOnlyList<string> EffectiveOutputPaths
+    {
+        get
+        {
+            var specified = GetAll("output");
+            var formats   = GetAll("format");
+
+            if (specified.Count > 0)
+            {
+                // Explicit -o paths are the base; supplement with any --format values not already covered.
+                if (formats.Count == 0) return specified;
+
+                // Derive additional paths from the first -o path (or dump path as fallback).
+                var basePath = specified[0];
+                var result   = new List<string>(specified);
+                var coveredExts = new HashSet<string>(
+                    specified.Select(p => Path.GetExtension(p).TrimStart('.').ToLowerInvariant()),
+                    StringComparer.OrdinalIgnoreCase);
+
+                foreach (var fmt in formats)
+                {
+                    if (fmt.Equals("console", StringComparison.OrdinalIgnoreCase)) continue;
+                    if (!coveredExts.Add(fmt)) continue; // already have this extension
+                    result.Add(Path.ChangeExtension(basePath, fmt));
+                }
+                return result;
+            }
+
+            // No -o: synthesise one path per --format against DumpPath
+            if (formats.Count > 0 && DumpPath is not null)
+            {
+                var dir = Path.GetDirectoryName(DumpPath) ?? ".";
+                var fn  = Path.GetFileNameWithoutExtension(DumpPath).Replace(' ', '_');
+                var paths = formats
+                    .Where(f => !f.Equals("console", StringComparison.OrdinalIgnoreCase))
+                    .Select(f => Path.Combine(dir, fn + "." + f))
+                    .ToArray();
+                if (paths.Length > 0) return paths;
+                // Only "console" format — treat as no output
+                return [];
+            }
+
+            // Legacy: single OutputPath synthesised by Parse (e.g. from --format without dumpPath)
+            return OutputPath is not null ? (IReadOnlyList<string>)[OutputPath] : [];
+        }
+    }
+
     public bool                  Help        { get; }
 
     /// <summary>
@@ -125,13 +182,21 @@ public sealed class CliArgs
 
             if (a is "--output" or "-o")
             {
-                if (i + 1 < args.Length) outputPath = args[++i];
+                if (i + 1 < args.Length)
+                {
+                    outputPath = args[++i];
+                    StoreOption("output", outputPath);
+                }
                 continue;
             }
 
             if (a is "--format")
             {
-                if (i + 1 < args.Length) format = args[++i].ToLowerInvariant().TrimStart('.');
+                if (i + 1 < args.Length)
+                {
+                    format = args[++i].ToLowerInvariant().TrimStart('.');
+                    StoreOption("format", format);
+                }
                 continue;
             }
 

@@ -120,6 +120,17 @@ public static class CommandBase
         string? dumpPath,
         string? outputPath,
         Action<DumpContext, IRenderSink> body)
+        => Execute(dumpPath, outputPath is not null ? new[] { outputPath } : null, body);
+
+    /// <summary>
+    /// Multi-output overload. Each path in <paramref name="outputPaths"/> receives its own sink,
+    /// fanned out via <see cref="TeeRenderSink"/>. When the list is empty or null,
+    /// defaults to an HTML file alongside the dump.
+    /// </summary>
+    public static int Execute(
+        string? dumpPath,
+        IReadOnlyList<string>? outputPaths,
+        Action<DumpContext, IRenderSink> body)
     {
         if (dumpPath is null)
         {
@@ -134,17 +145,16 @@ public static class CommandBase
 
         try
         {
-            using var ctx  = DumpContext.Open(dumpPath);
+            using var ctx = DumpContext.Open(dumpPath);
             if (ctx.ArchWarning is not null)
                 AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(ctx.ArchWarning)}[/]");
 
-            // Default to HTML output alongside the dump file; --output console opts out.
-            bool consoleRequested = outputPath?.Equals("console", StringComparison.OrdinalIgnoreCase) == true;
-            string? effectiveOutput = consoleRequested
-                ? null
-                : outputPath ?? DefaultOutputPath(dumpPath, ".html");
+            // Build effective path list; fall back to HTML alongside the dump.
+            string[] effectivePaths = (outputPaths is { Count: > 0 })
+                ? outputPaths.ToArray()
+                : [DefaultOutputPath(dumpPath, ".html")];
 
-            using var sink = SinkFactory.Create(effectiveOutput);
+            using var sink = SinkFactory.CreateMulti(effectivePaths);
 
             bool consoleOnly = !sink.IsFile;
             if (consoleOnly)
@@ -152,8 +162,11 @@ public static class CommandBase
 
             body(ctx, sink);
 
-            if (sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {Markup.Escape(sink.FilePath)}");
+            foreach (var p in effectivePaths)
+            {
+                if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
+                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {Markup.Escape(p)}");
+            }
             return 0;
         }
         catch (InvalidOperationException ex)

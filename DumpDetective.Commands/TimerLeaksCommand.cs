@@ -29,7 +29,7 @@ public sealed class TimerLeaksCommand : ICommand
         var a        = CliArgs.Parse(args);
         if (CommandBase.TryHelp(args, Help)) return 0;
         bool showAddr = a.ShowAddresses;
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, showAddr));
     }
 

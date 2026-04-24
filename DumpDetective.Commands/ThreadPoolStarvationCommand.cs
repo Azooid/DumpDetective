@@ -54,7 +54,7 @@ public sealed class ThreadPoolStarvationCommand : ICommand
             return 1;
         }
 
-        using var sink = SinkFactory.Create(a.OutputPath);
+        using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
         try
         {
             if (!CommandBase.SuppressVerbose)
@@ -63,7 +63,9 @@ public sealed class ThreadPoolStarvationCommand : ICommand
             var data = _analyzer.Analyze(tracePath, top);
             _report.Render(data, sink, top);
 
-            if (sink.IsFile && sink.FilePath is not null)
+            foreach (var p in a.EffectiveOutputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+            if (a.EffectiveOutputPaths.Count == 0 && sink.IsFile && sink.FilePath is not null)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
             return 0;
         }

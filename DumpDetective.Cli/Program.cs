@@ -69,8 +69,8 @@ return result;
 // without any individual command needing to know about the default.
 static string[] WithDefaultHtmlOutput(string commandName, string[] rawArgs)
 {
-    // Already has an explicit output — leave args untouched
-    if (rawArgs.Any(static a => a is "-o" or "--output"))
+    // Already has an explicit output or format — leave args untouched
+    if (rawArgs.Any(static a => a is "-o" or "--output" or "--format"))
         return rawArgs;
 
     // ── Case 1: single dump file ─────────────────────────────────────────────

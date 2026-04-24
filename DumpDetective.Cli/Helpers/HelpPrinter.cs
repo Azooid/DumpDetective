@@ -72,7 +72,9 @@ internal static class HelpPrinter
 
         grid.AddRow("", "");
         grid.AddRow("[bold yellow]Output formats[/]", "[dim].html  .md  .txt  .json  .bin (Brotli-compressed JSON)[/]");
-        grid.AddRow("[bold yellow]Format flag[/]",    "[dim]--format html|md|json|bin|console  (omit -o, auto-names the file)[/]");
+        grid.AddRow("[bold yellow]-o / --output[/]",  "[dim]Repeatable: -o report.html -o report.bin  writes both files[/]");
+        grid.AddRow("[bold yellow]--format[/]",        "[dim]Repeatable: --format html --format bin  writes both files[/]");
+        grid.AddRow("  [dim]combined[/]",              "[dim]-o report.html --format bin  adds report.bin automatically[/]");
         grid.AddRow("[bold yellow]Default output[/]", "[dim]<dumpname>.html — use --output console to print to terminal[/]");
         grid.AddRow("[bold yellow]Global flags[/]",   "[dim]--debug   print peak memory after run[/]");
         grid.AddRow("[bold yellow]Env vars[/]",        "[dim]DD_DUMP   default dump path when none is given[/]");

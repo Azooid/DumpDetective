@@ -45,7 +45,7 @@ public sealed class TypeInstancesCommand : ICommand
             return 1;
         }
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, typeName, top, showAddr, minSize, genFilter));
     }
 

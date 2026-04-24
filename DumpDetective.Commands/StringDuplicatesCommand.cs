@@ -37,7 +37,7 @@ public sealed class StringDuplicatesCommand : ICommand
         long    minWaste = a.GetInt("min-waste",   0);
         string? pattern  = a.GetOption("pattern");
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, minCount, minWaste, pattern));
     }
 

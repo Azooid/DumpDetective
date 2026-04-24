@@ -31,7 +31,7 @@ public sealed class ModuleListCommand : ICommand
         if (CommandBase.TryHelp(args, Help)) return 0;
         string? filter = a.Filter;
         bool appOnly   = a.HasFlag("app-only");
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, filter, appOnly));
     }
 

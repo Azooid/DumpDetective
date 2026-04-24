@@ -39,7 +39,7 @@ public sealed class StaticRefsCommand : ICommand
             if (args[i] is "--exclude" or "-e")
                 excludes.Add(args[i + 1]);
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, filter, excludes, showAddr));
     }
 

@@ -32,7 +32,7 @@ public sealed class FinalizerQueueCommand : ICommand
 
         int  top      = a.GetInt("top", 30);
         bool showAddr = a.ShowAddresses;
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, showAddr));
     }
 

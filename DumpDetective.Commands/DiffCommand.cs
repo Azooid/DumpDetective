@@ -106,7 +106,9 @@ public sealed class DiffCommand : ICommand
         bool    showSame     = a.HasFlag("show-same");
         var     commands     = a.GetAll("command").ToList();
         var     ignoreEvents = a.GetAll("ignore-event").ToList();
-        string? outputPath   = a.OutputPath ?? BuildDefaultOutput(beforePath, afterPath);
+        IReadOnlyList<string> outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : [BuildDefaultOutput(beforePath, afterPath)];
 
         string? beforeJson, afterJson;
         try   { beforeJson = ReadRaw(beforePath); }
@@ -128,12 +130,12 @@ public sealed class DiffCommand : ICommand
         // ── trend-raw diff ────────────────────────────────────────────────────
         if (beforeFormat == "trend-raw")
             return RunTrendDiff(beforePath, afterPath, beforeJson, afterJson,
-                                commands, ignoreEvents, outputPath, diffOpts);
+                                commands, ignoreEvents, outputPaths, diffOpts);
 
-        // ── single-dump report diff ───────────────────────────────────────────
+        // ── single-dump report diff ─────────────────────────────────────────────
         if (beforeFormat == "report")
             return RunReportDiff(beforePath, afterPath, beforeJson, afterJson,
-                                 outputPath, diffOpts);
+                                 outputPaths, diffOpts);
 
         AnsiConsole.MarkupLine($"[bold red]✗[/] Unrecognised file format: [bold]{beforeFormat ?? "unknown"}[/]. Expected [dim]report[/] or [dim]trend-raw[/].");
         return 1;
@@ -149,7 +151,7 @@ public sealed class DiffCommand : ICommand
     private static int RunReportDiff(
         string beforePath, string afterPath,
         string beforeJson, string afterJson,
-        string? outputPath, ReportDiffer.Options opts)
+        IReadOnlyList<string> outputPaths, ReportDiffer.Options opts)
     {
         DumpReportEnvelope? beforeEnv, afterEnv;
         try   { beforeEnv = JsonSerializer.Deserialize(beforeJson, CoreJsonContext.Default.DumpReportEnvelope); }
@@ -165,20 +167,20 @@ public sealed class DiffCommand : ICommand
         AnsiConsole.MarkupLine($"Comparing [bold]{Markup.Escape(beforeLabel)}[/] → [bold]{Markup.Escape(afterLabel)}[/]");
 
         var diffDoc = ReportDiffer.Diff(beforeEnv.Doc, afterEnv.Doc, beforeLabel, afterLabel, opts);
-        using var sink = SinkFactory.Create(outputPath);
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(diffDoc, sink);
-        if (sink.IsFile && sink.FilePath is not null)
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
         return 0;
     }
 
-    // ── Trend-raw diff ────────────────────────────────────────────────────────
+    // ── Trend-raw diff ─────────────────────────────────────────────────────────────
 
     private static int RunTrendDiff(
         string beforePath, string afterPath,
         string beforeJson, string afterJson,
         List<string> commands, List<string> ignoreEvents,
-        string? outputPath, ReportDiffer.Options opts)
+        IReadOnlyList<string> outputPaths, ReportDiffer.Options opts)
     {
         List<DumpSnapshot> beforeSnaps, afterSnaps;
         string beforePrefix, afterPrefix;
@@ -199,7 +201,7 @@ public sealed class DiffCommand : ICommand
             // --command mode: diff the per-dump sub-reports for matching dump filenames
             return RunTrendSubReportDiff(
                 beforeSnaps, afterSnaps, beforeLabel, afterLabel,
-                commands, outputPath, opts);
+                commands, outputPaths, opts);
         }
 
         // Default: render both trend summaries into ReportDocs, then diff them
@@ -207,10 +209,10 @@ public sealed class DiffCommand : ICommand
         afterDoc  = RenderTrendToDoc(afterSnaps,  ignoreEvents, afterPrefix);
 
         var diffDoc = ReportDiffer.Diff(beforeDoc, afterDoc, beforeLabel, afterLabel, opts);
-        using var sink = SinkFactory.Create(outputPath);
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(diffDoc, sink);
-        if (sink.IsFile && sink.FilePath is not null)
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
         return 0;
     }
 
@@ -222,7 +224,7 @@ public sealed class DiffCommand : ICommand
     private static int RunTrendSubReportDiff(
         List<DumpSnapshot> beforeSnaps, List<DumpSnapshot> afterSnaps,
         string beforeLabel, string afterLabel,
-        List<string> commands, string? outputPath,
+        List<string> commands, IReadOnlyList<string> outputPaths,
         ReportDiffer.Options opts)
     {
         bool beforeHasSubs = beforeSnaps.Any(s => s.SubReport is not null);
@@ -351,10 +353,10 @@ public sealed class DiffCommand : ICommand
             }
         }
 
-        using var sink = SinkFactory.Create(outputPath);
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(combinedDoc, sink);
-        if (sink.IsFile && sink.FilePath is not null)
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
         return 0;
     }
 

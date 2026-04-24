@@ -35,7 +35,7 @@ public sealed class HighRefsCommand : ICommand
         int  minRefs  = a.GetInt("min-refs",  10);
         bool showAddr = a.ShowAddresses;
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, top, minRefs, showAddr));
     }
 

@@ -34,7 +34,7 @@ public sealed class ObjectInspectCommand : ICommand
         }
         depth = Math.Clamp(depth, 1, 5);
 
-        return CommandBase.Execute(a.DumpPath, a.OutputPath,
+        return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
             (ctx, sink) => RenderWith(ctx, sink, address, depth, maxArr));
     }
 

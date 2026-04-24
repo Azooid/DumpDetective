@@ -182,31 +182,49 @@ public sealed class TrendAnalysisCommand : ICommand
             return 1;
         }
 
-        // .json output = save raw snapshots
-        // Build effective output path: explicit --output wins; otherwise derive from
-        // command name + format (or html default) placed next to the first dump file.
-        string? effectiveOutput = a.OutputPath;
-        if (effectiveOutput is null)
+        // Build effective output list; split raw-save (.json/.bin) from render paths.
+        var explicitOutputs = a.OutputPaths;
+        List<string> allOutputs;
+        if (explicitOutputs.Count > 0)
+        {
+            allOutputs = [.. explicitOutputs];
+        }
+        else
         {
             string dir = dumpPaths.Count > 0
                 ? (Path.GetDirectoryName(dumpPaths[0]) ?? ".")
                 : ".";
-            string ext = a.Format ?? "html";
-            effectiveOutput = Path.Combine(dir, $"trend-analysis.{ext}");
+            // Honour every --format value; default to html when none given.
+            var formats = a.GetAll("format");
+            if (formats.Count > 0)
+                allOutputs = [.. formats.Select(f => Path.Combine(dir, $"trend-analysis.{f}"))];
+            else
+                allOutputs = [Path.Combine(dir, "trend-analysis.html")];
         }
 
-        if (effectiveOutput.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
-             effectiveOutput.EndsWith(".bin",  StringComparison.OrdinalIgnoreCase))
+        static bool IsRawPath(string p) =>
+            p.EndsWith(".json", StringComparison.OrdinalIgnoreCase) ||
+            p.EndsWith(".bin",  StringComparison.OrdinalIgnoreCase);
+
+        var rawPaths    = allOutputs.Where(IsRawPath).ToList();
+        var renderPaths = allOutputs.Where(p => !IsRawPath(p)).ToList();
+
+        foreach (var rawPath in rawPaths)
+            TrendRawSerializer.Save(snapshots, rawPath, capturedSubReports, dumpPrefix);
+
+        if (renderPaths.Count == 0)
         {
-            TrendRawSerializer.Save(snapshots, effectiveOutput, capturedSubReports, dumpPrefix);
-            log.Success($"Raw snapshot data written to: {effectiveOutput}");
-            log.Info("Use 'trend-render' to convert to HTML/Markdown/text at any time.");
+            log.Blank();
+            foreach (var p in rawPaths)
+                log.Success($"Written to: {p}");
+            if (rawPaths.Count > 0)
+                log.Info("Use 'trend-render' to convert .bin snapshots to HTML/Markdown/text at any time.");
             return 0;
         }
 
         log.SectionHeader("Rendering Output");
         log.Info("Building trend report...");
-        using var sink = SinkFactory.Create(effectiveOutput);
+        using var sink = SinkFactory.CreateMulti(renderPaths);
         TrendAnalysisReport.RenderTrend(snapshots, sink, ignoreEvents, baselineIndex, dumpPrefix);
         log.Check("Trend report rendered.");
 
@@ -229,11 +247,14 @@ public sealed class TrendAnalysisCommand : ICommand
             log.Check("All per-dump reports rendered.");
         }
 
-        if (sink.IsFile && sink.FilePath is not null)
+        if (sink.IsFile)
         {
             log.Blank();
-            log.Success($"Written to: {sink.FilePath}");
+            foreach (var p in allOutputs.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+                log.Success($"Written to: {p}");
         }
+        if (rawPaths.Count > 0)
+            log.Info("Use 'trend-render' to convert .bin snapshots to HTML/Markdown/text at any time.");
         return 0;
     }
 

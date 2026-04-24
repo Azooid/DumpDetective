@@ -60,6 +60,10 @@ DumpDetective.Cli render report.json
 DumpDetective.Cli analyze app.dmp --full --output report.bin
 DumpDetective.Cli render report.bin
 
+# Write both HTML and bin in one pass
+DumpDetective.Cli analyze app.dmp --full -o report.html -o report.bin
+DumpDetective.Cli analyze app.dmp --full --format html --format bin
+
 # Trend report across a series of dumps
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp
 
@@ -101,8 +105,10 @@ Options:
   --full               Full combined report (scored summary + all sub-reports in parallel)
   --debug              Print peak working set / managed heap / private bytes at exit
   -o, --output <file>  Write report to file (.html / .md / .txt / .json / .bin)
+                       Repeatable: -o report.html -o report.bin  writes both files
   --format <fmt>       Output format shorthand: html|md|json|bin|console
-                       Auto-names the file as <dump-name>.<fmt>
+                       Repeatable: --format html --format bin  writes both files
+                       Combined: -o report.html --format bin  auto-adds report.bin
   --output console     Print to terminal instead of writing a file
   Default: writes <dump-name>.html alongside the dump
 ```
@@ -147,7 +153,10 @@ Options:
   -o, --output <f>         Write report to file (.html / .md / .txt)
                            .json  -- saves raw snapshot data (re-render any time with 'render')
                            .bin   -- saves Brotli-compressed raw snapshot data
+                           Repeatable: -o trends.html -o trends.bin  writes both files
   --format <fmt>           Format shorthand: html|md|json|bin|console
+                           Repeatable: --format html --format bin  writes both files
+                           Combined: -o trends.html --format bin  auto-adds trends.bin
   Default: writes <command>.html in the current directory
 ```
 
@@ -255,7 +264,10 @@ Options:
                          Valid names: any command that runs in analyze --full
   -o, --output <file>    Output file (.html / .md / .txt / .json / .bin)
                          Use '--output console' to print to terminal
+                         Repeatable: -o report.html -o report.bin  writes both files
   --format <fmt>         Format shorthand: html|md|json|bin|console
+                         Repeatable: --format html --format bin  writes both files
+                         Combined: -o report.html --format bin  auto-adds report.bin
   Default: writes <input-name>.html
 ```
 
@@ -304,6 +316,7 @@ DumpDetective.Cli render heap-stats.bin
 
 Each command accepts `<dump-file>` and `--help`.
 By default every command writes `<dump-name>.html` alongside the dump file. Use `--output <file>`, `--format <fmt>`, or `--output console` to change this.
+Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `--format html --format bin` writes both files simultaneously. You can also mix them: `-o report.html --format bin` auto-adds `report.bin`.
 
 | Command | Incl. in `--full` | Description |
 |---|:---:|---|
@@ -354,9 +367,28 @@ Specify an output file with `-o` / `--output`, or use `--format` without a filen
 
 When `-o` / `--output` and `--format` are both omitted, every command writes `<dump-name>.html` alongside the dump file. Use `--output console` to print to the terminal instead.
 
-### `--format` shorthand
+### Multi-output and `--format`
 
-`--format` lets you pick the output format without specifying a full filename. The file is automatically named after the dump (or input file for `render`):
+Both `-o` / `--output` and `--format` are **repeatable** — you can write multiple formats in one run:
+
+```bash
+# Two explicit output files
+DumpDetective.Cli heap-stats app.dmp -o report.html -o report.bin
+
+# Two formats — files auto-named from dump name
+DumpDetective.Cli heap-stats app.dmp --format html --format bin   # -> app.html + app.bin
+
+# Mix -o and --format: explicit path plus extra format(s)
+DumpDetective.Cli analyze app.dmp --full -o report.html --format bin   # -> report.html + report.bin
+
+# trend-analysis: write snapshot data AND the rendered report in one pass
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --format html --format bin  # -> trend-analysis.html + trend-analysis.bin
+
+# render: convert to two formats at once
+DumpDetective.Cli render snapshots.json -o report.html -o report.md
+```
+
+`--format` without a full filename auto-names the file after the dump (or input file for `render`):
 
 ```bash
 DumpDetective.Cli heap-stats app.dmp --format md      # -> app.md
