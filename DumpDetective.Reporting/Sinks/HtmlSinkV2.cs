@@ -378,6 +378,14 @@ public sealed class HtmlSinkV2 : IRenderSink
         <meta charset="utf-8">
         <meta name="viewport" content="width=device-width,initial-scale=1">
         <title>Dump Detective Report</title>
+        <script>
+        /* Apply theme before first paint to prevent white flash */
+        (function(){
+          var s=localStorage.getItem('dd-theme');
+          if(s==='dark'||(!s&&window.matchMedia('(prefers-color-scheme:dark)').matches))
+            document.documentElement.setAttribute('data-theme','dark');
+        })();
+        </script>
         <style>
         /* ── Reset / Base ───────────────────────────────────────────────────────── */
         *{box-sizing:border-box;margin:0;padding:0}
@@ -385,9 +393,7 @@ public sealed class HtmlSinkV2 : IRenderSink
         body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;background:#f3f4f8;color:#1a1f2e;font-size:13px;line-height:1.55;display:flex;min-height:100vh}
 
         /* ── Sidebar nav (light, tree-style) ────────────────────────────────────── */
-        #sidebar{position:sticky;top:0;height:100vh;width:220px;min-width:195px;overflow-y:auto;background:#fff;border-right:1px solid #e5e7eb;flex-shrink:0;display:flex;flex-direction:column;scrollbar-width:thin;scrollbar-color:#e5e7eb transparent}
-        #sidebar::-webkit-scrollbar{width:4px}
-        #sidebar::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:3px}
+        #sidebar{position:sticky;top:0;height:100vh;width:220px;min-width:195px;overflow-y:auto;background:#fff;border-right:1px solid #e5e7eb;flex-shrink:0;display:flex;flex-direction:column;scrollbar-width:thin;scrollbar-color:#d1d5db transparent}
         /* Brand bar */
         .nav-brand{display:flex;align-items:center;gap:.6rem;padding:.75rem .85rem .7rem;border-bottom:1px solid #e9eaf0;flex-shrink:0;background:#fff}
         .nav-brand-icon{width:28px;height:28px;background:linear-gradient(135deg,#4f46e5,#7c3aed);border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;color:#fff;font-weight:900;flex-shrink:0;letter-spacing:-.5px;box-shadow:0 2px 6px rgba(79,70,229,.3)}
@@ -503,8 +509,8 @@ public sealed class HtmlSinkV2 : IRenderSink
         .alert-title{font-weight:700;margin-bottom:.2rem;font-size:12.5px;display:flex;align-items:center;gap:.3rem}
         .alert-icon{font-size:.95rem}
         .alert-detail{color:#4b5563;font-size:11.5px;margin-top:.18rem;font-style:italic}
-        .alert-advice{background:#1a3a2e;border-radius:6px;padding:.5rem .8rem;margin-top:.45rem;font-size:12.5px;color:#d1fae5;line-height:1.55}
-        .advice-label{display:flex;align-items:center;gap:.35rem;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#6ee7b7;margin-bottom:.2rem}
+        .alert-advice{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #22c55e;border-radius:6px;padding:.5rem .8rem;margin-top:.45rem;font-size:12.5px;color:#14532d;line-height:1.55}
+        .advice-label{display:flex;align-items:center;gap:.35rem;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#16a34a;margin-bottom:.2rem}
 
         /* ── Details accordion ──────────────────────────────────────────────────── */
         details{border:1px solid #e5e7eb;border-radius:7px;margin:.35rem 0;overflow:hidden}
@@ -544,6 +550,16 @@ public sealed class HtmlSinkV2 : IRenderSink
         #back-top.vis{opacity:.85}
         #back-top:hover{opacity:1;background:#3730a3}
 
+        /* ── Scrollbars (global thin style) ───────────────────────────────────────────── */
+        /* Firefox */
+        *{scrollbar-width:thin;scrollbar-color:#d1d5db transparent}
+        /* Chrome / Edge / Safari */
+        ::-webkit-scrollbar{width:5px;height:5px}
+        ::-webkit-scrollbar-track{background:transparent}
+        ::-webkit-scrollbar-thumb{background:#d1d5db;border-radius:99px}
+        ::-webkit-scrollbar-thumb:hover{background:#9ca3af}
+        ::-webkit-scrollbar-corner{background:transparent}
+
         /* ── Metric Tooltips ─────────────────────────────────────────────────────── */
         .tip-wrap{display:inline-flex;align-items:center;margin-left:.35rem;flex-shrink:0;cursor:default}
         .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;border-radius:50%;background:#ddd6fe;color:#4f46e5;font-size:8px;font-weight:700;line-height:1;user-select:none;flex-shrink:0;transition:background .1s,color .1s}
@@ -559,6 +575,111 @@ public sealed class HtmlSinkV2 : IRenderSink
           tr.vr{display:table-row!important}
           .hero{background:#fff!important;border-bottom:1px solid #e5e7eb!important;position:static!important}
         }
+
+        /* ── Dark mode ──────────────────────────────────────────────────────────── */
+        [data-theme="dark"] body{background:#0d0f17;color:#d1d5e0}
+        [data-theme="dark"] #sidebar{background:#13151f;border-right-color:#252840}
+        [data-theme="dark"] #sidebar::-webkit-scrollbar-thumb{background:#303450}
+        [data-theme="dark"] .nav-brand{background:#13151f;border-bottom-color:#252840}
+        [data-theme="dark"] .nav-brand-title{color:#e2e8f0}
+        [data-theme="dark"] .nav-brand-sub{color:#5b6280}
+        [data-theme="dark"] .nav-search-wrap{border-bottom-color:#1e2035}
+        [data-theme="dark"] #search-box{background:#1e2035;border-color:#2e3154;color:#d1d5e0}
+        [data-theme="dark"] #search-box:focus{border-color:#6366f1;background:#252840}
+        [data-theme="dark"] #sidebar a{color:#8892b0}
+        [data-theme="dark"] #sidebar a:hover{background:#1e2035;color:#e2e8f0}
+        [data-theme="dark"] #sidebar a.active{background:#2d2b5e;color:#818cf8}
+        [data-theme="dark"] .nav-chapter>.nav-title{color:#c5cae0}
+        [data-theme="dark"] .nav-chapter>.nav-title:hover{background:#1e2035;color:#e2e8f0}
+        [data-theme="dark"] .nav-section-label{color:#4a5070}
+        [data-theme="dark"] .nav-card{color:#5b6280!important}
+        [data-theme="dark"] .nav-card:hover{color:#c5cae0!important;background:#1e2035!important}
+        [data-theme="dark"] .nav-subreports{color:#5b6280}
+        [data-theme="dark"] .nav-subreports:hover{background:#1e2035;color:#8892b0}
+        [data-theme="dark"] .nav-sub-chapters{border-left-color:#252840}
+        [data-theme="dark"] .nav-sub-chapters a{color:#5b6280!important}
+        [data-theme="dark"] .nav-sub-chapters a:hover{color:#c5cae0!important;background:#1e2035!important}
+        [data-theme="dark"] .nav-sub-chapters a.active{color:#818cf8!important;background:#2d2b5e!important}
+        [data-theme="dark"] #content{background:#0d0f17}
+        [data-theme="dark"] .hero{background:#13151f;border-color:#252840;box-shadow:none}
+        [data-theme="dark"] .hero-title{color:#e2e8f0}
+        [data-theme="dark"] .chip{background:#1e2035;border-color:#2e3154;color:#8892b0}
+        [data-theme="dark"] .hero[data-nav-level="2"]{background:#181a28}
+        [data-theme="dark"] .hero[data-nav-level="2"] .hero-title{color:#a5b4fc}
+        [data-theme="dark"] .card{background:#13151f;border-color:#252840;box-shadow:none}
+        [data-theme="dark"] .card-title{color:#d1d5e0;border-bottom-color:#252840}
+        [data-theme="dark"] .card-title:hover{background:#1a1d2b}
+        [data-theme="dark"] .card-arrow{color:#5b6280}
+        [data-theme="dark"] h3{color:#8892b0}
+        [data-theme="dark"] .kv-row{background:#1a1d2b;border-color:#252840}
+        [data-theme="dark"] .kv-key{color:#5b6280}
+        [data-theme="dark"] .kv-val{color:#d1d5e0}
+        [data-theme="dark"] th{background:#1a1d2b;color:#8892b0;border-bottom-color:#252840}
+        [data-theme="dark"] th:hover{background:#2d2b5e;color:#818cf8}
+        [data-theme="dark"] td{color:#c5cae0;border-bottom-color:#1e2035}
+        [data-theme="dark"] tr:nth-child(even) td{background:#161826}
+        [data-theme="dark"] tr:hover td{background:#1e2242}
+        [data-theme="dark"] .table-wrap{border-color:#252840}
+        [data-theme="dark"] .tbl-search{background:#1a1d2b;border-color:#2e3154;color:#d1d5e0}
+        [data-theme="dark"] .tbl-search:focus{border-color:#6366f1;background:#252840;box-shadow:0 0 0 2px rgba(99,102,241,.15)}
+        [data-theme="dark"] .row-count{color:#4a5070}
+        [data-theme="dark"] .alert-crit{background:#2a1218;border-color:#7f1d1d}
+        [data-theme="dark"] .alert-warn{background:#1f1a0c;border-color:#78350f}
+        [data-theme="dark"] .alert-info{background:#17152e;border-color:#312e7a}
+        [data-theme="dark"] .alert-detail{color:#8892b0}
+        [data-theme="dark"] .alert-advice{background:#0d2818;border-color:#166534;border-left-color:#4ade80;color:#bbf7d0}
+        [data-theme="dark"] .advice-label{color:#4ade80}
+        [data-theme="dark"] details{border-color:#252840}
+        [data-theme="dark"] summary.det-sum{background:#1a1d2b;color:#d1d5e0}
+        [data-theme="dark"] details[open] summary.det-sum{border-bottom-color:#252840}
+        [data-theme="dark"] .explain-accordion{background:#13151f;border-color:#252840}
+        [data-theme="dark"] .explain-accordion[open]{background:#161826}
+        [data-theme="dark"] .explain-summary{background:#1a1d2b;color:#5b6280}
+        [data-theme="dark"] .explain-accordion[open] .explain-summary{color:#818cf8;background:#1e2035;border-bottom-color:#252840}
+        [data-theme="dark"] .explain-item{border-bottom-color:#1e2035}
+        [data-theme="dark"] .explain-text{color:#8892b0}
+        [data-theme="dark"] .explain-bullets{color:#8892b0}
+        [data-theme="dark"] .body-text{color:#8892b0}
+        [data-theme="dark"] .ref-link{color:#5b6280}
+        [data-theme="dark"] .ref-link a{color:#818cf8}
+        [data-theme="dark"] p.caption{color:#4a5070}
+        [data-theme="dark"] #back-top{background:#4338ca;box-shadow:0 2px 8px rgba(67,56,202,.4)}
+        [data-theme="dark"] #dark-toggle{background:#1e2035;border-color:#2e3154;color:#8892b0}
+        [data-theme="dark"] #dark-toggle:hover{background:#252840;color:#d1d5e0}
+        /* Dark scrollbars */
+        [data-theme="dark"] *{scrollbar-color:#303450 transparent}
+        [data-theme="dark"] ::-webkit-scrollbar-thumb{background:#303450}
+        [data-theme="dark"] ::-webkit-scrollbar-thumb:hover{background:#4a5070}
+        /* Colored chips */
+        [data-theme="dark"] .chip-ok  {background:#052e16;border-color:#166534;color:#4ade80}
+        [data-theme="dark"] .chip-warn{background:#1c1503;border-color:#713f12;color:#fbbf24}
+        [data-theme="dark"] .chip-crit{background:#1f0a0a;border-color:#7f1d1d;color:#f87171}
+        [data-theme="dark"] .hero[data-nav-level="2"] .chip     {background:#1e1c3a;border-color:#3730a3;color:#a5b4fc}
+        [data-theme="dark"] .hero[data-nav-level="2"] .chip-ok  {background:#052e16;border-color:#166534;color:#4ade80}
+        [data-theme="dark"] .hero[data-nav-level="2"] .chip-warn{background:#1c1503;border-color:#713f12;color:#fbbf24}
+        [data-theme="dark"] .hero[data-nav-level="2"] .chip-crit{background:#1f0a0a;border-color:#7f1d1d;color:#f87171}
+        /* Score badges */
+        [data-theme="dark"] .badge-ok  {background:#052e16;color:#4ade80}
+        [data-theme="dark"] .badge-warn{background:#1c1503;color:#fbbf24}
+        [data-theme="dark"] .badge-crit{background:#1f0a0a;color:#f87171}
+        /* Explain label + action */
+        [data-theme="dark"] .explain-label{background:#2d2b5e;color:#a5b4fc}
+        [data-theme="dark"] .explain-action{background:#052e16}
+        [data-theme="dark"] .explain-action .explain-label{background:#14532d;color:#4ade80}
+        /* Table severity/trend cells — brighter on dark */
+        [data-theme="dark"] td.trend-up2{color:#f87171}
+        [data-theme="dark"] td.trend-up {color:#fb923c}
+        [data-theme="dark"] td.trend-dn {color:#4ade80}
+        [data-theme="dark"] td.sev-crit {color:#f87171}
+        [data-theme="dark"] td.sev-warn {color:#fbbf24}
+        [data-theme="dark"] td.sev-info {color:#818cf8}
+        /* kv helpers */
+        [data-theme="dark"] .kv-arrow{color:#4a5070}
+        [data-theme="dark"] .kv-delta{color:#5b6280}
+
+        /* Toggle button */
+        #dark-toggle{display:flex;align-items:center;justify-content:center;margin-left:auto;width:24px;height:24px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;color:#6b7280;font-size:13px;cursor:pointer;flex-shrink:0;transition:background .12s,color .12s,border-color .12s;padding:0;line-height:1}
+        #dark-toggle:hover{background:#f3f4f8;color:#1a1f2e}
         </style>
         </head>
         <body>
@@ -569,6 +690,7 @@ public sealed class HtmlSinkV2 : IRenderSink
               <span class="nav-brand-title">Dump Detective</span>
               <span class="nav-brand-sub">{APP_VERSION}</span>
             </div>
+            <button id="dark-toggle" onclick="toggleDark()" title="Toggle dark/light mode"><span id="dark-icon">🌙</span></button>
           </div>
           <div class="nav-search-wrap">
             <input id="search-box" placeholder="Filter hierarchy…" oninput="filterNav(this.value)">
@@ -734,6 +856,24 @@ public sealed class HtmlSinkV2 : IRenderSink
           window.addEventListener('scroll', function(){
             btn.classList.toggle('vis', window.scrollY > 400);
           }, {passive:true});
+        })();
+
+        /* ── Dark mode toggle ────────────────────────────────────────────────── */
+        (function(){
+          var DARK = 'dark';
+          var stored = localStorage.getItem('dd-theme');
+          var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          if(stored === DARK || (!stored && prefersDark)) applyDark(true);
+          function applyDark(on){
+            document.documentElement.setAttribute('data-theme', on ? DARK : 'light');
+            var icon  = document.getElementById('dark-icon');
+            if(icon) icon.textContent = on ? '☀️' : '🌙';
+          }
+          window.toggleDark = function(){
+            var isDark = document.documentElement.getAttribute('data-theme') === DARK;
+            applyDark(!isDark);
+            localStorage.setItem('dd-theme', isDark ? 'light' : DARK);
+          };
         })();
 
         /* ── Card collapse ────────────────────────────────────────────────────── */

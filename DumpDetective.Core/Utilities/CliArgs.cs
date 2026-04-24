@@ -8,6 +8,9 @@ namespace DumpDetective.Core.Utilities;
 ///     (or the <c>DD_DUMP</c> env var as fallback).
 ///   - All non-flag positionals (in order) → <see cref="Positionals"/>.
 ///   - <c>--output</c> / <c>-o</c> → <see cref="OutputPath"/>.
+///   - <c>--format</c> → <see cref="Format"/>. Selects output format without requiring a full filename.
+///     When <c>--output</c> is absent and <c>--format</c> is not <c>console</c>, synthesizes an output
+///     path as <c>&lt;dump-basename&gt;.&lt;format&gt;</c>.
 ///   - <c>--help</c> / <c>-h</c> → <see cref="Help"/> = <see langword="true"/>.
 ///   - Repeatable options (e.g. <c>--ignore-event foo --ignore-event bar</c>) →
 ///     <see cref="GetAll"/>.
@@ -26,10 +29,16 @@ public sealed class CliArgs
     public string?               OutputPath  { get; }
     public bool                  Help        { get; }
 
+    /// <summary>
+    /// Output format requested via <c>--format</c> (e.g. <c>html</c>, <c>md</c>, <c>json</c>, <c>bin</c>, <c>console</c>).
+    /// <see langword="null"/> when not specified.
+    /// </summary>
+    public string?               Format      { get; }
+
     /// <summary>All non-flag positional arguments, in the order they appeared.</summary>
     public IReadOnlyList<string> Positionals => _positionals;
 
-    private CliArgs(string? dumpPath, string? outputPath, bool help,
+    private CliArgs(string? dumpPath, string? outputPath, string? format, bool help,
                     Dictionary<string, string> options,
                     Dictionary<string, List<string>> multi,
                     HashSet<string> flags,
@@ -37,6 +46,7 @@ public sealed class CliArgs
     {
         DumpPath     = dumpPath;
         OutputPath   = outputPath;
+        Format       = format;
         Help         = help;
         _options     = options;
         _multi       = multi;
@@ -88,6 +98,7 @@ public sealed class CliArgs
     {
         string? dumpPath   = null;
         string? outputPath = null;
+        string? format     = null;
         bool    help       = false;
         var     options    = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var     multi      = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
@@ -115,6 +126,12 @@ public sealed class CliArgs
             if (a is "--output" or "-o")
             {
                 if (i + 1 < args.Length) outputPath = args[++i];
+                continue;
+            }
+
+            if (a is "--format")
+            {
+                if (i + 1 < args.Length) format = args[++i].ToLowerInvariant().TrimStart('.');
                 continue;
             }
 
@@ -161,7 +178,17 @@ public sealed class CliArgs
         // Fall back to DD_DUMP environment variable
         dumpPath ??= Environment.GetEnvironmentVariable("DD_DUMP");
 
-        return new CliArgs(dumpPath, outputPath, help, options, multi, flags, positionals);
+        // --format synthesises an output path when --output is absent
+        if (outputPath is null && format is not null &&
+            !format.Equals("console", StringComparison.OrdinalIgnoreCase) &&
+            dumpPath is not null)
+        {
+            var dir      = Path.GetDirectoryName(dumpPath) ?? ".";
+            var filename = Path.GetFileNameWithoutExtension(dumpPath).Replace(' ', '_');
+            outputPath   = Path.Combine(dir, filename + "." + format);
+        }
+
+        return new CliArgs(dumpPath, outputPath, format, help, options, multi, flags, positionals);
     }
 
     private static string NormKey(string name) =>

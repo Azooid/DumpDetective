@@ -94,11 +94,10 @@ public sealed class HighRefsReport
         sink.Section("Object Detail");
         foreach (var c in candidates)
         {
-            bool open = c.InboundRefs >= 500 || c.DistinctSourceTypes >= 10;
             string category = Categorize(c.Type);
             sink.BeginDetails(
                 $"{c.Type}  |  {c.InboundRefs:N0} inbound refs  |  {c.Gen}  |  {DumpHelpers.FormatSize(c.RetainedSize)} retained",
-                open: open);
+                open: false);
 
             sink.Table(["Property", "Value"],
             [

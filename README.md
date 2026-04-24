@@ -1,8 +1,8 @@
 # DumpDetective
 
-A command-line tool for analysing .NET memory dumps (`.dmp` / `.mdmp`). Built on **ClrMD 3.x** and **.NET 10 Native AOT**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, or JSON**.
+A command-line tool for analysing .NET memory dumps (`.dmp` / `.mdmp`). Built on **ClrMD 3.x** and **.NET 10 Native AOT**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, JSON, or compressed binary**.
 
-Every command supports `--output report.json`, which captures the full structured report. Use `DumpDetective.Cli render report.json --output report.html` (or any other format) to convert it at any time without re-opening the dump.
+Every command writes an HTML report alongside the dump file by default. Use `--output report.json` (or `.bin`) to save a structured report, then `DumpDetective.Cli render report.json` (or `render report.bin`) to convert it to any format at any time without re-opening the dump.
 
 ---
 
@@ -38,21 +38,30 @@ The output is a single native binary: `DumpDetective.Cli.exe`.
 # Set a default dump path so you don't have to type it every time
 $env:DD_DUMP = "C:\dumps\w3wp.dmp"
 
-# Scored quick-look report in the terminal
-DumpDetective.Cli analyze
+# Default: writes report as app.html alongside the dump file
+DumpDetective.Cli analyze app.dmp
 
-# Full report (all 23 sub-analyses) exported to HTML
-DumpDetective.Cli analyze app.dmp --full --output report.html
+# Full report (all sub-analyses) exported to HTML
+DumpDetective.Cli analyze app.dmp --full
 
 # Full report with peak memory diagnostics printed at the end
-DumpDetective.Cli analyze app.dmp --full --output report.html --debug
+DumpDetective.Cli analyze app.dmp --full --debug
+
+# Choose format without specifying a filename
+DumpDetective.Cli heap-stats app.dmp --format md      # -> app.md
+DumpDetective.Cli heap-stats app.dmp --format bin     # -> app.bin (Brotli-compressed)
+DumpDetective.Cli heap-stats app.dmp --format console # -> terminal output
 
 # Save full report as JSON, convert to HTML later -- no dump file needed
 DumpDetective.Cli analyze app.dmp --full --output report.json
-DumpDetective.Cli render report.json --output report.html
+DumpDetective.Cli render report.json
+
+# Save as compressed binary (Brotli), convert later
+DumpDetective.Cli analyze app.dmp --full --output report.bin
+DumpDetective.Cli render report.bin
 
 # Trend report across a series of dumps
-DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp
 
 # Save raw trend data as JSON (includes all per-dump sub-reports when --full)
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
@@ -61,7 +70,7 @@ DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.
 DumpDetective.Cli render snapshots.json --baseline 2 --output report.html
 
 # Or point at a folder -- picks up all .dmp files sorted by timestamp
-DumpDetective.Cli trend-analysis C:\dumps\ --output trends.html
+DumpDetective.Cli trend-analysis C:\dumps\
 ```
 
 ---
@@ -84,10 +93,13 @@ Scored health report for a single dump.
 DumpDetective.Cli analyze <dump-file> [options]
 
 Options:
-  --full               Full combined report (scored summary + all 23 sub-reports in parallel)
+  --full               Full combined report (scored summary + all sub-reports in parallel)
   --debug              Print peak working set / managed heap / private bytes at exit
-  -o, --output <file>  Write report to file (.html / .md / .txt / .json)
-                       Default: <dump-dir>/analyze_<dump-filename>.html
+  -o, --output <file>  Write report to file (.html / .md / .txt / .json / .bin)
+  --format <fmt>       Output format shorthand: html|md|json|bin|console
+                       Auto-names the file as <dump-name>.<fmt>
+  --output console     Print to terminal instead of writing a file
+  Default: writes <dump-name>.html alongside the dump
 ```
 
 **What it covers:**
@@ -102,8 +114,11 @@ Options:
 **Examples:**
 ```bash
 DumpDetective.Cli analyze app.dmp
+DumpDetective.Cli analyze app.dmp --full
 DumpDetective.Cli analyze app.dmp --full --output full-report.html
 DumpDetective.Cli analyze app.dmp --full --output full-report.html --debug
+DumpDetective.Cli analyze app.dmp --format bin     # Brotli-compressed output
+DumpDetective.Cli analyze app.dmp --output console # terminal only
 ```
 
 ---
@@ -119,11 +134,14 @@ DumpDetective.Cli trend-analysis --list <file.txt> [options]
 
 Options:
   --full                   Full collection per dump (event leaks, string duplicates,
-                           and per-dump sub-reports embedded in .json output)
+                           and per-dump sub-reports embedded in .json/.bin output)
   --baseline <n>           1-based index of the dump to use as the trend baseline (default: 1)
   --ignore-event <type>    Exclude publisher types whose name contains <type> (repeatable)
   -o, --output <f>         Write report to file (.html / .md / .txt)
-                           .json -- saves raw snapshot data (re-render any time with 'render')
+                           .json  -- saves raw snapshot data (re-render any time with 'render')
+                           .bin   -- saves Brotli-compressed raw snapshot data
+  --format <fmt>           Format shorthand: html|md|json|bin|console
+  Default: writes <command>.html in the current directory
 ```
 
 **Report sections:**
@@ -142,9 +160,11 @@ Options:
 
 **Examples:**
 ```bash
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.bin  # compressed
 DumpDetective.Cli trend-analysis C:\dumps\ --full --output report.html
 DumpDetective.Cli trend-analysis --list dumps.txt --full --output report.md
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
@@ -154,34 +174,44 @@ DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMe
 
 ### `render` / `trend-render`
 
-Converts any DumpDetective JSON file to HTML, Markdown, plain text, or console output -- **no dump file required**.
+Converts any DumpDetective JSON or compressed binary file to HTML, Markdown, plain text, or console output -- **no dump file required**.
 
 ```
-DumpDetective.Cli render <file.json> [options]
+DumpDetective.Cli render <file.json|file.bin> [options]
 
 Accepted input:
-  report     JSON produced by any single-dump command with --output *.json
-  trend-raw  JSON produced by trend-analysis --output *.json
+  report     JSON or .bin produced by any single-dump command with --output *.json / *.bin
+  trend-raw  JSON or .bin produced by trend-analysis --output *.json / *.bin
 
 Options:
   --baseline <n>         Trend baseline (trend-raw only; default: 1 = first dump)
   --ignore-event <type>  Filter event types (trend-raw only; repeatable)
   --mini                 Trend summary only -- suppress per-dump sub-reports even
-                         when they are present in the JSON (trend-raw only)
+                         when they are present in the file (trend-raw only)
   --from <n>             Extract dump #N's full sub-report as a standalone file.
-                         Requires the JSON to have been saved with --full. 1-based.
+                         Requires the file to have been saved with --full. 1-based.
   --command <name>       Extract only the named command's chapter(s).
                          Combine with --from to target a single dump.
                          Repeatable: --command memory-leak --command heap-stats
                          Valid names: any command that runs in analyze --full
-  -o, --output <file>    Output file (.html / .md / .txt / .json)
-                         Omit for console output
+  -o, --output <file>    Output file (.html / .md / .txt / .json / .bin)
+                         Use '--output console' to print to terminal
+  --format <fmt>         Format shorthand: html|md|json|bin|console
+  Default: writes <input-name>.html
 ```
 
 **Examples:**
 ```bash
-# Standard trend report
+# Default: renders to report.html
+DumpDetective.Cli render snapshots.json
+DumpDetective.Cli render report.bin
+
+# Explicit output format
 DumpDetective.Cli render snapshots.json --output report.html
+DumpDetective.Cli render snapshots.json --format md
+
+# Print to terminal
+DumpDetective.Cli render snapshots.json --output console
 
 # Trend summary only (no per-dump sub-reports)
 DumpDetective.Cli render snapshots.json --mini --output trend-only.html
@@ -201,8 +231,9 @@ DumpDetective.Cli render snapshots.json --command memory-leak --output all-memle
 # Multiple commands from dump #2
 DumpDetective.Cli render snapshots.json --from 2 --command memory-leak --command heap-stats --output d2-subset.html
 
-# Convert a single-dump report JSON to HTML
-DumpDetective.Cli render heap-stats.json --output heap-stats.html
+# Convert a single-dump report JSON / bin to HTML
+DumpDetective.Cli render heap-stats.json
+DumpDetective.Cli render heap-stats.bin
 ```
 
 > **Note:** `--from` and `--command` require `trend-raw` JSON saved with `--full`.
@@ -212,8 +243,8 @@ DumpDetective.Cli render heap-stats.json --output heap-stats.html
 
 ### Targeted Commands
 
-Each command accepts `<dump-file> -o <output>` and `--help`.
-When `-o` / `--output` is omitted, the report is written to `<dump-dir>/<command>_<dump-filename>.html` automatically.
+Each command accepts `<dump-file>` and `--help`.
+By default every command writes `<dump-name>.html` alongside the dump file. Use `--output <file>`, `--format <fmt>`, or `--output console` to change this.
 
 | Command | Incl. in `--full` | Description |
 |---|:---:|---|
@@ -249,42 +280,57 @@ When `-o` / `--output` is omitted, the report is written to `<dump-dir>/<command
 
 ## Output Formats
 
-Specify an output file with `-o` / `--output`:
+Specify an output file with `-o` / `--output`, or use `--format` without a filename:
 
-| Extension | Format |
-|---|---|
-| `.html` | Interactive HTML -- sticky sidebar nav, collapsible sections, sortable/filterable tables, styled alert cards |
-| `.md` | Markdown -- suitable for wiki pages or GitHub |
-| `.json` | Structured JSON -- full report data, re-renderable to any other format with `render` |
-| `.txt` | Plain text |
-| (none) | Console (Spectre.Console with colour) |
+| Extension / keyword | `--format` value | Format |
+|---|---|---|
+| `.html` | `html` | Interactive HTML — sticky sidebar nav, collapsible sections, sortable/filterable tables, **dark mode toggle**, styled alert cards |
+| `.md` | `md` | Markdown — suitable for wiki pages or GitHub |
+| `.json` | `json` | Structured JSON — full report data, re-renderable to any other format with `render` |
+| `.bin` | `bin` | Brotli-compressed JSON — same structure as `.json`, ~50–70% smaller, non-human-readable |
+| `.txt` | `txt` | Plain text |
+| `console` | `console` | Terminal output (Spectre.Console with colour) |
 
-### Default output path
+### Default output
 
-When `-o` / `--output` is omitted, the tool automatically writes to:
-- **Single-dump commands**: `<dump-directory>/<command>_<dump-filename>.html`
-- **Multi-dump / directory commands**: `<directory>/<command>.html`
+When `-o` / `--output` and `--format` are both omitted, every command writes `<dump-name>.html` alongside the dump file. Use `--output console` to print to the terminal instead.
 
-### JSON output and re-rendering
+### `--format` shorthand
 
-Use `--output report.json` with **any** command to capture a fully structured JSON report. The JSON preserves all report data -- chapters, sections, tables, key-value pairs, alerts, findings, and details accordions -- including chapter nav levels and polymorphic element types.
+`--format` lets you pick the output format without specifying a full filename. The file is automatically named after the dump (or input file for `render`):
 
-There are two JSON formats:
+```bash
+DumpDetective.Cli heap-stats app.dmp --format md      # -> app.md
+DumpDetective.Cli heap-stats app.dmp --format bin     # -> app.bin
+DumpDetective.Cli render snapshots.json --format md   # -> snapshots.md
+```
+
+### Dark mode (HTML output)
+
+The HTML report includes a **🌙 Dark mode** toggle button in the sidebar. Your preference is saved in `localStorage` and respected on subsequent opens. The initial theme follows your OS `prefers-color-scheme` setting.
+
+### JSON / binary output and re-rendering
+
+Use `--output report.json` or `--output report.bin` (Brotli-compressed) with **any** command to capture a fully structured report. Both formats preserve all report data — chapters, sections, tables, key-value pairs, alerts, findings, and details accordions — including chapter nav levels and polymorphic element types.
+
+There are two structured formats:
 
 | `format` field | Produced by | Contents |
 |---|---|---|
-| `"report"` | Any single-dump command with `--output *.json` | Full rendered report document |
-| `"trend-raw"` | `trend-analysis --output *.json` | Raw snapshot metrics + optional captured sub-reports |
+| `"report"` | Any single-dump command with `--output *.json` / `*.bin` | Full rendered report document |
+| `"trend-raw"` | `trend-analysis --output *.json` / `*.bin` | Raw snapshot metrics + optional captured sub-reports |
 
-Both are handled transparently by `DumpDetective.Cli render` -- it auto-detects the format:
+Both are handled transparently by `DumpDetective.Cli render` — it auto-detects the format and decompresses `.bin` automatically:
 
 ```bash
-DumpDetective.Cli render heap-stats.json    --output heap-stats.html
+DumpDetective.Cli render heap-stats.json
+DumpDetective.Cli render heap-stats.bin
 DumpDetective.Cli render analyze-full.json  --output report.md
 DumpDetective.Cli render snapshots.json     --baseline 2 --output report.html
+DumpDetective.Cli render snapshots.bin      --baseline 2 --output report.html
 ```
 
-The `trend-raw` format is especially useful: save once with `--full`, then re-render at any baseline, format, or time without touching the original dump files.
+The `trend-raw` format is especially useful: save once with `--full`, then re-render at any baseline, format, or time without touching the original dump files. Use `.bin` for long-term archival — it is typically **50–70% smaller** than the equivalent `.json`.
 
 ---
 

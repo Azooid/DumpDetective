@@ -89,10 +89,25 @@ public sealed class TrendRenderCommand : ICommand
         int     fromArg      = a.GetInt("from", 0);
         var     commands     = a.GetAll("command").ToList();
 
-        // Default output is HTML; "--output console" explicitly requests console output.
-        string? outputPath = a.OutputPath is null && rawFile is not null
-            ? Path.ChangeExtension(rawFile, ".html")
-            : a.OutputPath;
+        // Default output is HTML; "--output console" or "--format console" explicitly requests console output.
+        // "--format md" (etc.) without "--output" overrides the extension of the auto-generated path.
+        string? outputPath;
+        if (a.OutputPath is not null)
+        {
+            outputPath = a.OutputPath; // explicit --output wins
+        }
+        else if (a.Format is not null && !a.Format.Equals("console", StringComparison.OrdinalIgnoreCase) && rawFile is not null)
+        {
+            outputPath = Path.ChangeExtension(rawFile, a.Format);
+        }
+        else if (a.Format?.Equals("console", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            outputPath = null; // explicit console
+        }
+        else
+        {
+            outputPath = rawFile is not null ? Path.ChangeExtension(rawFile, ".html") : null;
+        }
 
         if (baselineArg < 1)
         {

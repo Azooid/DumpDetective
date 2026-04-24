@@ -32,10 +32,23 @@ public static class TrendRawSerializer
                 snapshots[i].SubReport = subReports[i];
         }
 
-        var opts = new JsonWriterOptions { Indented = true };
-        using var fs     = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-        using var writer = new Utf8JsonWriter(fs, opts);
+        bool compress = path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase);
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
+        if (compress)
+        {
+            using var brotli = new BrotliStream(fs, CompressionLevel.SmallestSize, leaveOpen: false);
+            WriteJson(brotli, snapshots, indented: false);
+        }
+        else
+        {
+            WriteJson(fs, snapshots, indented: true);
+        }
+    }
 
+    private static void WriteJson(Stream stream, IReadOnlyList<DumpSnapshot> snapshots, bool indented)
+    {
+        var opts = new JsonWriterOptions { Indented = indented };
+        using var writer = new Utf8JsonWriter(stream, opts);
         writer.WriteStartObject();
         writer.WriteString("format",      "trend-raw");
         writer.WriteString("exportedAt", DateTime.UtcNow.ToString("o"));

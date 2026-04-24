@@ -111,11 +111,17 @@ public static class CommandBase
             if (ctx.ArchWarning is not null)
                 AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(ctx.ArchWarning)}[/]");
 
-            using var sink = SinkFactory.Create(outputPath);
+            // Default to HTML output alongside the dump file; --output console opts out.
+            bool consoleRequested = outputPath?.Equals("console", StringComparison.OrdinalIgnoreCase) == true;
+            string? effectiveOutput = consoleRequested
+                ? null
+                : outputPath ?? DefaultOutputPath(dumpPath, ".html");
+
+            using var sink = SinkFactory.Create(effectiveOutput);
 
             bool consoleOnly = !sink.IsFile;
             if (consoleOnly)
-                AnsiConsole.MarkupLine("[dim]ℹ No output file — printing to console. Use -o / --output <file> to save as .html / .md / .txt / .json[/]\n");
+                AnsiConsole.MarkupLine("[dim]ℹ Printing to console. Use --output <file> or --format html/md/json/bin to save, or omit both for default HTML output.[/]\n");
 
             body(ctx, sink);
 
@@ -141,6 +147,17 @@ public static class CommandBase
     /// </summary>
     public static int EffectiveTop(int top, string? outputPath) =>
         outputPath is null ? top : Math.Max(top, 200);
+
+    /// <summary>
+    /// Builds the default output path from a dump path, replacing spaces in the
+    /// filename with underscores so the result is shell-friendly.
+    /// </summary>
+    private static string DefaultOutputPath(string dumpPath, string extension)
+    {
+        var dir      = Path.GetDirectoryName(dumpPath) ?? ".";
+        var filename = Path.GetFileNameWithoutExtension(dumpPath).Replace(' ', '_');
+        return Path.Combine(dir, filename + extension);
+    }
 
     /// <summary>
     /// If <c>--help</c> / <c>-h</c> is present, renders the help panel and
