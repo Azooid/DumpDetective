@@ -1,3 +1,4 @@
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using DumpDetective.Analysis;
@@ -17,19 +18,25 @@ public sealed class TrendRenderCommand : ICommand
     public bool   IncludeInFullAnalyze => false; // replay only
 
     private const string Help = """
-        Usage: DumpDetective render      <data.json> [options]
-               DumpDetective trend-render <data.json> [options]  (alias)
+        Usage: DumpDetective render      <data.json|data.bin> [options]
+               DumpDetective trend-render <data.json|data.bin> [options]  (alias)
 
-        Converts a DumpDetective JSON file to any output format without re-analyzing.
-        No dump files are required — all data comes from the JSON.
+        Converts a DumpDetective JSON or BIN file to any output format without re-analyzing.
+        No dump files are required — all data comes from the file.
 
-        Accepted JSON formats
+        Accepted input formats
+        ──────────────────────
+          .json  Plain JSON report or trend-raw file.
+          .bin   Brotli-compressed JSON (produced by '--output *.bin').
+                 Same structure as .json — automatically decompressed.
+
+        Accepted report types
         ─────────────────────
           trend-raw  Produced by 'trend-analysis --output *.json'.
                      Contains raw snapshot metrics for all dumps and, when the
                      original run used --full, complete per-dump sub-reports.
           report     Produced by any single-dump command with '--output *.json'
-                     (e.g. 'analyze dump.dmp --output report.json').
+                     or '--output *.bin' (e.g. 'analyze dump.dmp --output report.bin').
                      The report is replayed as-is; --baseline has no effect.
 
         Options:
@@ -47,19 +54,23 @@ public sealed class TrendRenderCommand : ICommand
                                  Repeatable (e.g. --command memory-leak --command heap-stats).
                                  Valid names: any command that runs in --full analyze
                                  (heap-stats, memory-leak, high-refs, …).
-          -o, --output <file>    Write report to file (.html / .md / .txt / .json)
-                                 Omit for console output.
+          -o, --output <file>    Write report to file (.html / .md / .txt / .json / .bin)
+                                 Use '--output console' to print to the terminal.
+                                 Omit for default: <inputfile>.html
           -h, --help             Show this help
 
         Examples:
+          DumpDetective render snapshots.json
           DumpDetective render snapshots.json --output report.html
+          DumpDetective render snapshots.json --output console
           DumpDetective render snapshots.json --mini --output trend-only.html
           DumpDetective render snapshots.json --baseline 2 --output report.html
           DumpDetective render snapshots.json --from 4 --output d4-full.html
           DumpDetective render snapshots.json --from 4 --command memory-leak --output d4-memleak.html
           DumpDetective render snapshots.json --command memory-leak --output all-memleak.html
           DumpDetective render snapshots.json --command memory-leak --command heap-stats --output d4-subset.html
-          DumpDetective render analyze-report.json --output report.html
+          DumpDetective render analyze-report.json
+          DumpDetective render analyze-report.bin --output report.html
         """;
 
     public int Run(string[] args)
@@ -77,6 +88,11 @@ public sealed class TrendRenderCommand : ICommand
         bool    mini         = a.HasFlag("mini");
         int     fromArg      = a.GetInt("from", 0);
         var     commands     = a.GetAll("command").ToList();
+
+        // Default output is HTML; "--output console" explicitly requests console output.
+        string? outputPath = a.OutputPath is null && rawFile is not null
+            ? Path.ChangeExtension(rawFile, ".html")
+            : a.OutputPath;
 
         if (baselineArg < 1)
         {
@@ -103,7 +119,7 @@ public sealed class TrendRenderCommand : ICommand
         }
 
         string json;
-        try { json = File.ReadAllText(rawFile, Encoding.UTF8); }
+        try { json = ReadJson(rawFile); }
         catch (Exception ex) { AnsiConsole.MarkupLine($"[bold red]Error reading file:[/] {Markup.Escape(ex.Message)}"); return 1; }
 
         string? format = null;
@@ -140,7 +156,7 @@ public sealed class TrendRenderCommand : ICommand
             }
 
             AnsiConsole.MarkupLine($"Rendering report from {Markup.Escape(Path.GetFileName(rawFile))}");
-            using var sink2 = SinkFactory.Create(a.OutputPath);
+            using var sink2 = SinkFactory.Create(outputPath);
             ReportDocReplay.Replay(envelope.Doc, sink2);
             if (sink2.IsFile && sink2.FilePath is not null)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink2.FilePath)}");
@@ -190,7 +206,7 @@ public sealed class TrendRenderCommand : ICommand
                 return 1;
             }
 
-            using var sink = SinkFactory.Create(a.OutputPath);
+            using var sink = SinkFactory.Create(outputPath);
 
             for (int i = 0; i < targets.Count; i++)
             {
@@ -239,7 +255,7 @@ public sealed class TrendRenderCommand : ICommand
             $"({snapshots.Count} snapshots)  baseline: D{baselineArg}" +
             (mini ? "  [dim](--mini: sub-reports suppressed)[/]" : string.Empty));
 
-        using var trendSink = SinkFactory.Create(a.OutputPath);
+        using var trendSink = SinkFactory.Create(outputPath);
         TrendAnalysisReport.RenderTrend(snapshots, trendSink, ignoreEvents, baselineIndex);
 
         if (!mini)
@@ -265,5 +281,20 @@ public sealed class TrendRenderCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning, "trend-render operates on JSON files, not dump files — use Run() entry point.");
+
+    /// <summary>
+    /// Reads the file as UTF-8 JSON, decompressing Brotli first for .bin files.
+    /// </summary>
+    private static string ReadJson(string path)
+    {
+        if (path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+        {
+            using var fs     = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var brotli = new BrotliStream(fs, CompressionMode.Decompress);
+            using var reader = new StreamReader(brotli, Encoding.UTF8);
+            return reader.ReadToEnd();
+        }
+        return File.ReadAllText(path, Encoding.UTF8);
+    }
 
 }

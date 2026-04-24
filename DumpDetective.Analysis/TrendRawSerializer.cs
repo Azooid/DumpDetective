@@ -1,3 +1,5 @@
+using System.IO.Compression;
+using System.Text;
 using System.Text.Json;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Json;
@@ -50,8 +52,21 @@ public static class TrendRawSerializer
 
     public static List<DumpSnapshot> Load(string path)
     {
+        string json;
+        if (path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
+        {
+            using var fs     = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            using var brotli = new BrotliStream(fs, CompressionMode.Decompress);
+            using var reader = new StreamReader(brotli, Encoding.UTF8);
+            json = reader.ReadToEnd();
+        }
+        else
+        {
+            json = File.ReadAllText(path, Encoding.UTF8);
+        }
+
         using var doc = JsonDocument.Parse(
-            File.ReadAllText(path, System.Text.Encoding.UTF8),
+            json,
             new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
 
         if (!doc.RootElement.TryGetProperty("snapshots", out var arr))

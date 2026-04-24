@@ -71,7 +71,7 @@ internal static class HelpPrinter
         }
 
         grid.AddRow("", "");
-        grid.AddRow("[bold yellow]Output formats[/]", "[dim].html  .md  .txt  .json[/]");
+        grid.AddRow("[bold yellow]Output formats[/]", "[dim].html  .md  .txt  .json  .bin (Brotli-compressed JSON)[/]");
         grid.AddRow("[bold yellow]Global flags[/]",   "[dim]--debug   print peak memory after run[/]");
         grid.AddRow("[bold yellow]Env vars[/]",        "[dim]DD_DUMP   default dump path when none is given[/]");
 
