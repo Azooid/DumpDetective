@@ -71,6 +71,11 @@ DumpDetective.Cli render snapshots.json --baseline 2 --output report.html
 
 # Or point at a folder -- picks up all .dmp files sorted by timestamp
 DumpDetective.Cli trend-analysis C:\dumps\
+
+# Compare two saved trend files (no dump files needed)
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output week1.bin
+DumpDetective.Cli trend-analysis d4.dmp d5.dmp d6.dmp --full --output week2.bin
+DumpDetective.Cli diff week1.bin week2.bin -o delta.html
 ```
 
 ---
@@ -136,6 +141,8 @@ Options:
   --full                   Full collection per dump (event leaks, string duplicates,
                            and per-dump sub-reports embedded in .json/.bin output)
   --baseline <n>           1-based index of the dump to use as the trend baseline (default: 1)
+  --prefix <p>             Prefix for dump labels (default: D → D1, D2, D3).
+                           E.g. --prefix W → W1, W2, W3
   --ignore-event <type>    Exclude publisher types whose name contains <type> (repeatable)
   -o, --output <f>         Write report to file (.html / .md / .txt)
                            .json  -- saves raw snapshot data (re-render any time with 'render')
@@ -168,6 +175,58 @@ DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.
 DumpDetective.Cli trend-analysis C:\dumps\ --full --output report.html
 DumpDetective.Cli trend-analysis --list dumps.txt --full --output report.md
 DumpDetective.Cli trend-analysis d1.dmp d2.dmp --full --ignore-event SNINativeMethodWrapper
+DumpDetective.Cli trend-analysis d1.dmp d2.dmp d3.dmp --prefix W --output week1.html
+```
+
+---
+
+### `diff`
+
+Compares two saved report files (`.json` or `.bin`) and produces a diff report. No dump file required.
+
+```
+DumpDetective.Cli diff <before.json|before.bin> <after.json|after.bin> [options]
+
+Supported input formats:
+  report     Produced by any single-dump command with -o *.json or -o *.bin
+  trend-raw  Produced by trend-analysis -o *.json or -o *.bin
+
+What is diffed:
+  Tables       Rows matched by key column (default: col 0). Changed cells: before → after.
+               Per-dump tables (Dump Timeline, Rooted Objects, etc.) are matched positionally.
+  Alerts       Matched by title. Level and detail changes highlighted.
+  Key-Values   Matched by key. Changed values: before → after.
+  Details      Accordion blocks included from the "after" file as-is.
+
+Options:
+  --key-col <n>        Column index (0-based) used as the row key for tables (default: 0)
+  --changed-only       Omit chapters/sections with no changes
+  --show-same          Include unchanged rows in diff tables (default: omitted)
+  --command <name>     For trend-raw: diff only this command's sub-report chapters (repeatable).
+                       Dumps matched by filename; if no filenames overlap (different dump sets),
+                       falls back to positional matching (Dump 1 ↔ Dump 1, etc.)
+  --ignore-event <t>   For trend-raw: exclude event publisher types containing <t> (repeatable)
+  -o, --output <file>  Output path (.html / .md / .txt / .json / .bin)
+                       Default: <before>-vs-<after>.html
+  -h, --help           Show this help
+```
+
+**Examples:**
+```bash
+# Single-dump report diff
+DumpDetective.Cli analyze before.dmp --full -o before.bin
+DumpDetective.Cli analyze after.dmp  --full -o after.bin
+DumpDetective.Cli diff before.bin after.bin -o delta.html
+
+# Trend-raw diff (week-over-week)
+DumpDetective.Cli diff week1.bin week2.bin -o trend-delta.html
+DumpDetective.Cli diff week1.bin week2.bin --changed-only -o delta.html
+
+# Diff only the memory-leak sub-report across two trend files
+DumpDetective.Cli diff week1.bin week2.bin --command memory-leak -o memleak-delta.html
+
+# Multiple commands at once
+DumpDetective.Cli diff week1.bin week2.bin --command memory-leak --command heap-stats -o subset.html
 ```
 
 ---

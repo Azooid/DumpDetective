@@ -67,7 +67,8 @@ public sealed class DiffCommand : ICommand
           --show-same          Include unchanged rows in diff tables (default: omitted)
           --command <name>     For trend-raw: diff only this command's embedded sub-report chapters.
                                Repeatable (e.g. --command memory-leak --command heap-stats).
-                               Dumps are matched by filename; unmatched dumps are listed as Added/Removed.
+                               Dumps matched by filename; if no filenames overlap (different dump
+                               sets), falls back to positional matching (Dump 1 ↔ Dump 1, etc.).
           --ignore-event <t>   For trend-raw: exclude event publisher types containing <t> when
                                rendering trend summaries. Repeatable.
           -o, --output <file>  Output path (.html / .md / .txt / .json / .bin)
@@ -214,8 +215,9 @@ public sealed class DiffCommand : ICommand
     }
 
     /// <summary>
-    /// Diffs per-dump sub-reports between two trend files, matching dumps by filename.
-    /// Dumps present in only one file are listed as Added/Removed.
+    /// Diffs per-dump sub-reports between two trend files.
+    /// Dumps are matched by filename first; if no filenames overlap (different dump sets),
+    /// falls back to positional matching (dump 1 ↔ dump 1, dump 2 ↔ dump 2, …).
     /// </summary>
     private static int RunTrendSubReportDiff(
         List<DumpSnapshot> beforeSnaps, List<DumpSnapshot> afterSnaps,
@@ -233,7 +235,8 @@ public sealed class DiffCommand : ICommand
             return 1;
         }
 
-        // Index snapshots by dump filename (without extension)
+        // ── Build pairs list ─────────────────────────────────────────────────
+        // Try filename matching first; fall back to positional when nothing overlaps.
         var beforeIdx = beforeSnaps.ToDictionary(
             s => Path.GetFileNameWithoutExtension(s.DumpPath),
             s => s,
@@ -243,16 +246,44 @@ public sealed class DiffCommand : ICommand
             s => s,
             StringComparer.OrdinalIgnoreCase);
 
-        var allKeys = afterIdx.Keys
-            .Concat(beforeIdx.Keys.Where(k => !afterIdx.ContainsKey(k)))
-            .ToList();
+        bool usePositional = !afterIdx.Keys.Any(k => beforeIdx.ContainsKey(k));
+        string matchStrategy;
 
+        // (before?, after?, display label)
+        var pairs = new List<(DumpSnapshot? Before, DumpSnapshot? After, string Label)>();
+
+        if (usePositional)
+        {
+            matchStrategy = "positional";
+            AnsiConsole.MarkupLine("[dim]  No dumps matched by filename — using positional matching (Dump 1 ↔ Dump 1, …)[/]");
+            int pairCount = Math.Min(beforeSnaps.Count, afterSnaps.Count);
+            for (int i = 0; i < pairCount; i++)
+                pairs.Add((beforeSnaps[i], afterSnaps[i], $"Dump {i + 1}"));
+            for (int i = pairCount; i < afterSnaps.Count; i++)
+                pairs.Add((null, afterSnaps[i], Path.GetFileNameWithoutExtension(afterSnaps[i].DumpPath)));
+            for (int i = pairCount; i < beforeSnaps.Count; i++)
+                pairs.Add((beforeSnaps[i], null, Path.GetFileNameWithoutExtension(beforeSnaps[i].DumpPath)));
+        }
+        else
+        {
+            matchStrategy = "by filename";
+            var allKeys = afterIdx.Keys
+                .Concat(beforeIdx.Keys.Where(k => !afterIdx.ContainsKey(k)))
+                .ToList();
+            foreach (var key in allKeys)
+            {
+                beforeIdx.TryGetValue(key, out var bs);
+                afterIdx .TryGetValue(key, out var afterSnap);
+                pairs.Add((bs, afterSnap, key));
+            }
+        }
+
+        int matched    = pairs.Count(p => p.Before is not null && p.After is not null);
+        int addedCnt   = pairs.Count(p => p.Before is null);
+        int removedCnt = pairs.Count(p => p.After  is null);
+
+        // ── Summary chapter ──────────────────────────────────────────────────
         var combinedDoc = new ReportDoc();
-
-        // Summary chapter
-        int matched  = allKeys.Count(k => beforeIdx.ContainsKey(k) && afterIdx.ContainsKey(k));
-        int addedCnt = allKeys.Count(k => !beforeIdx.ContainsKey(k));
-        int removedCnt = allKeys.Count(k => !afterIdx.ContainsKey(k));
         combinedDoc.Chapters.Add(new ReportChapter
         {
             Title    = "Trend Sub-Report Diff Summary",
@@ -269,6 +300,7 @@ public sealed class DiffCommand : ICommand
                             new ReportPair("Before",           beforeLabel),
                             new ReportPair("After",            afterLabel),
                             new ReportPair("Commands diffed",  string.Join(", ", commands)),
+                            new ReportPair("Match strategy",   matchStrategy),
                             new ReportPair("Dumps matched",    matched.ToString()),
                             new ReportPair("Dumps added",      addedCnt.ToString()),
                             new ReportPair("Dumps removed",    removedCnt.ToString()),
@@ -278,23 +310,18 @@ public sealed class DiffCommand : ICommand
             ]
         });
 
-        foreach (var key in allKeys)
+        // ── Per-dump diff chapters ────────────────────────────────────────────
+        foreach (var (bs, afterSnap, dumpLabel) in pairs)
         {
-            beforeIdx.TryGetValue(key, out var bs);
-            afterIdx .TryGetValue(key, out var ас);
-
-            string dumpLabel = key;
-
-            if (bs is null && ас is not null)
+            if (bs is null && afterSnap is not null)
             {
-                // Only in after — include as-is
-                var doc = SliceIfNeeded(ас.SubReport, commands);
+                var doc = SliceIfNeeded(afterSnap.SubReport, commands);
                 if (doc is not null)
                     foreach (var ch in doc.Chapters)
                         combinedDoc.Chapters.Add(PrefixTitle(ch, $"[Added] {dumpLabel}:"));
                 continue;
             }
-            if (ас is null && bs is not null)
+            if (afterSnap is null && bs is not null)
             {
                 if (!opts.ChangedOnly)
                 {
@@ -306,16 +333,17 @@ public sealed class DiffCommand : ICommand
                 continue;
             }
 
-            if (bs is not null && ас is not null)
+            if (bs is not null && afterSnap is not null)
             {
                 var beforeDoc = SliceIfNeeded(bs.SubReport, commands);
-                var afterDoc  = SliceIfNeeded(ас.SubReport, commands);
-
+                var afterDoc  = SliceIfNeeded(afterSnap.SubReport, commands);
                 if (beforeDoc is null || afterDoc is null) continue;
 
-                string bLabel = $"{dumpLabel} (before, score {bs.HealthScore}/100)";
-                string aLabel = $"{dumpLabel} (after,  score {ас.HealthScore}/100)";
-                AnsiConsole.MarkupLine($"  Diffing dump [bold]{Markup.Escape(key)}[/]  {bs.HealthScore} → {ас.HealthScore}");
+                string bDumpName = Path.GetFileNameWithoutExtension(bs.DumpPath);
+                string aDumpName = Path.GetFileNameWithoutExtension(afterSnap.DumpPath);
+                string bLabel = $"{bDumpName} (before, score {bs.HealthScore}/100)";
+                string aLabel = $"{aDumpName} (after,  score {afterSnap.HealthScore}/100)";
+                AnsiConsole.MarkupLine($"  Diffing [bold]{Markup.Escape(dumpLabel)}[/]  [[{Markup.Escape(bDumpName)}]] {bs.HealthScore} → [[{Markup.Escape(aDumpName)}]] {afterSnap.HealthScore}");
 
                 var dumpDiff = ReportDiffer.Diff(beforeDoc, afterDoc, bLabel, aLabel, opts);
                 foreach (var ch in dumpDiff.Chapters)
