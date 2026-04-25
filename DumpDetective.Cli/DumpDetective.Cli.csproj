@@ -27,7 +27,16 @@
     <PackageId>DumpDetective.Cli</PackageId>
     <Description>CLI tool for analysing .NET memory dumps (.dmp / .mdmp) and .nettrace files. Heap stats, trend analysis, deadlock detection, and more.</Description>
     <Authors>RohitM-IN</Authors>
-    <PackageTags>dotnet-tool;clrmd;memory-dump;diagnostics;windbg</PackageTags>
+    <PackageTags>
+		dotnet-tool;dotnet-dump;dotnettrace;clrmd;
+		memory-analysis;dump-analysis;heap-analysis;gc-analysis;
+		performance-analysis;profiling;diagnostics-tools;
+		debugging-tools;postmortem-debugging;crash-analysis;
+		deadlock-detection;thread-analysis;async-debugging;
+		runtime-analysis;eventpipe;etw;
+		memory-leak-detection;allocation-analysis;threadpool-analysis;
+		windbg;diagnostics
+	</PackageTags>
     <PackageProjectUrl>https://github.com/Azooid/DumpDetective</PackageProjectUrl>
     <RepositoryUrl>https://github.com/Azooid/DumpDetective</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>

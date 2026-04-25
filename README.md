@@ -47,7 +47,7 @@ Hardware requirements scale with the dump you are analysing. The numbers below a
 Install as a global .NET tool from [NuGet.org](https://www.nuget.org/packages/DumpDetective.Cli):
 
 ```bash
-dotnet tool install --global DumpDetective.Cli --version 2.2.0
+dotnet tool install --global DumpDetective.Cli --version 2.2.1
 ```
 
 Once installed, the tool is available as:
