@@ -6,6 +6,15 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Reports all live weak GC handles and <c>ConditionalWeakTable</c> instances.
+/// Weak handles (<c>WeakShort</c> / <c>WeakLong</c>) are enumerated from the GC handle
+/// table; each is checked to see whether its target is still alive (<c>h.Object != 0</c>).
+/// ConditionalWeakTable data uses the pre-built <see cref="Consumers.CwtData"/> cache
+/// from <c>CollectHeapObjectsCombined</c> when available, avoiding a second heap walk.
+/// For each CWT the consumer read the internal <c>_container._entries</c> array length
+/// (falling back to <c>_entries</c> for older .NET layouts) as the approximate entry count.
+/// </summary>
 public sealed class WeakRefsAnalyzer
 {
     public WeakRefsData Analyze(DumpContext ctx)

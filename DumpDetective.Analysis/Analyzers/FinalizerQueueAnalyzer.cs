@@ -5,6 +5,21 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Analyzes the GC finalizer queue, reporting type-level counts and detecting
+/// potential resurrection candidates.
+/// Three phases:
+///   1. Finalizer thread info: locates the finalizer thread in <c>ctx.Runtime.Threads</c>,
+///      captures its stack frames, and checks whether it is currently blocked.
+///   2. Queue scan: calls <c>ClrHeap.EnumerateFinalizableObjects</c> to iterate the
+///      pending-finalization queue, grouping objects by type and optionally collecting
+///      sample addresses. Checks each object for a finalizer method via reflection
+///      (<c>GetMethod("Finalize")</c>) to distinguish true finalizable types from
+///      objects promoted by resurrection.
+///   3. Resurrection candidates: cross-references finalizableObjects against strong GC
+///      handles — an object in the finalizer queue that is also strongly rooted is a
+///      resurrection candidate (its finalizer will re-root it, keeping it alive).
+/// </summary>
 public sealed class FinalizerQueueAnalyzer
 {
     public FinalizerQueueData Analyze(DumpContext ctx, bool collectAddresses = false)

@@ -6,34 +6,56 @@ using System.Runtime.InteropServices;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Finds the top-N most-referenced objects on the heap ("hot" objects) and
+/// shows which types hold the most references to them.
+/// Fast path: reads pre-distilled <see cref="HeapSnapshot.TopInboundAddrs"/> and
+///   <see cref="HeapSnapshot.InboundHistogram"/> built by <see cref="Consumers.InboundRefConsumer"/>
+///   during the main walk — no second heap scan needed for address selection or histogram.
+/// Referencing-type breakdown: uses <see cref="SharedReferrerCache"/> (shared with
+///   <c>MemoryLeakAnalyzer</c>) — whichever of the two parallel workers arrives first
+///   triggers the walk; the other gets the result instantly from the cache.
+/// Retained size is estimated by summing the direct children of each hot object
+///   (capped at 2 000 children to avoid runaway on array-like objects).
+/// </summary>
 public sealed class HighRefsAnalyzer
 {
     public HighRefsData Analyze(DumpContext ctx, int top = 30, int minRefs = 10)
     {
-        Dictionary<ulong, int> inboundCounts;
+        HashSet<ulong> topAddrs;
         long totalRefs, totalObjs;
+        int  inboundCountsSize;
+        Dictionary<ulong, int>? standaloneInboundCounts = null;
 
-        // Fast path — reuse HeapSnapshot inbound counts
         if (ctx.Snapshot is { } snap)
         {
-            inboundCounts = snap.InboundCounts;
-            totalRefs     = snap.TotalRefs;
-            totalObjs     = snap.TotalObjects;
+            // Use pre-distilled summary — InboundCounts may already be released.
+            totalRefs         = snap.TotalRefs;
+            totalObjs         = snap.TotalObjects;
+            inboundCountsSize = snap.InboundCountsSize;
+            topAddrs          = snap.TopInboundAddrs
+                .Where(t => t.Count >= minRefs)
+                .Take(top)
+                .Select(t => t.Addr)
+                .ToHashSet();
         }
         else
         {
-            (inboundCounts, totalRefs, totalObjs) = BuildInboundCounts(ctx);
+            var (counts, refs, objs) = BuildInboundCounts(ctx);
+            totalRefs                = refs;
+            totalObjs                = objs;
+            inboundCountsSize        = counts.Count;
+            standaloneInboundCounts  = counts;
+            topAddrs                 = counts
+                .Where(kv => kv.Value >= minRefs)
+                .OrderByDescending(kv => kv.Value)
+                .Take(top)
+                .Select(kv => kv.Key)
+                .ToHashSet();
         }
 
-        var topAddrs = inboundCounts
-            .Where(kv => kv.Value >= minRefs)
-            .OrderByDescending(kv => kv.Value)
-            .Take(top)
-            .Select(kv => kv.Key)
-            .ToHashSet();
-
         if (topAddrs.Count == 0)
-            return new HighRefsData([], totalObjs, totalRefs, inboundCounts.Count, []);
+            return new HighRefsData([], totalObjs, totalRefs, inboundCountsSize, []);
 
         var refTypes = BuildReferencingTypes(ctx, topAddrs);
         var candidates = new List<HighRefEntry>(topAddrs.Count);
@@ -58,29 +80,58 @@ public sealed class HighRefsAnalyzer
             var typeMap = refTypes.TryGetValue(addr, out var tm) ? tm : new Dictionary<string, int>();
             var topSrc  = typeMap.OrderByDescending(kv => kv.Value).Take(5)
                               .Select(kv => (kv.Key, kv.Value)).ToList();
-            int inRef = inboundCounts.TryGetValue(addr, out int r) ? r : 0;
+
+            int inRef = 0;
+            if (ctx.Snapshot is { } s)
+            {
+                foreach (var (a, c) in s.TopInboundAddrs)
+                    if (a == addr) { inRef = c; break; }
+            }
+            else
+            {
+                standaloneInboundCounts?.TryGetValue(addr, out inRef);
+            }
 
             candidates.Add(new HighRefEntry(typeName, addr, ownSize, retained, gen, inRef, typeMap.Count, topSrc));
         }
 
         candidates.Sort(static (a, b) => b.InboundRefs.CompareTo(a.InboundRefs));
 
-        // Pre-compute ref-count histogram (all objects >= 10 inbound refs)
-        (string Label, int Lo, int Hi)[] buckets =
-        [
-            ("10 – 49",        10,    49),
-            ("50 – 99",        50,    99),
-            ("100 – 499",     100,   499),
-            ("500 – 999",     500,   999),
-            ("1 000 – 9 999", 1_000, 9_999),
-            ("≥ 10 000",      10_000, int.MaxValue),
-        ];
-        var histogram = buckets
-            .Select(b => (b.Label, Count: inboundCounts.Values.Count(v => v >= b.Lo && v <= b.Hi)))
-            .Where(row => row.Count > 0)
-            .ToList();
+        // Build histogram from pre-distilled data (fast path) or raw counts (standalone).
+        static string BucketLabel(int lo, int hi) => hi == int.MaxValue
+            ? $"≥ {lo:N0}"
+            : $"{lo:N0} – {hi:N0}";
 
-        return new HighRefsData(candidates, totalObjs, totalRefs, inboundCounts.Count, histogram);
+        List<(string Label, int Count)> histogram;
+        if (ctx.Snapshot is { } snapHist)
+        {
+            histogram = snapHist.InboundHistogram
+                .Where(b => b.Count > 0)
+                .Select(b => (BucketLabel(b.Lo, b.Hi), b.Count))
+                .ToList();
+        }
+        else if (standaloneInboundCounts is not null)
+        {
+            (string Label, int Lo, int Hi)[] bucketDefs =
+            [
+                ("10 – 49",        10,    49),
+                ("50 – 99",        50,    99),
+                ("100 – 499",     100,   499),
+                ("500 – 999",     500,   999),
+                ("1 000 – 9 999", 1_000, 9_999),
+                ("≥ 10 000",      10_000, int.MaxValue),
+            ];
+            histogram = bucketDefs
+                .Select(b => (b.Label, Count: standaloneInboundCounts.Values.Count(v => v >= b.Lo && v <= b.Hi)))
+                .Where(r => r.Count > 0)
+                .ToList();
+        }
+        else
+        {
+            histogram = [];
+        }
+
+        return new HighRefsData(candidates, totalObjs, totalRefs, inboundCountsSize, histogram);
     }
 
     private static (Dictionary<ulong, int>, long, long) BuildInboundCounts(DumpContext ctx)

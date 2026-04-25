@@ -114,7 +114,12 @@ internal static class HeapObjectCollector
             genCounter.FrozenObjCount, genCounter.FrozenObjSize,
             genCounter.PohObjCount, genCounter.PohObjSize,
             typeStatsC.TotalObjects, inbound.TotalRefs,
-            strings.TotalStringCount, strings.TotalStringSize));
+            strings.TotalStringCount, strings.TotalStringSize,
+            inbound.TopAddrs, inbound.Histogram, inbound.InboundCountsSize));
+
+        // InboundCounts (~1.9 GB) is still needed by SharedReferrerCache.Build to extract
+        // hot addresses — ReleaseRaw() is called there once that extraction is complete.
+        // Everything else that needs inbound data reads TopInboundAddrs / InboundHistogram.
     }
 
     // ── Main heap object walk ─────────────────────────────────────────────────

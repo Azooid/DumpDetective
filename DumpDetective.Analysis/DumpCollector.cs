@@ -96,7 +96,7 @@ public static class DumpCollector
             sw.Restart();
         }
 
-        RuntimeSubCollectors.CollectHandles(runtime, snapshot);
+        RuntimeSubCollectors.CollectHandles(runtime, snapshot, progress);
         if (sw is not null)
         {
             progress!($"[SCAN]Handle scan|{snapshot.TotalHandleCount}|{sw.ElapsedMilliseconds}");

@@ -4,6 +4,15 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Lists all GC-pinned objects by enumerating GC handles with <c>IsPinned == true</c>.
+/// Pinned objects prevent the GC from compacting the heap around them, causing
+/// fragmentation over time. Two kinds are reported:
+///   - <c>ClrHandleKind.Pinned</c>: explicit <c>GCHandle.Alloc(obj, Pinned)</c> pins.
+///   - Other handle kinds with <c>IsPinned</c> set: async-pinned handles created by
+///     the runtime for overlapped I/O operations (e.g. socket buffers).
+/// Generation label is resolved from the containing segment kind.
+/// </summary>
 public sealed class PinnedObjectsAnalyzer
 {
     public PinnedObjectsData Analyze(DumpContext ctx)

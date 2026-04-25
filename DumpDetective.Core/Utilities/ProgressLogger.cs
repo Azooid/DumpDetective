@@ -209,8 +209,7 @@ public sealed class ProgressLogger
                 AnsiConsole.MarkupLine($"[dim][[{Now}]][/]   [green]✓[/] {Markup.Escape(inner)}");
             }
         }
-        else if (msg.StartsWith("Walking heap objects", StringComparison.Ordinal) ||
-                 msg.StartsWith("Scanning finalizer queue", StringComparison.Ordinal))
+        else if (IsLiveMessage(msg))
         {
             _lastLiveMsg = msg;
             WriteLive($"[{Now}]   {NextSpinner()} {msg}");
@@ -223,6 +222,33 @@ public sealed class ProgressLogger
     }
 
     // ── Internal helpers ──────────────────────────────────────────────────────
+
+    private static readonly string[] LivePrefixes =
+    [
+        "Walking heap objects",
+        "Scanning finalizer queue",
+        "Scanning handles",
+        "Scanning static fields",
+        "Scanning event handlers",
+        "Measuring fragmentation",
+        "Reading finalizer queue",
+        "Building referrer map",
+        "Building GC roots map",
+        "Building static root map",
+        "Building thread name map",
+        "Finding objects",
+        "Analysing LOH",
+        "Counting inbound",
+        "Profiling referencing",
+        "BFS retained",
+    ];
+
+    private static bool IsLiveMessage(string msg)
+    {
+        foreach (var prefix in LivePrefixes)
+            if (msg.StartsWith(prefix, StringComparison.Ordinal)) return true;
+        return false;
+    }
 
     private void Print(string icon, string style, string msg, bool indent)
     {

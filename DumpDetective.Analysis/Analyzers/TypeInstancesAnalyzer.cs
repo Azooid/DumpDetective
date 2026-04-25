@@ -5,6 +5,14 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Lists individual instances of types whose name contains a search substring,
+/// with per-instance address, size, and generation.
+/// Walks the full heap (no fast path — needs individual addresses and sizes, not just
+/// aggregated counts from <c>TypeAgg</c>). Applies optional minimum-size and
+/// generation filters inline during the walk. Tracks the <c>top</c> largest instances
+/// per matching type using an insertion-sorted list capped at <c>top</c> entries.
+/// </summary>
 public sealed class TypeInstancesAnalyzer
 {
     public TypeInstancesData Analyze(DumpContext ctx, string typeName,

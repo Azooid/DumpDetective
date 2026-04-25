@@ -63,6 +63,26 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
         _result = new EventAnalysisData(groups);
     }
 
+    public IHeapObjectConsumer CreateClone()
+    {
+        var c = new EventAnalysisAnalyzer();
+        c.Reset();
+        return c;
+    }
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (EventAnalysisAnalyzer)other;
+        if (src._totals is null) return;
+        _totals ??= new Dictionary<(string, string), int>(4096);
+        foreach (var (key, count) in src._totals)
+        {
+            ref int dst = ref System.Runtime.InteropServices.CollectionsMarshal
+                .GetValueRefOrAddDefault(_totals, key, out _);
+            dst += count;
+        }
+    }
+
     // ── Command entry point ───────────────────────────────────────────────────
 
     public EventAnalysisData Analyze(DumpContext ctx)
@@ -78,63 +98,30 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     // Detailed scan: builds static roots, then walks heap collecting per-subscriber detail.
     private static EventAnalysisData AnalyzeDetailed(DumpContext ctx)
     {
-        // BuildStaticRoots enumerates all modules/types/static fields — can take tens of seconds;
-        // wrapping in RunStatus makes this phase visible in the └─ trace.
         HashSet<ulong> staticRoots = [];
         CommandBase.RunStatus("Building static root map...", () => staticRoots = BuildStaticRoots(ctx));
 
-        // (publisher, field) → list of subscriber detail
-        var rawGroups = new Dictionary<(string Publisher, string Field), List<EventSubscriberInfo>>(128);
-        // (publisher, field) → count of distinct publisher objects
-        var instanceCounts = new Dictionary<(string, string), int>(128);
-        var publisherAddrs = new HashSet<ulong>();  // count unique publisher instances
+        var consumer = new Consumers.EventDetailConsumer(staticRoots, ctx.Runtime);
 
         CommandBase.RunStatus("Scanning event handlers (detailed)...", update =>
-        {
-            long count = 0;
-            var  sw    = System.Diagnostics.Stopwatch.StartNew();
-            foreach (var obj in ctx.Heap.EnumerateObjects())
-            {
-                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                count++;
-                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+            HeapWalker.Walk(ctx.Heap, [consumer],
+                raw =>
                 {
-                    update($"Scanning event handlers \u2014 {count:N0} objects  \u2022  {rawGroups.Count} event fields  \u2022  {publisherAddrs.Count} publishers...");
-                    sw.Restart();
-                }
-                string typeName = obj.Type.Name ?? string.Empty;
-                if (DumpHelpers.IsSystemType(typeName)) continue;
-
-                foreach (var field in obj.Type.Fields)
-                {
-                    if (!field.IsObjectReference || field.Type is null || !IsDelegate(field.Type)) continue;
-                    string ft = field.Type.Name ?? string.Empty;
-                    if (ft.StartsWith("System.Action", StringComparison.Ordinal) ||
-                        ft.StartsWith("System.Func",   StringComparison.Ordinal) ||
-                        ft.StartsWith("System.Threading.Thread", StringComparison.Ordinal))
-                        continue;
-                    string fn = field.Name ?? string.Empty;
-                    if (fn is "action" or "callback" or "handler" or "func" or "del" or "delegate") continue;
-
-                    try
+                    // Enrich the standard walker message with event-specific counts
+                    if (raw.StartsWith("Walking heap objects", StringComparison.Ordinal) ||
+                        raw.StartsWith("merging", StringComparison.Ordinal)             ||
+                        raw.StartsWith("finalising", StringComparison.Ordinal))
                     {
-                        var delVal = field.ReadObject(obj.Address, false);
-                        if (delVal.IsNull || !delVal.IsValid) continue;
-                        var subs = CollectSubscribers(delVal, staticRoots, ctx.Runtime);
-                        if (subs.Count == 0) continue;
-
-                        publisherAddrs.Add(obj.Address);
-                        var key = (typeName, field.Name ?? "<?>");
-                        if (!rawGroups.TryGetValue(key, out var list))
-                            rawGroups[key] = list = new List<EventSubscriberInfo>();
-                        list.AddRange(subs);
-                        ref int ic = ref CollectionsMarshal.GetValueRefOrAddDefault(instanceCounts, key, out _);
-                        ic++;
+                        update($"Scanning event handlers \u2014 {consumer.PublisherCount:N0} publishers  \u2022  {Interlocked.Read(ref consumer.SubscriberCount):N0} subscribers  \u2022  {raw}");
                     }
-                    catch { }
-                }
-            }
-        });
+                    else
+                    {
+                        update(raw);
+                    }
+                }));
+
+        var rawGroups      = consumer.RawGroups;
+        var instanceCounts = consumer.InstanceCounts;
 
         var groups = rawGroups
             .Select(kv =>
@@ -147,8 +134,8 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
                 int  lambdas   = allSubs.Count(s => s.IsLambda);
                 instanceCounts.TryGetValue(kv.Key, out int instCount);
                 return new EventLeakGroup(
-                    Publisher:        kv.Key.Publisher,
-                    Field:            kv.Key.Field,
+                    Publisher:        kv.Key.Item1,
+                    Field:            kv.Key.Item2,
                     Subscribers:      allSubs.Count,
                     IsStaticPublisher: isStatic,
                     HasStaticSubs:   hasSR,

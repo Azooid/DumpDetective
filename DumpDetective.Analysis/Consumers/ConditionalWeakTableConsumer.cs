@@ -57,4 +57,12 @@ internal sealed class ConditionalWeakTableConsumer : IHeapObjectConsumer
     }
 
     public void OnWalkComplete() { }
+
+    public IHeapObjectConsumer CreateClone() => new ConditionalWeakTableConsumer();
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (ConditionalWeakTableConsumer)other;
+        _entries.AddRange(src._entries);
+    }
 }

@@ -72,6 +72,40 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
         _result = new ExceptionAnalysisData(byTypeResult, _totals, _totalAll);
     }
 
+    public IHeapObjectConsumer CreateClone()
+    {
+        var c = new ExceptionAnalysisAnalyzer();
+        c.Reset();
+        return c;
+    }
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (ExceptionAnalysisAnalyzer)other;
+        _totalAll += src._totalAll;
+        if (src._totals is not null)
+        {
+            _totals ??= new Dictionary<string, int>(StringComparer.Ordinal);
+            foreach (var (name, count) in src._totals)
+            {
+                ref int dst = ref System.Runtime.InteropServices.CollectionsMarshal
+                    .GetValueRefOrAddDefault(_totals, name, out _);
+                dst += count;
+            }
+        }
+        if (src._byType is not null)
+        {
+            _byType ??= new Dictionary<string, List<ExceptionHeapRecord>>(StringComparer.Ordinal);
+            foreach (var (typeName, records) in src._byType)
+            {
+                if (!_byType.TryGetValue(typeName, out var dst))
+                    _byType[typeName] = dst = new List<ExceptionHeapRecord>(MaxPerType);
+                foreach (var r in records)
+                    if (dst.Count < MaxPerType) dst.Add(r);
+            }
+        }
+    }
+
     // ── Command entry point ───────────────────────────────────────────────────
 
     public ExceptionAnalysisData Analyze(DumpContext ctx)

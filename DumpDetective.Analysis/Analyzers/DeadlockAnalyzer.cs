@@ -5,6 +5,19 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Detects potential deadlock cycles by building a wait-for graph from monitor locks.
+/// Algorithm:
+///   1. Build address→ClrThread and managedId→ClrThread lookup tables.
+///   2. Enumerate all inflated sync blocks (<c>ClrSyncBlock.IsMonitorHeld</c>) to find
+///      held monitor locks and their owning threads.
+///   3. Approximate waiters: ClrMD 3.x does not expose per-SyncBlock waiter lists, so
+///      threads whose top stack frame is a Monitor.Enter/ReliableEnter call and whose
+///      LockCount == 0 are treated as candidates waiting on any held lock of the same
+///      type — this is a heuristic, not guaranteed correct for all scenarios.
+///   4. Build a wait-for graph (waiter → owner) and run DFS cycle detection.
+///   5. Classify all non-deadlocked threads by wait state for the summary table.
+/// </summary>
 public sealed class DeadlockAnalyzer
 {
     public DeadlockData Analyze(DumpContext ctx, int _ = 2)
@@ -39,7 +52,7 @@ public sealed class DeadlockAnalyzer
                     // Resolve owner thread.
                     byAddress.TryGetValue(sb.HoldingThreadAddress, out ClrThread? owner);
 
-                    // Resolve lock type name from heap object.
+                    // Resolve the type name of the lock object for display.
                     string typeName = "<unknown>";
                     try
                     {
@@ -49,12 +62,9 @@ public sealed class DeadlockAnalyzer
                     }
                     catch { }
 
-                    // Find threads actively waiting on this lock.
-                    // ClrMD 3.x doesn't enumerate waiters per SyncBlock directly;
-                    // we approximate by looking at threads whose top frame is
-                    // Monitor.ReliableEnter / Monitor.Enter and whose LockCount == 0.
-                    // A waiter hasn't acquired the lock yet → LockCount == 0, but is
-                    // trying to enter.  We correlate below after building all locks.
+                    // ClrMD 3.x does not expose per-SyncBlock waiter thread lists.
+                    // Waiters are identified in step 3 by inspecting thread stack frames.
+                    // WaiterManagedIds starts empty and is filled after all locks are known.
                     monitorLocks.Add(new MonitorLockEntry(
                         LockAddress:     sb.Object,
                         LockTypeName:    typeName,

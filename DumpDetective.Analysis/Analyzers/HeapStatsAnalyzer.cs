@@ -8,8 +8,12 @@ namespace DumpDetective.Analysis.Analyzers;
 public sealed class HeapStatsAnalyzer
 {
     /// <summary>
-    /// Returns per-type stats, using the cached <see cref="HeapSnapshot"/> fast-path
+    /// Returns per-type statistics, using the cached <see cref="HeapSnapshot"/> fast-path
     /// when no filters are active.
+    /// Fast path: reads pre-built <see cref="TypeAgg"/> entries from the snapshot — O(types),
+    /// effectively instant even for 110 M object heaps.
+    /// Slow path (filter active or no snapshot): walks the heap with ClrMD, classifying
+    /// each object by segment kind and applying the name/generation filter inline.
     /// </summary>
     public HeapStatsData Analyze(DumpContext ctx, string? filter = null, string? genFilter = null)
     {

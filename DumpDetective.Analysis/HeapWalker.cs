@@ -2,7 +2,10 @@ using Microsoft.Diagnostics.Runtime;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
+using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace DumpDetective.Analysis;
 
@@ -29,55 +32,167 @@ public static class HeapWalker
         IReadOnlyList<IHeapObjectConsumer> consumers,
         Action<string>?               progress = null)
     {
-        var typeMetaCache  = new Dictionary<ulong, HeapTypeMeta>(8192);
-        long freeBytes     = 0;
+        const int MaxParallelSegments = 8;
+
+        long freeBytes      = 0;
         long processedCount = 0;
-        var  totalWatch    = progress is not null ? Stopwatch.StartNew() : null;
-        var  rateWatch     = progress is not null ? Stopwatch.StartNew() : null;
-        long lastCount     = 0;
+        var  totalWatch     = progress is not null ? Stopwatch.StartNew() : null;
+        var  rateWatch      = progress is not null ? Stopwatch.StartNew() : null;
+        long lastCount      = 0;
+
+        // Shared meta cache — lock-free; BuildMeta is idempotent so two threads
+        // racing on the same MT both compute but only one entry is stored.
+        var metaCache = new ConcurrentDictionary<ulong, HeapTypeMeta>(
+            concurrencyLevel: MaxParallelSegments, capacity: 8192);
+
+        var segments = heap.Segments.ToArray();
+
+        // Group segments into exactly MaxParallelSegments buckets (round-robin over segments
+        // sorted largest-first for load balance). This caps clone count at 8 regardless of how
+        // many segments exist — 63 segments would otherwise create 63×N consumer clones
+        // simultaneously, causing multi-GB memory spikes on large heaps.
+        int bucketCount = Math.Min(MaxParallelSegments, segments.Length);
+        var buckets     = new List<ClrSegment>[bucketCount];
+        for (int b = 0; b < bucketCount; b++) buckets[b] = [];
+
+        var sorted = segments.OrderByDescending(s => s.ObjectRange.Length).ToArray();
+        for (int i = 0; i < sorted.Length; i++)
+            buckets[i % bucketCount].Add(sorted[i]);
+
+        // One clone-set per bucket — 8 clones total instead of 63.
+        // Thread-safe consumers (IsThreadSafe == true) are shared directly across all
+        // bucket workers — no cloning, no merging. This avoids multi-GB duplicate
+        // allocations for large consumers like InboundRefConsumer and ReferrerConsumer.
+        var bucketClones = new IHeapObjectConsumer[bucketCount][];
+        for (int b = 0; b < bucketCount; b++)
+        {
+            var clones = new IHeapObjectConsumer[consumers.Count];
+            for (int c = 0; c < consumers.Count; c++)
+                clones[c] = consumers[c].IsThreadSafe ? consumers[c] : consumers[c].CreateClone();
+            bucketClones[b] = clones;
+        }
 
         try
         {
-            foreach (var obj in heap.EnumerateObjects())
-            {
-                if (!obj.IsValid || obj.Type is null) continue;
-
-                if (obj.Type.IsFree)
+            Parallel.ForEach(
+                Enumerable.Range(0, bucketCount),
+                new ParallelOptions { MaxDegreeOfParallelism = MaxParallelSegments },
+                bucketIdx =>
                 {
-                    freeBytes += (long)obj.Size;
-                    continue;
-                }
-
-                if (progress is not null)
-                {
-                    processedCount++;
-                    if ((processedCount & 0x3FF) == 0 && rateWatch!.ElapsedMilliseconds >= 200)
+                    var clones = bucketClones[bucketIdx];
+                    foreach (var seg in buckets[bucketIdx])
+                    foreach (var obj in seg.EnumerateObjects())
                     {
-                        double elapsed = totalWatch!.Elapsed.TotalSeconds;
-                        double interval = rateWatch.Elapsed.TotalSeconds;
-                        long delta = processedCount - lastCount;
-                        long rate  = interval > 0 ? (long)(delta / interval) : 0;
-                        lastCount  = processedCount;
-                        rateWatch.Restart();
-                        progress($"Walking heap objects — {processedCount:N0} objs  •  {elapsed:F1}s  •  ~{rate:N0}/s");
+                        if (!obj.IsValid || obj.Type is null) continue;
+
+                        if (obj.Type.IsFree)
+                        {
+                            Interlocked.Add(ref freeBytes, (long)obj.Size);
+                            continue;
+                        }
+
+                        ulong mt   = obj.Type.MethodTable;
+                        var   meta = metaCache.GetOrAdd(mt,
+                            static (_, t) => BuildMeta(t, includeDelegateFields: true),
+                            obj.Type);
+
+                        for (int i = 0; i < clones.Length; i++)
+                            clones[i].Consume(in obj, meta, heap);
+
+                        if (progress is not null)
+                        {
+                            long cur = Interlocked.Increment(ref processedCount);
+                            if ((cur & 0x3FF) == 0 && rateWatch!.ElapsedMilliseconds >= 200)
+                            {
+                                double elapsed  = totalWatch!.Elapsed.TotalSeconds;
+                                double interval = rateWatch.Elapsed.TotalSeconds;
+                                long   snap     = Interlocked.Read(ref processedCount);
+                                long   delta    = snap - Interlocked.Exchange(ref lastCount, snap);
+                                long   rate     = interval > 0 ? (long)(delta / interval) : 0;
+                                rateWatch.Restart();
+                                progress($"Walking heap objects — {snap:N0} objs  •  {elapsed:F1}s  •  ~{rate:N0}/s");
+                            }
+                        }
                     }
-                }
-
-                ulong mt = obj.Type.MethodTable;
-                if (!typeMetaCache.TryGetValue(mt, out var meta))
-                {
-                    meta = BuildMeta(obj.Type, includeDelegateFields: true);
-                    typeMetaCache[mt] = meta;
-                }
-
-                for (int i = 0; i < consumers.Count; i++)
-                    consumers[i].Consume(in obj, meta, heap);
-            }
+                });
         }
         finally
         {
-            for (int i = 0; i < consumers.Count; i++)
-                consumers[i].OnWalkComplete();
+            // ── Parallel merge — 8 bucket-clones, single progress thread ─────────
+            long mergeStepsDone  = 0;
+            long mergeStepsTotal = (long)consumers.Count * bucketCount;
+            long objCount        = Interlocked.Read(ref processedCount);
+            var  mergeDone       = new ManualResetEventSlim(false);
+
+            Thread? progressThread = null;
+            if (progress is not null)
+            {
+                progressThread = new Thread(() =>
+                {
+                    while (!mergeDone.Wait(200))
+                    {
+                        double elapsed = totalWatch!.Elapsed.TotalSeconds;
+                        long   steps   = Interlocked.Read(ref mergeStepsDone);
+                        progress($"Walking heap objects — {objCount:N0} objs  •  {elapsed:F1}s  •  merging {steps}/{mergeStepsTotal}...");
+                    }
+                }) { IsBackground = true, Name = "HeapWalker.MergeProgress" };
+                progressThread.Start();
+            }
+
+            try
+            {
+                Parallel.For(0, consumers.Count,
+                    new ParallelOptions { MaxDegreeOfParallelism = MaxParallelSegments },
+                    c =>
+                    {
+                        for (int b = 0; b < bucketCount; b++)
+                        {
+                            if (!consumers[c].IsThreadSafe)
+                            {
+                                consumers[c].MergeFrom(bucketClones[b][c]);
+                            }
+                            Interlocked.Increment(ref mergeStepsDone);
+                        }
+                    });
+            }
+            finally
+            {
+                mergeDone.Set();
+                progressThread?.Join();
+            }
+
+            // ── Finalise: OnWalkComplete + GC — keep spinner alive throughout ──
+            var finaliseDone = new ManualResetEventSlim(false);
+            Thread? finaliseThread = null;
+            if (progress is not null)
+            {
+                finaliseThread = new Thread(() =>
+                {
+                    while (!finaliseDone.Wait(200))
+                    {
+                        double elapsed = totalWatch!.Elapsed.TotalSeconds;
+                        progress($"Walking heap objects — {objCount:N0} objs  •  {elapsed:F1}s  •  finalising...");
+                    }
+                }) { IsBackground = true, Name = "HeapWalker.FinaliseProgress" };
+                finaliseThread.Start();
+            }
+
+            try
+            {
+                for (int i = 0; i < consumers.Count; i++)
+                    consumers[i].OnWalkComplete();
+
+                for (int b = 0; b < bucketCount; b++)
+                    for (int c = 0; c < bucketClones[b].Length; c++)
+                        bucketClones[b][c] = null!;
+
+                GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+            }
+            finally
+            {
+                finaliseDone.Set();
+                finaliseThread?.Join();
+            }
         }
 
         // Final [SCAN] message — clears the live spinner and prints total result

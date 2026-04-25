@@ -5,6 +5,14 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Lists objects that meet or exceed a size threshold (default: 85 000 B, the LOH boundary).
+/// When the threshold is the default LOH threshold, only LOH segments are enumerated,
+/// skipping the ~100 M Gen0/1/2 objects and making the scan 5–10× faster.
+/// For each matching object the analyzer reads type name, size, address, and generation.
+/// A second phase analyses LOH free-space holes (fragmentation) by walking
+/// the LOH segments a second time and collecting run lengths of free objects.
+/// </summary>
 public sealed class LargeObjectsAnalyzer
 {
     public LargeObjectsData Analyze(DumpContext ctx, long minSize = 85_000, string? filter = null)

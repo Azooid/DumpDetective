@@ -39,6 +39,21 @@ public sealed class AsyncStacksAnalyzer : IHeapObjectConsumer
     public void OnWalkComplete()
         => _result = new AsyncStacksData((_entries ?? []).ToList(), _backlogTotal);
 
+    public IHeapObjectConsumer CreateClone()
+    {
+        var c = new AsyncStacksAnalyzer();
+        c.Reset();
+        return c;
+    }
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (AsyncStacksAnalyzer)other;
+        _backlogTotal += src._backlogTotal;
+        if (src._entries is not null)
+            (_entries ??= []).AddRange(src._entries);
+    }
+
     // ── Command entry point ───────────────────────────────────────────────────
 
     public AsyncStacksData Analyze(DumpContext ctx)

@@ -5,6 +5,13 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Summarises the GC handle table by handle kind (Strong, Weak, Pinned, Dependent, etc.),
+/// reporting per-kind object-type breakdowns with count and total size.
+/// Enumerates all handles via <c>ctx.Runtime.EnumerateHandles()</c> with rate-limited
+/// spinner updates; applies an optional kind-name filter.
+/// For strong handles the referenced object's type and size are resolved from the heap.
+/// </summary>
 public sealed class HandleTableAnalyzer
 {
     public HandleTableData Analyze(DumpContext ctx, string? filter = null)

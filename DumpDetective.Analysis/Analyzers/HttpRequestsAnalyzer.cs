@@ -5,6 +5,14 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Reports all live <c>System.Net.Http.*</c> and <c>System.Net.HttpWebRequest</c>
+/// objects on the heap, showing method, URI, and status code where available.
+/// Fast path: returns the <see cref="Consumers.HttpRequestsConsumer"/> result cached
+///   by <c>DumpCollector.CollectHeapObjectsCombined</c> — no second heap walk.
+/// Slow path: walks the heap filtering by the known HTTP type set, then attempts
+///   field reads for method/URI/status (all guarded with try/catch).
+/// </summary>
 public sealed class HttpRequestsAnalyzer
 {
     private static readonly HashSet<string> HttpTypeSet = new(StringComparer.OrdinalIgnoreCase)

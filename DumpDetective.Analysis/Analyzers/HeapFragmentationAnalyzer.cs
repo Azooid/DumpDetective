@@ -1,3 +1,4 @@
+using DumpDetective.Analysis.Consumers;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -5,6 +6,16 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Measures managed heap fragmentation by walking every segment and classifying
+/// each object as live or free, accumulating per-segment live/free byte ratios
+/// and a free-hole size distribution histogram.
+/// Uses a single parallel <see cref="HeapWalker"/> pass via <see cref="Consumers.FragmentationConsumer"/>
+/// so all segments are walked concurrently — the most expensive part of this
+/// analyzer on large heaps is the ~250 GB of I/O reads from ClrMD.
+/// Pinned handle counts per segment are computed from <c>EnumerateHandles</c> before
+/// the walk so they can be attached to the <see cref="HeapSegmentInfo"/> results.
+/// </summary>
 public sealed class HeapFragmentationAnalyzer
 {
     public HeapFragmentationData Analyze(DumpContext ctx)
@@ -14,84 +25,45 @@ public sealed class HeapFragmentationAnalyzer
     }
 
     /// <summary>
-    /// Single pass over all heap segments that fills both per-segment live/free byte counts
-    /// and the free-hole size distribution, replacing the previous two-pass approach (~40% faster).
+    /// Single parallel pass over all heap segments via <see cref="HeapWalker"/> that fills
+    /// both per-segment live/free byte counts and the free-hole size distribution.
     /// </summary>
     private static (IReadOnlyList<HeapSegmentInfo> Segments, IReadOnlyList<FreeHoleBucket> Distribution)
         ScanCombined(DumpContext ctx)
     {
-        // Build segment index
-        var segData = new Dictionary<ulong, MutableSeg>();
-        foreach (var seg in ctx.Heap.Segments)
-        {
-            segData[seg.Address] = new MutableSeg(
-                DumpHelpers.SegmentKindLabel(ctx.Heap, seg.Address),
-                seg.Address,
-                (long)seg.CommittedMemory.Length);
-        }
-
-        // Count pinned handles per segment
+        // Count pinned handles per segment address
+        var pinnedCounts = new Dictionary<ulong, int>();
         foreach (var h in ctx.Runtime.EnumerateHandles())
         {
             if (h.HandleKind != ClrHandleKind.Pinned || h.Object == 0) continue;
             var seg = ctx.Heap.GetSegmentByAddress(h.Object);
-            if (seg is not null && segData.TryGetValue(seg.Address, out var info))
-                info.PinnedCount++;
+            if (seg is not null)
+            {
+                ref int c = ref System.Runtime.InteropServices.CollectionsMarshal
+                    .GetValueRefOrAddDefault(pinnedCounts, seg.Address, out _);
+                c++;
+            }
         }
 
-        var freeType = ctx.Heap.FreeType;
-        var buckets  = new Dictionary<int, (long Count, long Size)>();
+        // Single parallel heap walk via HeapWalker + FragmentationConsumer
+        var consumer = new FragmentationConsumer(ctx.Heap, ctx.Heap.Segments, ctx.Heap.FreeType);
 
-        // Single combined walk — fills per-segment live/free bytes AND hole-size distribution.
         CommandBase.RunStatus("Measuring fragmentation...", update =>
-        {
-            long count = 0;
-            var  sw    = System.Diagnostics.Stopwatch.StartNew();
-            foreach (var seg in ctx.Heap.Segments)
-            {
-                if (!segData.TryGetValue(seg.Address, out var info)) continue;
-                foreach (var obj in seg.EnumerateObjects())
-                {
-                    if (!obj.IsValid) continue;
-                    count++;
-                    if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
-                    {
-                        long free = segData.Values.Sum(s => s.FreeBytes);
-                        long live = segData.Values.Sum(s => s.LiveBytes);
-                        update($"Measuring fragmentation \u2014 {count:N0} objects  \u2022  live:{DumpHelpers.FormatSize(live)}  free:{DumpHelpers.FormatSize(free)}...");
-                        sw.Restart();
-                    }
-                    long size = (long)obj.Size;
-                    if (obj.Type == freeType)
-                    {
-                        info.FreeBytes += size;
-                        int key = size switch
-                        {
-                            < 128     => 0,
-                            < 1024    => 1,
-                            < 4096    => 2,
-                            < 65536   => 3,
-                            < 1048576 => 4,
-                            _         => 5,
-                        };
-                        if (!buckets.TryGetValue(key, out var bv)) bv = (0, 0);
-                        buckets[key] = (bv.Count + 1, bv.Size + size);
-                    }
-                    else
-                    {
-                        info.LiveBytes += size;
-                    }
-                }
-            }
-        });
+            HeapWalker.Walk(ctx.Heap, [consumer],
+                CommandBase.StatusProgress(update)));
 
-        var segments = segData.Values
+        // Apply pinned counts after walk
+        foreach (var (addr, count) in pinnedCounts)
+            if (consumer.SegData.TryGetValue(addr, out var s))
+                s.PinnedCount = count;
+
+        var segments = consumer.SegData.Values
             .Where(s => s.CommittedBytes > 0)
             .OrderByDescending(s => s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0)
             .Select(s => new HeapSegmentInfo(s.Kind, s.Address, s.CommittedBytes, s.LiveBytes, s.FreeBytes, s.PinnedCount))
             .ToList();
 
-        var distribution = buckets
+        var distribution = consumer.Buckets
             .OrderBy(kv => kv.Key)
             .Select(kv =>
             {
@@ -109,15 +81,5 @@ public sealed class HeapFragmentationAnalyzer
             .ToList();
 
         return (segments, distribution);
-    }
-
-    private sealed class MutableSeg(string kind, ulong address, long committed)
-    {
-        public string Kind           = kind;
-        public ulong  Address        = address;
-        public long   CommittedBytes = committed;
-        public long   LiveBytes;
-        public long   FreeBytes;
-        public int    PinnedCount;
     }
 }

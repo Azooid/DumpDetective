@@ -6,6 +6,23 @@ using System.Runtime.InteropServices;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Identifies candidate memory leaks by ranking types by count and retained size,
+/// then tracing GC root chains for the top suspects.
+/// Analysis pipeline:
+///   Step 1 — type stats: reads pre-built <see cref="HeapSnapshot.TypeStats"/> (instant
+///             fast-path) or walks the heap (slow path when no snapshot).
+///   Step 2 — suspect selection: ranks types by Count and Size, excluding system types
+///             unless <c>includeSystem</c> is set; filters by <c>minCount</c>.
+///   Step 3 — accumulation pattern detection: checks for byte-array LOH growth,
+///             large collection fields, and duplicate string ratios.
+///   Step 4a — GC roots map: walks all GC roots (handles + stack roots + static refs)
+///              into a parallel address→(kind, type) lookup.
+///   Step 4b — referrer map: uses <see cref="SharedReferrerCache"/> (shared with
+///              <c>HighRefsAnalyzer</c>) to get a child→parent BFS map in one walk.
+///   Step 4c — root chain tracing: BFS from each suspect instance address up through
+///              the referrer map until a GC root is reached (max depth 60).
+/// </summary>
 public sealed class MemoryLeakAnalyzer
 {
     public MemoryLeakData Analyze(DumpContext ctx,
@@ -226,10 +243,11 @@ public sealed class MemoryLeakAnalyzer
                 }
             });
 
-            // Release the referrer cache as soon as BFS tracing is done — the BfsMap is the
-            // largest in-memory structure (~1 GB after the cap). Freeing it now lets
-            // heap-fragmentation and static-refs run without that pressure.
+            // Release the referrer cache as soon as BFS tracing is done.
+            // Also release TypeStats — memory-leak is the last command that reads it
+            // in full-analyze mode (heap-stats and gen-summary finish in < 1s early on).
             referrerCache!.ReleaseIfDone();
+            ctx.Snapshot?.ReleaseTypeStats();
         }
 
         int totalUniqueTypes = allTypes.Count;

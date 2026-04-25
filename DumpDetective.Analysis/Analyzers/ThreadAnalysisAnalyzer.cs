@@ -5,6 +5,16 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Enumerates all managed threads, classifying each by category (ThreadPool worker,
+/// background, finalizer, etc.), wait kind (Monitor, WaitHandle, independent, none),
+/// current exception, and held lock info.
+/// Thread names are resolved from the pre-built <see cref="Consumers.ThreadNameMap"/>
+/// (populated during the main heap walk by <see cref="Consumers.ThreadNameConsumer"/>)
+/// so no second heap walk is needed.
+/// Stack traces are walked only when <c>captureStacks</c> is true (standalone command)
+/// to avoid the I/O cost in full-analyze mode where the summary is sufficient.
+/// </summary>
 public sealed class ThreadAnalysisAnalyzer
 {
     public ThreadAnalysisData Analyze(DumpContext ctx, bool captureStacks = false)

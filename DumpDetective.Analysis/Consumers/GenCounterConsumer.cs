@@ -7,6 +7,11 @@ namespace DumpDetective.Analysis.Consumers;
 /// <summary>
 /// Tracks generation byte and object-count totals plus Frozen/POH details
 /// needed to populate <see cref="HeapSnapshot"/> generation fields.
+/// Also counts objects that exceed the LOH allocation threshold (≥ 85 000 B)
+/// so <c>GenSummaryCommand</c> can report how many large objects exist even
+/// outside the actual LOH segment (e.g. large POH / pinned arrays).
+/// Generation is resolved the same way as <see cref="TypeStatsConsumer"/>:
+/// segment kind first, then sub-range check for ephemeral segments.
 /// </summary>
 internal sealed class GenCounterConsumer : IHeapObjectConsumer
 {
@@ -67,4 +72,19 @@ internal sealed class GenCounterConsumer : IHeapObjectConsumer
     }
 
     public void OnWalkComplete() { }
+
+    public IHeapObjectConsumer CreateClone() => new GenCounterConsumer();
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var s = (GenCounterConsumer)other;
+        Gen0Bytes += s.Gen0Bytes; Gen0ObjCount += s.Gen0ObjCount;
+        Gen1Bytes += s.Gen1Bytes; Gen1ObjCount += s.Gen1ObjCount;
+        Gen2Bytes += s.Gen2Bytes; Gen2ObjCount += s.Gen2ObjCount;
+        LohBytes  += s.LohBytes;
+        PohBytes  += s.PohBytes;  PohObjCount  += s.PohObjCount;  PohObjSize  += s.PohObjSize;
+        FrozenObjCount += s.FrozenObjCount;                        FrozenObjSize += s.FrozenObjSize;
+        LohThresholdObjectCount += s.LohThresholdObjectCount;
+        LohThresholdLiveBytes   += s.LohThresholdLiveBytes;
+    }
 }

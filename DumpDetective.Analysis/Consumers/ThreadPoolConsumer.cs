@@ -23,6 +23,11 @@ internal sealed class ThreadPoolConsumerCache(
 /// Accumulates Task state counts and work-item type counts for <c>ThreadPoolAnalyzer</c>.
 /// Pre-populated during <c>CollectHeapObjectsCombined</c> and cached via
 /// <c>DumpContext.SetAnalysis&lt;ThreadPoolConsumerCache&gt;</c>.
+/// Task state is decoded from the <c>m_stateFlags</c> int field using the same
+/// internal flag constants as the .NET runtime (checked in priority order:
+/// Faulted → Canceled → RanToCompletion → Running → WaitingToRun → WaitingForActivation).
+/// Work items are counted by type name — any type matching <see cref="HeapTypeMeta.IsWorkItem"/>
+/// (e.g. <c>QueueUserWorkItemCallback</c>, <c>ThreadPoolWorkItem</c>) is tallied.
 /// </summary>
 internal sealed class ThreadPoolConsumer : IHeapObjectConsumer
 {
@@ -62,6 +67,23 @@ internal sealed class ThreadPoolConsumer : IHeapObjectConsumer
     }
 
     public void OnWalkComplete() { }
+
+    public IHeapObjectConsumer CreateClone() => new ThreadPoolConsumer();
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (ThreadPoolConsumer)other;
+        foreach (var (label, count) in src.TaskCounts)
+        {
+            ref int dst = ref CollectionsMarshal.GetValueRefOrAddDefault(TaskCounts, label, out _);
+            dst += count;
+        }
+        foreach (var (name, count) in src.WorkItems)
+        {
+            ref int dst = ref CollectionsMarshal.GetValueRefOrAddDefault(WorkItems, name, out _);
+            dst += count;
+        }
+    }
 
     private static string GetTaskStateLabel(in ClrObject obj)
     {

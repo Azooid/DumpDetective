@@ -51,6 +51,20 @@ public sealed class TimerLeaksAnalyzer : IHeapObjectConsumer
     public void OnWalkComplete()
         => _result = new TimerLeaksData((_items ?? []).ToList());
 
+    public IHeapObjectConsumer CreateClone()
+    {
+        var c = new TimerLeaksAnalyzer();
+        c.Reset(_runtime);
+        return c;
+    }
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (TimerLeaksAnalyzer)other;
+        if (src._items is not null)
+            (_items ??= []).AddRange(src._items);
+    }
+
     // ── Command entry point ───────────────────────────────────────────────────
 
     /// <summary>

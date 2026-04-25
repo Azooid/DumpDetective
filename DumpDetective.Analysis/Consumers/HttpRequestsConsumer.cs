@@ -9,6 +9,11 @@ namespace DumpDetective.Analysis.Consumers;
 /// Accumulates <see cref="HttpObjectEntry"/> instances for <c>HttpRequestsAnalyzer</c>.
 /// Pre-populated during <c>CollectHeapObjectsCombined</c> and cached via
 /// <c>DumpContext.SetAnalysis&lt;HttpRequestsData&gt;</c>.
+/// For each HTTP object the consumer attempts field reads:
+///   - <c>HttpRequestMessage</c>: reads <c>_method._method</c> (string) and <c>_requestUri</c>.
+///   - <c>HttpResponseMessage</c>: reads <c>_statusCode</c> (int).
+/// All field reads are wrapped in try/catch because CLR field offsets may differ
+/// across .NET versions and the dump may contain partially-collected objects.
 /// </summary>
 internal sealed class HttpRequestsConsumer : IHeapObjectConsumer
 {
@@ -51,5 +56,13 @@ internal sealed class HttpRequestsConsumer : IHeapObjectConsumer
     public void OnWalkComplete()
     {
         Result = new HttpRequestsData(_entries);
+    }
+
+    public IHeapObjectConsumer CreateClone() => new HttpRequestsConsumer();
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (HttpRequestsConsumer)other;
+        _entries.AddRange(src._entries);
     }
 }

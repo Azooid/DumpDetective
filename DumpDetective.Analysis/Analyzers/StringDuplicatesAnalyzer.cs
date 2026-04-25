@@ -4,6 +4,15 @@ using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Finds duplicate string values on the managed heap, reporting wasted memory
+/// from interning opportunities.
+/// Fast path: reads the pre-built <see cref="HeapSnapshot.StringGroups"/> dictionary
+/// (built by <see cref="Consumers.StringGroupConsumer"/> during the main heap walk)
+/// and releases it immediately after reading to free ~1–2 GB.
+/// Slow path: performs its own heap walk, grouping strings by value using
+/// <c>ClrObject.AsString(maxLength: 512)</c>.
+/// </summary>
 public sealed class StringDuplicatesAnalyzer
 {
     public StringDuplicatesData Analyze(DumpContext ctx)
@@ -14,7 +23,10 @@ public sealed class StringDuplicatesAnalyzer
             var groups = new List<StringDupGroup>(snap.StringGroups.Count);
             foreach (var kv in snap.StringGroups)
                 groups.Add(new StringDupGroup(kv.Key, kv.Value.Count, kv.Value.TotalSize));
-            return new StringDuplicatesData(groups, snap.TotalStringCount, snap.TotalStringSize);
+            var strResult = new StringDuplicatesData(groups, snap.TotalStringCount, snap.TotalStringSize);
+            // StringGroups is only read here — release it now to free memory.
+            snap.ReleaseStringGroups();
+            return strResult;
         }
 
         // Slow path — own heap walk

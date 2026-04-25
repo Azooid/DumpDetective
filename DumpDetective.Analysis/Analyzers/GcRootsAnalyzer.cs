@@ -5,6 +5,17 @@ using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Finds all GC root paths to instances of a named type.
+/// Two passes:
+///   Pass 1 — find all heap objects whose type name contains the search string.
+///   Pass 2 — for each matching object, walk all GC root handles and per-thread
+///             stack roots to find which ones directly reference the object
+///             (direct roots). If <c>noIndirect</c> is false, also walks all
+///             objects that reference the target (indirect / referrer scan).
+/// Results are capped at <c>maxResults</c> objects to prevent runaway on types
+/// with millions of instances (e.g. <c>System.String</c>).
+/// </summary>
 public sealed class GcRootsAnalyzer
 {
     public GcRootsData Analyze(DumpContext ctx, string typeName, int maxResults = 10, bool noIndirect = false)

@@ -70,6 +70,20 @@ public sealed partial class ConnectionPoolAnalyzer : IHeapObjectConsumer
                (_connections ?? []).ToList(),
                (_commands   ?? []).ToList());
 
+    public IHeapObjectConsumer CreateClone()
+    {
+        var c = new ConnectionPoolAnalyzer();
+        c.Reset();
+        return c;
+    }
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (ConnectionPoolAnalyzer)other;
+        if (src._connections is not null) (_connections ??= []).AddRange(src._connections);
+        if (src._commands    is not null) (_commands    ??= []).AddRange(src._commands);
+    }
+
     // ── Command entry point ───────────────────────────────────────────────────
 
     public ConnectionPoolData Analyze(DumpContext ctx)

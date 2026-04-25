@@ -42,6 +42,20 @@ public sealed class WcfChannelsAnalyzer : IHeapObjectConsumer
     public void OnWalkComplete()
         => _result = new WcfChannelsData((_objects ?? []).ToList());
 
+    public IHeapObjectConsumer CreateClone()
+    {
+        var c = new WcfChannelsAnalyzer();
+        c.Reset();
+        return c;
+    }
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (WcfChannelsAnalyzer)other;
+        if (src._objects is not null)
+            (_objects ??= []).AddRange(src._objects);
+    }
+
     // ── Command entry point ───────────────────────────────────────────────────
 
     public WcfChannelsData Analyze(DumpContext ctx)

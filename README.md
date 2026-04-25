@@ -8,11 +8,37 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 
 ## Requirements
 
+### Software
+
 | Requirement | Version |
 |---|---|
 | .NET SDK | 10.0+ |
 | Target dump runtime | .NET Framework 4.x / .NET Core / .NET 5+ |
 | OS | Windows (WinDbg-style dumps) |
+
+### Hardware
+
+Hardware requirements scale with the dump you are analysing. The numbers below are based on measured runs.
+
+**Minimum (small dumps, < 4 GB)**
+
+| Component | Minimum |
+|---|---|
+| RAM | 4 GB free |
+| Storage | **SSD required** — dump is memory-mapped with random I/O patterns; HDD will be severely slow |
+| CPU | **4 physical cores (8 logical)** — the heap walk uses 8 parallel workers; fewer cores will time-slice them and increase wall-clock time significantly |
+
+**Recommended (production dumps, 4–30 GB)**
+
+| Component | Recommended | Why |
+|---|---|---|
+| RAM | 16 GB free (for a 25 GB dump) | Peak working set ≈ 0.5–0.6× dump size; OS also needs headroom |
+| Storage | **NVMe SSD** | Random I/O across entire dump file; faster SSD = faster heap walk |
+| CPU | **8 physical cores (16 logical)** | Heap walk uses 8 workers; a second concurrent walk (event-analysis or heap-fragmentation) can spin up another 8 — 16 logical cores prevents contention |
+
+> **Rule of thumb:** free RAM ≥ 0.6 × dump file size. For a 25 GB dump keep at least 16 GB free. If you are tight on RAM, close other applications before running — the OS will use any free memory as file-system cache for the dump, which speeds up the walk significantly.
+
+> **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. An NVMe SSD completes a 25 GB / 110 M object dump in ~6 minutes. A spinning disk will typically take 20–40 minutes for the same dump and may cause the OS to thrash swap.
 
 ---
 
@@ -589,20 +615,20 @@ DumpDetective processes dumps by walking every managed object on the heap. Run t
 
 ### Heap walk throughput
 
-The single-pass heap walk (which feeds all analysis consumers simultaneously) runs at roughly **400,000–700,000 objects/second** on typical production machines.
+The single-pass heap walk (which feeds all analysis consumers simultaneously) runs at roughly **1,000,000–2,000,000 objects/second** on typical production machines (faster on smaller dumps due to better CPU cache utilisation).
 
 ### Combined estimates per dump
 
 | Dump file size | Typical object count | `analyze --full` (wall clock) | Peak working set |
 |---|---|---|---|
-| < 500 MB | < 1 M | < 5 s | < 500 MB |
-| 500 MB – 4 GB | 1 – 15 M | 15–60 s | < 2 GB |
-| 4 – 15 GB | ~15 – 50 M | 1–5 min | 2–8 GB |
-| 15 – 30 GB | ~50 – 120 M | 8–15 min | 10–15 GB |
+| < 500 MB | < 1 M | < 5 s | < 300 MB |
+| 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
+| 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
+| 15 – 30 GB | ~50 – 120 M | 5–8 min | 8–14 GB |
 
 > Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
 >
-> `analyze` (quick, no `--full`) completes shortly after the heap walk — add 10–30 s for scoring and report rendering on top of the heap walk time.
+> `analyze --full` includes all 23 sub-reports. `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
 
 ### What drives `--full` time
 
@@ -610,16 +636,37 @@ The single-pass heap walk (which feeds all analysis consumers simultaneously) ru
 
 | Sub-report | ~10 M objects | ~100 M objects |
 |---|---|---|
-| `static-refs` | ~15 s | 8–10 min |
-| `heap-fragmentation` | ~10 s | 5–8 min |
-| `event-analysis` | ~10 s | 5–7 min |
-| `memory-leak` / `high-refs` (shared BFS) | ~15 s | 6–8 min |
-| `finalizer-queue` | < 1 s | 2–4 min |
-| All others | < 1 s | < 30 s |
+| `static-refs` | ~6 s | 3–4 min |
+| `heap-fragmentation` | ~5 s | 4–5 min |
+| `event-analysis` | ~6 s | 4–5 min |
+| `memory-leak` / `high-refs` (shared BFS) | ~6 s | 4–5 min |
+| `finalizer-queue` | ~0.5 s | 1–3 min |
+| All others | < 0.3 s | < 30 s |
 
 ### Memory usage
 
-Peak working set is driven by the referrer-graph BFS (`memory-leak` + `high-refs`) which holds the full reverse-reference map in memory while sub-reports build in parallel. Plan for **at least as much free RAM as the dump file on disk**, and ideally 1.5–2× when running `--full`.
+Peak working set is driven by the referrer-graph BFS (`memory-leak` + `high-refs`), which builds a full reverse-reference map in memory while the other sub-reports run in parallel.
+
+**Rule of thumb: plan for roughly 0.5–0.6× the dump file size in free RAM when running `--full`.**
+
+Verified against real dumps:
+
+| Dump size | Object count | Peak working set | Ratio |
+|---|---|---|---|
+| 3.65 GB | 10.7 M | 2.09 GB | 0.57× |
+| ~25 GB | 110 M | 12.58 GB | 0.50× |
+
+The ratio stays well below 1× because:
+- ClrMD memory-maps the dump rather than loading it — only touched pages are resident.
+- The BFS map stores only 1 parent address per object (16 B/entry) rather than the full object graph.
+- Large structures (`InboundCounts`, `StringGroups`, `BfsMap`) are released as soon as their last consumer finishes, not held for the full run.
+
+| Dump file size | Typical object count | `analyze --full` (wall clock) | Peak working set |
+|---|---|---|---|
+| < 500 MB | < 1 M | < 5 s | < 300 MB |
+| 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
+| 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
+| 15 – 30 GB | ~50 – 120 M | 5–8 min | 8–14 GB |
 
 ### `trend-analysis --full` across multiple dumps
 
@@ -627,12 +674,12 @@ Each dump is processed **sequentially** — loaded, analysed, fully released —
 
 Example runtimes from real runs:
 
-| Scenario | Dump sizes | Objects per dump | Total time | Peak RAM |
+| Scenario | Dump size | Object count | Total time | Peak RAM |
 |---|---|---|---|---|
-| Small/medium dumps | 700 MB – 3.3 GB | 200 K – 11 M | ~50 s | ~1.3 GB |
-| Large dumps | ~25 GB each | 86 M – 110 M | ~38 min | ~13 GB |
+| Load-test w3wp | 3.65 GB | 10.7 M | 12.5 s | 2.09 GB |
+| Production w3wp | ~25 GB | 110 M | 381 s (~6.4 min) | 12.58 GB |
 
-For a folder of large dumps (25 GB each, ~100 M objects), budget roughly **10–12 minutes per dump** and **13–15 GB RAM** at peak.
+For large production dumps (~25 GB, ~100 M objects), budget roughly **6–7 minutes** and **13–16 GB RAM** at peak.
 
 ### Offline `render`
 

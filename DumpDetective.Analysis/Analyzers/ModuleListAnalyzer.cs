@@ -3,6 +3,14 @@ using DumpDetective.Core.Runtime;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Lists all loaded CLR modules (assemblies) in the process, classifying each as
+/// App, GAC, .NET runtime, or dynamic.
+/// Classification is path-based: GAC paths contain <c>\GAC_</c> or <c>assembly\</c>,
+/// runtime paths contain the dotnet/shared or Windows/Microsoft.NET patterns,
+/// and dynamic modules have no file path.
+/// Modules are sorted App-first, then GAC, then runtime/dynamic, then by filename.
+/// </summary>
 public sealed class ModuleListAnalyzer
 {
     public ModuleListData Analyze(DumpContext ctx, string? filter = null, bool appOnly = false)

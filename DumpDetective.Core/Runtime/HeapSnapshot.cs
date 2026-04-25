@@ -9,9 +9,17 @@ namespace DumpDetective.Core.Runtime;
 /// </summary>
 internal sealed class HeapSnapshot
 {
-    internal Dictionary<string, TypeAgg>             TypeStats     { get; }
-    internal Dictionary<ulong, int>                  InboundCounts { get; }
-    internal Dictionary<string, (int Count, long TotalSize)> StringGroups { get; }
+    internal Dictionary<string, TypeAgg>             TypeStats     => _typeStats ?? [];
+    private  Dictionary<string, TypeAgg>?            _typeStats;
+    internal Dictionary<ulong, int>                  InboundCounts => _inboundCounts ?? [];
+    private  Dictionary<ulong, int>?                 _inboundCounts;
+    internal Dictionary<string, (int Count, long TotalSize)> StringGroups => _stringGroups ?? [];
+    private  Dictionary<string, (int Count, long TotalSize)>? _stringGroups;
+
+    // Pre-distilled from InboundCounts — survive after ReleaseInboundCounts().
+    internal (ulong Addr, int Count)[]        TopInboundAddrs   { get; private set; } = [];
+    internal (int Lo, int Hi, int Count)[]    InboundHistogram  { get; private set; } = [];
+    internal int                              InboundCountsSize { get; private set; }
 
     // Generation byte totals
     internal long Gen0Total { get; }
@@ -46,18 +54,54 @@ internal sealed class HeapSnapshot
         long frozenObjCount, long frozenObjSize,
         long pohObjCount, long pohObjSize,
         long totalObjs, long totalRefs,
-        long totalStringCount, long totalStringSize)
+        long totalStringCount, long totalStringSize,
+        (ulong Addr, int Count)[]     topInboundAddrs,
+        (int Lo, int Hi, int Count)[] inboundHistogram,
+        int                           inboundCountsSize)
     {
-        TypeStats        = typeStats;
-        InboundCounts    = inboundCounts;
-        StringGroups     = stringGroups;
-        Gen0Total        = gen0; Gen1Total = gen1; Gen2Total = gen2;
-        LohTotal         = loh; PohTotal  = poh;
-        Gen0ObjCount     = gen0c; Gen1ObjCount = gen1c; Gen2ObjCount = gen2c;
-        FrozenObjCount   = frozenObjCount; FrozenObjSize = frozenObjSize;
-        PohObjCount      = pohObjCount;    PohObjSize    = pohObjSize;
-        TotalObjects     = totalObjs;  TotalRefs        = totalRefs;
-        TotalStringCount = totalStringCount; TotalStringSize = totalStringSize;
+        _typeStats          = typeStats;
+        _inboundCounts      = inboundCounts;
+        _stringGroups       = stringGroups;
+        Gen0Total           = gen0; Gen1Total = gen1; Gen2Total = gen2;
+        LohTotal            = loh; PohTotal  = poh;
+        Gen0ObjCount        = gen0c; Gen1ObjCount = gen1c; Gen2ObjCount = gen2c;
+        FrozenObjCount      = frozenObjCount; FrozenObjSize = frozenObjSize;
+        PohObjCount         = pohObjCount;    PohObjSize    = pohObjSize;
+        TotalObjects        = totalObjs;  TotalRefs        = totalRefs;
+        TotalStringCount    = totalStringCount; TotalStringSize = totalStringSize;
+        TopInboundAddrs     = topInboundAddrs;
+        InboundHistogram    = inboundHistogram;
+        InboundCountsSize   = inboundCountsSize;
+    }
+
+    /// <summary>Releases InboundCounts (~1.9 GB) after hot-address extraction in SharedReferrerCache.</summary>
+    internal void ReleaseInboundCounts()
+    {
+        if (_inboundCounts is null) return;
+        _inboundCounts.Clear();
+        _inboundCounts.TrimExcess();
+        _inboundCounts = null;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+    }
+
+    /// <summary>Releases StringGroups after StringDuplicatesCommand has read it.</summary>
+    internal void ReleaseStringGroups()
+    {
+        if (_stringGroups is null) return;
+        _stringGroups.Clear();
+        _stringGroups.TrimExcess();
+        _stringGroups = null;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
+    }
+
+    /// <summary>Releases TypeStats after all commands that read it have finished.</summary>
+    internal void ReleaseTypeStats()
+    {
+        if (_typeStats is null) return;
+        _typeStats.Clear();
+        _typeStats.TrimExcess();
+        _typeStats = null;
+        GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
     }
 
     /// <summary>Factory used by consumers after a <c>HeapWalker</c> walk.</summary>
@@ -70,14 +114,18 @@ internal sealed class HeapSnapshot
         long frozenObjCount, long frozenObjSize,
         long pohObjCount, long pohObjSize,
         long totalObjs, long totalRefs,
-        long totalStringCount, long totalStringSize)
+        long totalStringCount, long totalStringSize,
+        (ulong Addr, int Count)[]     topInboundAddrs,
+        (int Lo, int Hi, int Count)[] inboundHistogram,
+        int                           inboundCountsSize)
         => new(typeStats, inboundCounts, stringGroups,
                gen0, gen1, gen2, loh, poh,
                gen0c, gen1c, gen2c,
                frozenObjCount, frozenObjSize,
                pohObjCount, pohObjSize,
                totalObjs, totalRefs,
-               totalStringCount, totalStringSize);
+               totalStringCount, totalStringSize,
+               topInboundAddrs, inboundHistogram, inboundCountsSize);
 
     /// <summary>
     /// Standalone build — walks the heap once when no pre-built snapshot is available.
@@ -178,7 +226,10 @@ internal sealed class HeapSnapshot
             frozenObjCount, frozenObjSize,
             pohObjCount, pohObjSize,
             totalObjs, totalRefs,
-            totalStringCount, totalStringSize);
+            totalStringCount, totalStringSize,
+            topInboundAddrs:   [],
+            inboundHistogram:  [],
+            inboundCountsSize: inboundCounts.Count);
     }
 }
 

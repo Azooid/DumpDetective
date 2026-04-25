@@ -5,6 +5,16 @@ using DumpDetective.Analysis.Consumers;
 
 namespace DumpDetective.Analysis.Analyzers;
 
+/// <summary>
+/// Reports thread-pool health: worker/completion-port thread counts, Task state
+/// distribution, and queued work-item type counts.
+/// Fast path: reads the pre-built <see cref="Consumers.ThreadPoolConsumerCache"/> from
+///   <c>CollectHeapObjectsCombined</c> — no second heap walk.
+/// Slow path: walks the heap classifying Task objects by <c>m_stateFlags</c> bit fields
+///   using the same internal flag constants as the .NET runtime.
+/// Thread-pool counters (min/max/active/idle) are read directly from
+///   <c>ctx.Runtime.ThreadPool</c> — these are always live regardless of the path taken.
+/// </summary>
 public sealed class ThreadPoolAnalyzer
 {
     private const int TASK_STATE_RAN_TO_COMPLETION      = 0x1000000;

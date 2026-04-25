@@ -56,19 +56,23 @@ internal static class RuntimeSubCollectors
 
     // ── GC handles ────────────────────────────────────────────────────────────
 
-    internal static void CollectHandles(ClrRuntime runtime, DumpSnapshot s)
+    internal static void CollectHandles(ClrRuntime runtime, DumpSnapshot s, Action<string>? progress = null)
     {
-        // (Kind, TypeName) tuple key: avoids per-handle string interpolation and later IndexOf parsing
+        // Composite key (Kind, TypeName) groups handles by both kind and referenced type
+        // so the report can show e.g. "Pinned: byte[] × 1 204" without string interpolation.
         var rootedByKey = new Dictionary<(ClrHandleKind Kind, string TypeName), (int Count, long Size)>(4096);
+        var sw = progress is not null ? System.Diagnostics.Stopwatch.StartNew() : null;
 
         foreach (var h in runtime.EnumerateHandles())
         {
+            // Tally every handle regardless of kind for the snapshot summary counters.
             s.TotalHandleCount++;
             if (h.IsPinned)  s.PinnedHandleCount++;
             if (h.IsStrong)  s.StrongHandleCount++;
             if (h.HandleKind is ClrHandleKind.WeakShort or ClrHandleKind.WeakLong)
                 s.WeakHandleCount++;
 
+            // Only strong handles keep objects alive — resolve the heap object for those.
             if (h.IsStrong)
             {
                 try
@@ -80,13 +84,22 @@ internal static class RuntimeSubCollectors
                     var typeName = heapObj.Type?.Name ?? "<unknown>";
                     var key      = (h.HandleKind, typeName);
                     long size    = (long)heapObj.Size;
+                    // Tuple value type — use ref to update count/size in place without a copy.
                     ref var e = ref CollectionsMarshal.GetValueRefOrAddDefault(rootedByKey, key, out bool exists);
                     e = exists ? (e.Count + 1, e.Size + size) : (1, size);
                 }
-                catch { }
+                catch { } // object may be partially collected
+            }
+
+            // Emit live spinner update at most every 200 ms to avoid console I/O overhead.
+            if (progress is not null && sw!.ElapsedMilliseconds >= 200)
+            {
+                progress($"Scanning handles \u2014 {s.TotalHandleCount:N0} handles  \u2022  {s.StrongHandleCount:N0} strong  \u2022  {s.PinnedHandleCount:N0} pinned...");
+                sw.Restart();
             }
         }
 
+        // Keep only the top 15 rooted types by count for the snapshot summary.
         s.TopRootedTypes = rootedByKey
             .OrderByDescending(kv => kv.Value.Count)
             .Take(15)

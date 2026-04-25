@@ -31,4 +31,13 @@ internal sealed class ThreadNameConsumer : IHeapObjectConsumer
     }
 
     public void OnWalkComplete() { }
+
+    public IHeapObjectConsumer CreateClone() => new ThreadNameConsumer();
+
+    public void MergeFrom(IHeapObjectConsumer other)
+    {
+        var src = (ThreadNameConsumer)other;
+        foreach (var (id, name) in src.Map)
+            Map[id] = name;
+    }
 }
