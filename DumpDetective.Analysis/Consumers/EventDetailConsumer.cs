@@ -16,6 +16,7 @@ internal sealed class EventDetailConsumer : IHeapObjectConsumer
 {
     private readonly HashSet<ulong>  _staticRoots;
     private readonly ClrRuntime      _runtime;
+    private readonly Dictionary<ulong, string> _methodNameCache = new();
 
     // (Publisher type, field name) → subscriber list
     public readonly Dictionary<(string, string), List<EventSubscriberInfo>> RawGroups
@@ -162,10 +163,19 @@ internal sealed class EventDetailConsumer : IHeapObjectConsumer
         {
             ulong ptr = del.ReadField<ulong>("_methodPtr");
             if (ptr == 0) return "?";
+            if (_methodNameCache.TryGetValue(ptr, out var cached))
+                return cached;
             var m = _runtime.GetMethodByInstructionPointer(ptr);
-            if (m is null) return $"0x{ptr:X}";
+            if (m is null)
+            {
+                var unresolved = $"0x{ptr:X}";
+                _methodNameCache[ptr] = unresolved;
+                return unresolved;
+            }
             string typePart = m.Type?.Name is { } tn ? $"{tn}." : string.Empty;
-            return $"{typePart}{m.Name}";
+            var resolved = $"{typePart}{m.Name}";
+            _methodNameCache[ptr] = resolved;
+            return resolved;
         }
         catch { return "?"; }
     }

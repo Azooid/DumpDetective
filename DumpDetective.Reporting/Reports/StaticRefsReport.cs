@@ -28,10 +28,15 @@ public sealed class StaticRefsReport
         sink.KeyValues([
             ("Declaring types",        declTypeCount.ToString("N0")),
             ("Static fields",          data.Total.ToString("N0")),
-            ("Total retained size",    DumpHelpers.FormatSize(data.TotalSize)),
+            ("Total retained size",    DumpHelpers.FormatSize(data.TotalSize)
+                                       + (data.IsEstimated ? "  ~" : "")),
             ("Largest declaring type", largestDecl.Key is null ? "—"
-                : $"{largestDecl.Key.Split('.').Last()}  ({DumpHelpers.FormatSize(largestDecl.Value)})"),
+                : $"{largestDecl.Key.Split('.').Last()}  ({DumpHelpers.FormatSize(largestDecl.Value)})"
+                  + (data.IsEstimated ? " ~" : "")),
             ("Collection fields",      collections.ToString("N0")),
+            ("Size accuracy",          data.IsEstimated
+                ? $"Estimated (sampling mode — run with --exact for precise values)"
+                : "Exact (full BFS)"),
         ]);
 
         sink.Alert(AlertLevel.Info,

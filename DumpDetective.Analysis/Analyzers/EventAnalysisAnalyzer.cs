@@ -99,7 +99,12 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     private static EventAnalysisData AnalyzeDetailed(DumpContext ctx)
     {
         HashSet<ulong> staticRoots = [];
-        CommandBase.RunStatus("Building static root map...", () => staticRoots = BuildStaticRoots(ctx));
+        CommandBase.RunStatus("Building static root map...", () =>
+        {
+            // Address-only cache: event analysis only needs to know whether a
+            // subscriber target is statically rooted.
+            staticRoots = ctx.GetOrCreateAnalysis<StaticRootAddresses>(() => StaticRootAddresses.Build(ctx)).Addresses;
+        });
 
         var consumer = new Consumers.EventDetailConsumer(staticRoots, ctx.Runtime);
 
@@ -165,30 +170,6 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
         // Return 0 to match old behavior where cross-instance same-addr are not counted as duplicates.
         _ = subs;
         return 0;
-    }
-
-    private static HashSet<ulong> BuildStaticRoots(DumpContext ctx)
-    {
-        var staticRoots = new HashSet<ulong>();
-        try
-        {
-            foreach (var appDomain in ctx.Runtime.AppDomains)
-            foreach (var module in appDomain.Modules)
-            foreach (var (mt, _) in module.EnumerateTypeDefToMethodTableMap())
-            {
-                if (mt == 0) continue;
-                var clrType = ctx.Heap.GetTypeByMethodTable(mt);
-                if (clrType is null) continue;
-                foreach (var sf in clrType.StaticFields)
-                {
-                    if (!sf.IsObjectReference) continue;
-                    try { var obj = sf.ReadObject(appDomain); if (obj.IsValid && !obj.IsNull) staticRoots.Add(obj.Address); }
-                    catch { }
-                }
-            }
-        }
-        catch { }
-        return staticRoots;
     }
 
     private static List<EventSubscriberInfo> CollectSubscribers(

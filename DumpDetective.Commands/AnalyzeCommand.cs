@@ -34,6 +34,8 @@ public sealed class AnalyzeCommand : ICommand
           --str-top <n>            string-duplicates: max groups shown (default 100)
           --str-min-count <n>      string-duplicates: min duplicate count (default 2)
           --str-min-waste <bytes>  string-duplicates: min wasted bytes (default 0)
+          --bfs-depth <n>          static-refs: BFS sample depth (default: 1% of heap objects)
+          --exact                  static-refs: disable sampling, full BFS (slower but precise)
           -o, --output <file>      Write report to file (.html / .md / .txt / .json)
           -h, --help               Show this help
 
@@ -52,6 +54,8 @@ public sealed class AnalyzeCommand : ICommand
         int     strTop     = a.GetInt("str-top",       100);
         int     strMinCnt  = a.GetInt("str-min-count",   2);
         long    strMinWaste= a.GetInt("str-min-waste",   0);
+        bool    bfsExact   = a.HasFlag("exact");
+        long?   bfsDepth   = a.GetOption("bfs-depth") is string bd && long.TryParse(bd, out long bdn) ? bdn : null;
         string? dumpPath   = a.DumpPath;
         string? outputPath = a.OutputPath;
 
@@ -98,6 +102,10 @@ public sealed class AnalyzeCommand : ICommand
                 CommandBase.SetOverride("top",       strTop.ToString());
                 CommandBase.SetOverride("min-count", strMinCnt.ToString());
                 CommandBase.SetOverride("min-waste", strMinWaste.ToString());
+                if (bfsExact)
+                    CommandBase.SetSharedOverride("exact", "true");
+                else if (bfsDepth.HasValue)
+                    CommandBase.SetSharedOverride("bfs-depth", bfsDepth.Value.ToString());
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);
                 CommandBase.ClearOverrides();
             }

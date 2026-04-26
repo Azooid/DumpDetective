@@ -25,7 +25,8 @@ public sealed class FinalizerQueueAnalyzer
     public FinalizerQueueData Analyze(DumpContext ctx, bool collectAddresses = false)
     {
         var (finThread, finFrames, finBlocked) = GetFinalizerInfo(ctx);
-        var stats      = ScanQueue(ctx, collectAddresses);
+        HashSet<ulong>? finalizableAddrs = null;
+        var stats      = ScanQueue(ctx, collectAddresses, out finalizableAddrs);
         int total      = stats.Values.Sum(v => v.Count);
         long totalSize = stats.Values.Sum(v => v.Size);
 
@@ -33,7 +34,7 @@ public sealed class FinalizerQueueAnalyzer
         // wrapping in RunStatus makes this phase visible in the └─ trace.
         int resurrect = 0;
         CommandBase.RunStatus("Checking resurrection candidates...",
-            () => resurrect = CountResurrectionCandidates(ctx));
+            () => resurrect = CountResurrectionCandidates(ctx, finalizableAddrs));
 
         return new FinalizerQueueData(stats, total, totalSize, finBlocked, finFrames, resurrect,
             finThread?.ManagedThreadId ?? 0, finThread?.OSThreadId ?? 0);
@@ -59,11 +60,13 @@ public sealed class FinalizerQueueAnalyzer
         return (t, frames, blocked);
     }
 
-    private static IReadOnlyDictionary<string, FinalizerTypeStats> ScanQueue(DumpContext ctx, bool collectAddresses)
+    private static IReadOnlyDictionary<string, FinalizerTypeStats> ScanQueue(
+        DumpContext ctx, bool collectAddresses, out HashSet<ulong> finalizableAddrs)
     {
-        var stats        = new Dictionary<string, FinalizerTypeStats>(StringComparer.Ordinal);
+        var stats        = new Dictionary<string, MutableFinalizerTypeStats>(StringComparer.Ordinal);
         var disposeCache = new Dictionary<ulong, bool>();
         var critCache    = new Dictionary<ulong, bool>();
+        var finalizableSet = new HashSet<ulong>();
 
         CommandBase.RunStatus("Reading finalizer queue...", update =>
         {
@@ -72,6 +75,7 @@ public sealed class FinalizerQueueAnalyzer
             foreach (var obj in ctx.Heap.EnumerateFinalizableObjects())
             {
                 if (!obj.IsValid) continue;
+                finalizableSet.Add(obj.Address);
                 count++;
                 if ((count & 0xFF) == 0 && sw.ElapsedMilliseconds >= 200)
                 {
@@ -105,41 +109,72 @@ public sealed class FinalizerQueueAnalyzer
                 }
 
                 if (!stats.TryGetValue(typeName, out var e))
-                    e = new FinalizerTypeStats(0, 0, 0, 0, 0, 0, 0, hasDispose, isCritical, new List<ulong>());
+                {
+                    e = new MutableFinalizerTypeStats
+                    {
+                        HasDispose = hasDispose,
+                        IsCritical = isCritical,
+                    };
+                    stats[typeName] = e;
+                }
 
-                var addrs = (List<ulong>)e.Addresses;
-                if (collectAddresses && addrs.Count < 20) addrs.Add(obj.Address);
-
-                stats[typeName] = new FinalizerTypeStats(
-                    Count:      e.Count + 1,
-                    Size:       e.Size + size,
-                    Gen0:       e.Gen0 + (gen == 0 ? 1 : 0),
-                    Gen1:       e.Gen1 + (gen == 1 ? 1 : 0),
-                    Gen2:       e.Gen2 + (gen == 2 ? 1 : 0),
-                    Loh:        e.Loh  + (gen == 3 ? 1 : 0),
-                    Poh:        e.Poh  + (gen == 4 ? 1 : 0),
-                    HasDispose: e.HasDispose || hasDispose,
-                    IsCritical: e.IsCritical || isCritical,
-                    Addresses:  addrs);
+                e.Count++;
+                e.Size += size;
+                if      (gen == 0) e.Gen0++;
+                else if (gen == 1) e.Gen1++;
+                else if (gen == 2) e.Gen2++;
+                else if (gen == 3) e.Loh++;
+                else if (gen == 4) e.Poh++;
+                e.HasDispose |= hasDispose;
+                e.IsCritical |= isCritical;
+                if (collectAddresses && e.Addresses.Count < 20) e.Addresses.Add(obj.Address);
             }
         });
 
-        return stats;
+        finalizableAddrs = finalizableSet;
+
+        return stats.ToDictionary(
+            kv => kv.Key,
+            kv => new FinalizerTypeStats(
+                kv.Value.Count,
+                kv.Value.Size,
+                kv.Value.Gen0,
+                kv.Value.Gen1,
+                kv.Value.Gen2,
+                kv.Value.Loh,
+                kv.Value.Poh,
+                kv.Value.HasDispose,
+                kv.Value.IsCritical,
+                kv.Value.Addresses),
+            StringComparer.Ordinal);
     }
 
-    private static int CountResurrectionCandidates(DumpContext ctx)
+    private static int CountResurrectionCandidates(DumpContext ctx, HashSet<ulong>? finalizableAddrs)
     {
         try
         {
             // Objects with both a finalizer queue entry AND a non-weak handle are resurrection candidates
-            var finalizableAddrs = ctx.Heap.EnumerateFinalizableObjects()
-                .Select(o => o.Address).ToHashSet();
+            if (finalizableAddrs is null || finalizableAddrs.Count == 0) return 0;
             return (int)ctx.Runtime.EnumerateHandles()
                 .Count(h => h.HandleKind != ClrHandleKind.WeakShort
                          && h.HandleKind != ClrHandleKind.WeakLong
                          && finalizableAddrs.Contains(h.Object));
         }
         catch { return 0; }
+    }
+
+    private sealed class MutableFinalizerTypeStats
+    {
+        public int Count;
+        public long Size;
+        public int Gen0;
+        public int Gen1;
+        public int Gen2;
+        public int Loh;
+        public int Poh;
+        public bool HasDispose;
+        public bool IsCritical;
+        public List<ulong> Addresses { get; } = [];
     }
 
     private static int GetGen(ClrHeap heap, ulong addr)

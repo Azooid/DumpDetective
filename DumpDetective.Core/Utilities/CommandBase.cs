@@ -29,23 +29,63 @@ public static class CommandBase
     /// </summary>
     [ThreadStatic] private static Dictionary<string, string>? _overrides;
 
-    /// <summary>Sets a per-thread parameter override for the duration of a sub-command call.</summary>
+    /// <summary>
+    /// Shared (cross-thread) overrides published by the orchestrator before spawning
+    /// parallel workers. Worker threads read this via <see cref="GetOverride"/> because
+    /// <c>[ThreadStatic]</c> values set on the calling thread are invisible to worker
+    /// threads. Only written from the main thread before Parallel.ForEach; never written
+    /// during parallel execution, so no lock is needed.
+    /// </summary>
+    private static volatile Dictionary<string, string>? _sharedOverrides;
+
+    /// <summary>
+    /// Sets a parameter override. Use <see cref="SetSharedOverride"/> when the value
+    /// must be visible to parallel worker threads (e.g. orchestrator flags like --exact).
+    /// </summary>
     public static void SetOverride(string key, string value)
     {
         _overrides ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _overrides[key] = value;
     }
 
-    /// <summary>Clears all per-thread overrides.</summary>
-    public static void ClearOverrides() => _overrides = null;
+    /// <summary>
+    /// Sets a shared (cross-thread) override. Call this from the orchestrator thread
+    /// before launching parallel sub-report workers so all threads see the value.
+    /// </summary>
+    public static void SetSharedOverride(string key, string value)
+    {
+        var d = _sharedOverrides is null
+            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, string>(_sharedOverrides, StringComparer.OrdinalIgnoreCase);
+        d[key] = value;
+        _sharedOverrides = d; // atomic reference swap — volatile write
+    }
+
+    /// <summary>Clears all per-thread AND shared overrides.</summary>
+    public static void ClearOverrides()
+    {
+        _overrides       = null;
+        _sharedOverrides = null;
+    }
+
+    /// <summary>
+    /// Returns an override value. Checks per-thread overrides first, then shared
+    /// (cross-thread) overrides, then returns <see langword="null"/>.
+    /// </summary>
+    public static string? GetOverride(string key)
+    {
+        if (_overrides is not null && _overrides.TryGetValue(key, out var v)) return v;
+        if (_sharedOverrides is not null && _sharedOverrides.TryGetValue(key, out v)) return v;
+        return null;
+    }
 
     /// <summary>Returns a per-thread override value, or <paramref name="default"/> if not set.</summary>
     public static int GetOverrideInt(string key, int @default) =>
-        _overrides is not null && _overrides.TryGetValue(key, out var v) && int.TryParse(v, out var n) ? n : @default;
+        GetOverride(key) is string v && int.TryParse(v, out var n) ? n : @default;
 
     /// <summary>Returns a per-thread override value, or <paramref name="default"/> if not set.</summary>
     public static long GetOverrideLong(string key, long @default) =>
-        _overrides is not null && _overrides.TryGetValue(key, out var v) && long.TryParse(v, out var n) ? n : @default;
+        GetOverride(key) is string v && long.TryParse(v, out var n) ? n : @default;
 
     // ── Per-command operation trace ───────────────────────────────────────────
     // [ThreadStatic] so parallel full-analyze workers each have their own trace.
