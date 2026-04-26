@@ -12,7 +12,7 @@ public sealed class StaticRefsCommand : ICommand
     }
 
     public string Name               => "static-refs";
-    public string Description        => "Enumerate non-null static reference fields and estimate retained size.";
+    public string Description        => "Enumerate non-null static reference fields and compute retained size.";
     public bool   IncludeInFullAnalyze => true;
 
     private const string Help = """
@@ -22,10 +22,8 @@ public sealed class StaticRefsCommand : ICommand
           -f, --filter <t>       Only types/fields containing <t>
           -e, --exclude <t>      Exclude types containing <t> (repeatable)
           -a, --addresses        Show object addresses
-              --bfs-depth <n>    BFS sample depth per declaring type (default: 50000).
-                                 Higher values are more accurate but slower.
-              --exact            Disable sampling — full BFS, exact retained sizes.
-                                 Accurate but significantly slower on large heaps.
+              --bfs-depth <n>    BFS sample depth per declaring type.
+                                 Enables sampling mode for faster, estimated retained sizes.
           -o, --output <f>       Write report to file (.html / .md / .txt / .json)
           -h, --help             Show this help
         """;
@@ -42,9 +40,8 @@ public sealed class StaticRefsCommand : ICommand
             if (args[i] is "--exclude" or "-e")
                 excludes.Add(args[i + 1]);
 
-        // --exact → bfsDepth 0 (no cap), --bfs-depth N → N, default → null (sampling)
-        long? bfsDepth = a.HasFlag("--exact") ? 0
-            : a.GetOption("bfs-depth") is string d && long.TryParse(d, out long n) ? n
+        // --bfs-depth N → N, default → null (exact mode)
+        long? bfsDepth = a.GetOption("bfs-depth") is string d && long.TryParse(d, out long n) ? n
             : null;
 
         return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
@@ -54,8 +51,7 @@ public sealed class StaticRefsCommand : ICommand
     public void Render(DumpContext ctx, IRenderSink sink)
     {
         // Read overrides set by analyze --full / trend-analysis --full.
-        long? bfsDepth = CommandBase.GetOverride("exact") == "true" ? 0L
-            : CommandBase.GetOverride("bfs-depth") is string bd && long.TryParse(bd, out long n) ? n
+        long? bfsDepth = CommandBase.GetOverride("bfs-depth") is string bd && long.TryParse(bd, out long n) ? n
             : null;
         RenderWith(ctx, sink, null, null, false, bfsDepth);
     }

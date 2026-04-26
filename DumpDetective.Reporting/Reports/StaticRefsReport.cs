@@ -35,7 +35,7 @@ public sealed class StaticRefsReport
                   + (data.IsEstimated ? " ~" : "")),
             ("Collection fields",      collections.ToString("N0")),
             ("Size accuracy",          data.IsEstimated
-                ? $"Estimated (sampling mode — run with --exact for precise values)"
+                ? $"Estimated (sampling mode — use --bfs-depth to cap traversal)"
                 : "Exact (full BFS)"),
         ]);
 

@@ -38,7 +38,7 @@ Hardware requirements scale with the dump you are analysing. The numbers below a
 
 > **Rule of thumb:** free RAM ≥ 0.6 × dump file size. For a 25 GB dump keep at least 16 GB free. If you are tight on RAM, close other applications before running — the OS will use any free memory as file-system cache for the dump, which speeds up the walk significantly.
 
-> **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. An NVMe SSD completes a 25 GB / 110 M object dump in ~6 minutes. A spinning disk will typically take 20–40 minutes for the same dump and may cause the OS to thrash swap.
+> **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. An NVMe SSD completes a 25 GB / 110 M object dump in ~6–8 minutes. A spinning disk will typically take 20–40 minutes for the same dump and may cause the OS to thrash swap.
 
 ---
 
@@ -384,7 +384,7 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `string-duplicates` | Yes | Duplicate strings and wasted memory |
 | `finalizer-queue` | Yes | Objects waiting in the finalizer queue |
 | `handle-table` | Yes | GC handles grouped by kind |
-| `static-refs` | Yes | Non-null static reference fields with retained-size estimates |
+| `static-refs` | Yes | Non-null static reference fields with retained-size analysis |
 | `weak-refs` | Yes | WeakReference handles -- alive vs collected |
 | `thread-analysis` | Yes | Thread states, blocking objects, stack traces |
 | `thread-pool` | Yes | ThreadPool state and queued work items |
@@ -615,7 +615,14 @@ DumpDetective processes dumps by walking every managed object on the heap. Run t
 
 ### Heap walk throughput
 
-The single-pass heap walk (which feeds all analysis consumers simultaneously) runs at roughly **1,000,000–2,000,000 objects/second** on typical production machines (faster on smaller dumps due to better CPU cache utilisation).
+The single-pass heap walk (which feeds all analysis consumers simultaneously) typically runs at roughly **1,000,000–2,000,000 objects/second** on production machines, with the lower end more representative for very large heaps.
+
+Measured example from a recent IIS `w3wp` production dump:
+
+| Phase | Objects | Time | Throughput |
+|---|---:|---:|---:|
+| Heap walk | 110,472,530 | 81.1 s | ~1,362,210 objs/s |
+| Finalizer queue scan | 4,273,410 | 34.2 s | ~125,015 objs/s |
 
 ### Combined estimates per dump
 
@@ -624,11 +631,22 @@ The single-pass heap walk (which feeds all analysis consumers simultaneously) ru
 | < 500 MB | < 1 M | < 5 s | < 300 MB |
 | 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
 | 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
-| 15 – 30 GB | ~50 – 120 M | 5–8 min | 8–14 GB |
+| 15 – 30 GB | ~50 – 120 M | 6–9 min | 10–14 GB |
 
 > Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
 >
 > `analyze --full` includes all 23 sub-reports. `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
+
+Measured full run for a large production dump:
+
+| Metric | Value |
+|---|---|
+| Managed objects | 110,472,530 |
+| Collection time | 118.1 s |
+| Total `analyze --full` time | 469.1 s (~7.8 min) |
+| Peak working set | 11.30 GB |
+| Peak managed heap | 14.52 GB |
+| Peak private bytes | 15.57 GB |
 
 ### What drives `--full` time
 
@@ -636,12 +654,23 @@ The single-pass heap walk (which feeds all analysis consumers simultaneously) ru
 
 | Sub-report | ~10 M objects | ~100 M objects |
 |---|---|---|
-| `static-refs` | ~6 s | 3–4 min |
-| `heap-fragmentation` | ~5 s | 4–5 min |
-| `event-analysis` | ~6 s | 4–5 min |
-| `memory-leak` / `high-refs` (shared BFS) | ~6 s | 4–5 min |
-| `finalizer-queue` | ~0.5 s | 1–3 min |
-| All others | < 0.3 s | < 30 s |
+| `static-refs` | ~6 s | ~5.8 min |
+| `heap-fragmentation` | ~5 s | ~4.0 min |
+| `event-analysis` | ~6 s | ~4.0 min |
+| `memory-leak` / `high-refs` (shared BFS) | ~6 s | ~4.4 min |
+| `finalizer-queue` | ~0.5 s | ~2.5 min |
+| All others | < 0.3 s | usually < 30 s (`large-objects` can exceed that on very large heaps) |
+
+Recent measured sub-report timings on a 110 M object production dump:
+
+| Sub-report | Time | Notes |
+|---|---:|---|
+| `static-refs` | 349.9 s | Exact full BFS retained-size traversal |
+| `high-refs` | 262.0 s | Builds shared referrer map |
+| `memory-leak` | 262.5 s | GC roots map + shared referrer map + root tracing |
+| `event-analysis` | 240.1 s | Static root map + detailed event scan |
+| `heap-fragmentation` | 239.4 s | Fragmentation measurement dominates |
+| `finalizer-queue` | 149.6 s | 134.9 s queue read + 14.7 s resurrection scan |
 
 ### Memory usage
 
@@ -654,7 +683,7 @@ Verified against real dumps:
 | Dump size | Object count | Peak working set | Ratio |
 |---|---|---|---|
 | 3.65 GB | 10.7 M | 2.09 GB | 0.57× |
-| ~25 GB | 110 M | 12.58 GB | 0.50× |
+| ~25 GB | 110.5 M | 11.30 GB | 0.45× |
 
 The ratio stays well below 1× because:
 - ClrMD memory-maps the dump rather than loading it — only touched pages are resident.
@@ -677,9 +706,9 @@ Example runtimes from real runs:
 | Scenario | Dump size | Object count | Total time | Peak RAM |
 |---|---|---|---|---|
 | Load-test w3wp | 3.65 GB | 10.7 M | 12.5 s | 2.09 GB |
-| Production w3wp | ~25 GB | 110 M | 381 s (~6.4 min) | 12.58 GB |
+| Production w3wp | ~25 GB | 110.5 M | 469 s (~7.8 min) | 11.30 GB |
 
-For large production dumps (~25 GB, ~100 M objects), budget roughly **6–7 minutes** and **13–16 GB RAM** at peak.
+For large production dumps with roughly **100 M+ managed objects**, budget roughly **7–8 minutes** and **11–16 GB RAM** at peak.
 
 ### Offline `render`
 

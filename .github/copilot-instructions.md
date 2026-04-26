@@ -419,6 +419,7 @@ Cli ─────────────────────────�
 8. **Spectre.Console.** Use `AnsiConsole` for all console output. No `Console.WriteLine` in command code.
 9. **`DD_DUMP` env var.** `CliArgs.Parse` must inject the dump path from `DD_DUMP` if no positional `.dmp`/`.mdmp` argument is present.
 10. **`dd-thresholds.json` format.** Unchanged from the original. The file is optional; missing or invalid files silently fall back to defaults.
+11. **Avoid memory profiling.** Do not use memory profiling as it can adversely affect application performance.
 
 ---
 

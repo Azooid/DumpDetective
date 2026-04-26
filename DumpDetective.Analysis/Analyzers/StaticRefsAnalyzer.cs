@@ -10,12 +10,9 @@ namespace DumpDetective.Analysis.Analyzers;
 /// Enumerates all non-system static object-reference fields and computes retained sizes.
 ///
 /// Two modes controlled by <c>bfsDepth</c>:
-///   null (default in full-analyze / trend) — sampling mode: BFS walks up to
-///     <see cref="DefaultSampleDepth"/> nodes per declaring type, then extrapolates the
-///     full retained size from the average bytes/node seen so far. Fast and accurate
-///     enough for health scoring and trend deltas.
-///   0 — exact mode: BFS walks every reachable node with no cap. Accurate but slow
-///     on large heaps (use for standalone <c>static-refs</c> runs where correctness matters).
+///   null (default in full-analyze / trend / standalone) — exact mode: BFS walks every
+///     reachable node with no cap.
+///   0 — exact mode: BFS walks every reachable node with no cap.
 ///   N > 0 — custom sample depth: BFS walks up to N nodes then extrapolates.
 ///
 /// All fields of the same declaring type share one visited set so shared sub-graphs
@@ -65,12 +62,12 @@ public sealed class StaticRefsAnalyzer
         HashSet<string>? excludes = null, long? bfsDepth = null)
     {
         // Resolve effective node cap.
-        // null  = sampling mode — derive depth from heap object count (1% clamped)
+        // null  = exact mode (no cap)
         // 0     = exact mode (no cap) → long.MaxValue internally
         // N > 0 = custom sample depth
         long nodeCap     = bfsDepth.HasValue
             ? (bfsDepth.Value == 0 ? long.MaxValue : bfsDepth.Value)
-            : ResolveSampleDepth(ctx);
+            : long.MaxValue;
         bool isExactMode = nodeCap == long.MaxValue;
 
         // Phase 1: group roots by declaring type.
