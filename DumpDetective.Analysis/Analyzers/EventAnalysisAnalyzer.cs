@@ -108,7 +108,7 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
 
         var consumer = new Consumers.EventDetailConsumer(staticRoots, ctx.Runtime);
 
-        CommandBase.RunStatus("Scanning event handlers (detailed)...", update =>
+        CommandBase.RunStatus("Scanning event handlers...", update =>
             HeapWalker.Walk(ctx.Heap, [consumer],
                 raw =>
                 {

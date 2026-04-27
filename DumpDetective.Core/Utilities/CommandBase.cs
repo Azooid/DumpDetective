@@ -183,20 +183,27 @@ public static class CommandBase
             return 1;
         }
 
+        // Build effective path list early so we can print it before opening the dump.
+        string[] effectivePaths = (outputPaths is { Count: > 0 })
+            ? outputPaths.ToArray()
+            : [DefaultOutputPath(dumpPath, ".html")];
+
+        bool consoleOnly = effectivePaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase));
+        if (!consoleOnly)
+        {
+            foreach (var p in effectivePaths)
+                if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
+                    AnsiConsole.MarkupLine($"[dim][[{Now}]] → Output:[/] {Markup.Escape(Path.GetFullPath(p))}");
+        }
+
         try
         {
             using var ctx = DumpContext.Open(dumpPath);
             if (ctx.ArchWarning is not null)
                 AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(ctx.ArchWarning)}[/]");
 
-            // Build effective path list; fall back to HTML alongside the dump.
-            string[] effectivePaths = (outputPaths is { Count: > 0 })
-                ? outputPaths.ToArray()
-                : [DefaultOutputPath(dumpPath, ".html")];
-
             using var sink = SinkFactory.CreateMulti(effectivePaths);
 
-            bool consoleOnly = !sink.IsFile;
             if (consoleOnly)
                 AnsiConsole.MarkupLine("[dim]ℹ Printing to console. Use --output <file> or --format html/md/json/bin to save, or omit both for default HTML output.[/]\n");
 
@@ -205,7 +212,7 @@ public static class CommandBase
             foreach (var p in effectivePaths)
             {
                 if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {Markup.Escape(p)}");
+                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {Markup.Escape(Path.GetFullPath(p))}");
             }
             return 0;
         }
@@ -262,13 +269,14 @@ public static class CommandBase
     private static string CleanLabel(string msg) =>
         msg.EndsWith("...", StringComparison.Ordinal) ? msg[..^3].TrimEnd() : msg;
 
-    private static void PrintDone(string message, long ms)
+    private static void PrintDone(string message, long ms, string? suffix = null)
     {
         // Only print the permanent ✓ line when not suppressed (not in parallel mode)
         if (SuppressVerbose) return;
         string elapsed = FormatElapsed(ms);
         string label   = CleanLabel(message);
-        AnsiConsole.MarkupLine($"[dim][[{Now}]][/] [green]✓[/] {Markup.Escape(label)}  [dim]({elapsed})[/]");
+        string sfx     = suffix is not null ? $":  {Markup.Escape(suffix)}" : "";
+        AnsiConsole.MarkupLine($"[dim][[{Now}]][/] [green]✓[/] {Markup.Escape(label)}{sfx}  [dim]({elapsed})[/]");
     }
 
     /// <summary>
@@ -297,20 +305,48 @@ public static class CommandBase
     /// <summary>Overload that provides a status-update callback to the body.</summary>
     public static void RunStatus(string message, Action<Action<string>> body)
     {
-        var sw          = Stopwatch.StartNew();
-        string lastMsg  = message;  // track final status text for the done line
+        var sw = Stopwatch.StartNew();
+        string? scanSuffix = null; // populated when a [SCAN] token is received
         try
         {
             if (SuppressVerbose) body(_ => { });
             else AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
-                .Start(message, ctx => body(msg => { lastMsg = msg; ctx.Status(msg); }));
+                .Start(message, ctx => body(msg =>
+                {
+                    if (msg.StartsWith("[SCAN]", StringComparison.Ordinal))
+                    {
+                        // Capture the heap-walk stats for the done line; don't print separately.
+                        scanSuffix = FormatScanSuffix(msg[6..]);
+                        return;
+                    }
+                    ctx.Status(Markup.Escape(msg));
+                }));
         }
         finally
         {
             sw.Stop();
             _trace?.Add((message, sw.ElapsedMilliseconds));
-            PrintDone(lastMsg, sw.ElapsedMilliseconds);
+            PrintDone(message, sw.ElapsedMilliseconds, scanSuffix);
         }
+    }
+
+    /// <summary>
+    /// Parses <c>label|count|ms</c> from a [SCAN] inner string and returns a compact
+    /// stats suffix like <c>7,132,101 objs  •  ~1,971,827/s</c>, or <see langword="null"/>.
+    /// </summary>
+    private static string? FormatScanSuffix(string inner)
+    {
+        int p1 = inner.IndexOf('|');
+        int p2 = p1 >= 0 ? inner.IndexOf('|', p1 + 1) : -1;
+        if (p1 > 0 && p2 > p1
+            && long.TryParse(inner[(p1 + 1)..p2], out long count)
+            && long.TryParse(inner[(p2 + 1)..],   out long ms))
+        {
+            double secs = ms / 1000.0;
+            long   rate = secs > 0 ? (long)(count / secs) : 0;
+            return $"{count:N0} objs  •  ~{rate:N0}/s";
+        }
+        return null;
     }
 
     /// <summary>
