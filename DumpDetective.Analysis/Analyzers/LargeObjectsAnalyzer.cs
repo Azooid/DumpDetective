@@ -19,8 +19,8 @@ public sealed class LargeObjectsAnalyzer
     {
         var objects = new List<LargeObjectEntry>();
 
-        // Objects ≥ 85 KB (the default LOH threshold) can only live in LOH segments.
-        // Enumerate LOH segments directly to skip ~10 M Gen0/1/2 objects.
+        // Objects ≥ 85 KB (the default LOH threshold) live in LOH or POH segments.
+        // Enumerate LOH+POH segments directly to skip ~10 M Gen0/1/2 objects.
         bool lohOnly = minSize >= 85_000;
 
         CommandBase.RunStatus($"Finding objects \u2265 {DumpHelpers.FormatSize(minSize)}...", update =>
@@ -29,7 +29,7 @@ public sealed class LargeObjectsAnalyzer
             var  sw    = System.Diagnostics.Stopwatch.StartNew();
             IEnumerable<ClrObject> src = lohOnly
                 ? ctx.Heap.Segments
-                      .Where(s => s.Kind == GCSegmentKind.Large)
+                      .Where(s => s.Kind == GCSegmentKind.Large || s.Kind == GCSegmentKind.Pinned)
                       .SelectMany(s => s.EnumerateObjects())
                 : ctx.Heap.EnumerateObjects();
 
@@ -110,11 +110,14 @@ public sealed class LargeObjectsAnalyzer
 
     private static List<LargeSegmentInfo> BuildSegmentBreakdown(ClrHeap heap, IReadOnlyList<LargeObjectEntry> objects)
     {
-        var objsBySeg = objects.GroupBy(o => o.Segment).ToDictionary(g => g.Key, g => g.Count());
-        var result = new List<LargeSegmentInfo>();
+        // Key by segment base address (ulong) to correctly handle Ephemeral segments.
+        // DetermineSeg() assigns objects to Gen0/1/2/LOH/POH by inspecting each object's
+        // address; a segment keyed by its address string avoids the mismatch where
+        // GCSegmentKind.Ephemeral (the catch-all string key) never matches any object's key.
+        var segAddrToKind = new Dictionary<ulong, string>();
         foreach (var seg in heap.Segments)
         {
-            string kind = seg.Kind switch
+            segAddrToKind[seg.Start] = seg.Kind switch
             {
                 GCSegmentKind.Large       => "LOH",
                 GCSegmentKind.Pinned      => "POH",
@@ -123,7 +126,28 @@ public sealed class LargeObjectsAnalyzer
                 GCSegmentKind.Generation1 => "Gen1",
                 _                         => "Gen2",
             };
-            int count   = objsBySeg.GetValueOrDefault(kind, 0);
+        }
+
+        // Count objects per "kind" label (matching DetermineSeg output).
+        var objsByKind = new Dictionary<string, int>(8, StringComparer.Ordinal);
+        foreach (var o in objects)
+        {
+            ref int c = ref System.Runtime.InteropServices.CollectionsMarshal
+                .GetValueRefOrAddDefault(objsByKind, o.Segment, out _);
+            c++;
+        }
+
+        var result = new List<LargeSegmentInfo>();
+        foreach (var seg in heap.Segments)
+        {
+            string kind = segAddrToKind[seg.Start];
+            // For Ephemeral segments, object counts accumulate under Gen0/Gen1/Gen2 keys;
+            // sum those three to get the total objects attributed to this physical segment.
+            int count = seg.Kind == GCSegmentKind.Ephemeral
+                ? objsByKind.GetValueOrDefault("Gen0") +
+                  objsByKind.GetValueOrDefault("Gen1") +
+                  objsByKind.GetValueOrDefault("Gen2")
+                : objsByKind.GetValueOrDefault(kind, 0);
             result.Add(new LargeSegmentInfo(kind, (long)seg.ObjectRange.Length, (long)seg.ReservedMemory.Length, count));
         }
         return result;

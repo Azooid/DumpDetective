@@ -40,11 +40,13 @@ public sealed class PinnedObjectsAnalyzer
         if (seg is null) return "?";
         return seg.Kind switch
         {
-            GCSegmentKind.Large    => "LOH",
-            GCSegmentKind.Pinned   => "POH",
-            GCSegmentKind.Frozen   => "Frozen",
-            GCSegmentKind.Ephemeral => EphemeralGen(seg, addr),
-            _                      => "Gen2",
+            GCSegmentKind.Large       => "LOH",
+            GCSegmentKind.Pinned      => "POH",
+            GCSegmentKind.Frozen      => "Frozen",
+            GCSegmentKind.Ephemeral   => EphemeralGen(seg, addr),
+            GCSegmentKind.Generation0 => "Gen0",    // region-based GC (.NET 6+) dedicated Gen0 segments
+            GCSegmentKind.Generation1 => "Gen1",    // region-based GC (.NET 6+) dedicated Gen1 segments
+            _                         => "Gen2",    // Generation2 and any future kinds
         };
     }
 

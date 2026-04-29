@@ -57,9 +57,9 @@ internal sealed class ReferrerConsumer : IHeapObjectConsumer
                 if (refAddr == 0 || refAddr == pAddr) continue;
 
                 // Record pAddr as a parent of refAddr in the BFS map.
-                // Same stripe-lock pattern as InboundRefConsumer — low 8 bits of the
+                // Same stripe-lock pattern as InboundRefConsumer — bits 3-10 of the
                 // child address select the shard; 256 shards keep contention < 3%.
-                int stripe = (int)(refAddr & (StripeCount - 1));
+                int stripe = (int)((refAddr >> 3) & (StripeCount - 1));
                 lock (_locks[stripe])
                 {
                     ref var ps = ref CollectionsMarshal.GetValueRefOrAddDefault(_stripes[stripe], refAddr, out _);

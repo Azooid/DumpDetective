@@ -11,14 +11,54 @@ namespace DumpDetective.Analysis.Analyzers;
 /// Walks the full heap (no fast path — needs individual addresses and sizes, not just
 /// aggregated counts from <c>TypeAgg</c>). Applies optional minimum-size and
 /// generation filters inline during the walk. Tracks the <c>top</c> largest instances
-/// per matching type using an insertion-sorted list capped at <c>top</c> entries.
+/// per matching type using a maintained-minimum list capped at <c>top</c> entries
+/// (O(1) guard check; O(top) eviction — no quadratic LINQ Min scans).
 /// </summary>
 public sealed class TypeInstancesAnalyzer
 {
+    // Mutable per-type accumulator — avoids repeated value-type copy-and-reassign
+    // on every object hit (the old tuple approach copied all fields each iteration).
+    private sealed class TypeEntry
+    {
+        public long Count;
+        public long TotalSize;
+        public int G0, G1, G2, Loh, Poh;
+        public long MaxSingle;
+        public long MinLargest;   // maintained minimum of Largest list — O(1) guard
+        public readonly List<InstanceEntry> Largest = [];
+
+        /// <summary>
+        /// Adds <paramref name="entry"/> if it belongs in the top-<paramref name="top"/> list.
+        /// Guard check is O(1). Eviction is one linear scan O(top) — only triggered when
+        /// the list is full and the new entry is larger than the current minimum.
+        /// </summary>
+        public void TryAddLargest(InstanceEntry entry, int top)
+        {
+            if (Largest.Count < top)
+            {
+                Largest.Add(entry);
+                if (Largest.Count == 1 || entry.Size < MinLargest)
+                    MinLargest = entry.Size;
+            }
+            else if (entry.Size > MinLargest)
+            {
+                // Replace the smallest entry in one linear scan.
+                int minIdx = 0;
+                for (int j = 1; j < Largest.Count; j++)
+                    if (Largest[j].Size < Largest[minIdx].Size) minIdx = j;
+                Largest[minIdx] = entry;
+                // Recompute minimum (O(top), rare path).
+                MinLargest = Largest[0].Size;
+                for (int j = 1; j < Largest.Count; j++)
+                    if (Largest[j].Size < MinLargest) MinLargest = Largest[j].Size;
+            }
+        }
+    }
+
     public TypeInstancesData Analyze(DumpContext ctx, string typeName,
         int top = 50, long minSize = 0, string? genFilter = null)
     {
-        var typeMap = new Dictionary<string, (long Count, long TotalSize, int G0, int G1, int G2, int Loh, long MaxSingle, List<InstanceEntry> Largest)>(StringComparer.Ordinal);
+        var typeMap = new Dictionary<string, TypeEntry>(StringComparer.Ordinal);
 
         CommandBase.RunStatus($"Scanning for '{typeName}'...", update =>
         {
@@ -45,27 +85,17 @@ public sealed class TypeInstancesAnalyzer
                 if (genFilter is not null && !GenMatches(gen, genFilter)) continue;
 
                 if (!typeMap.TryGetValue(name, out var e))
-                    e = (0, 0, 0, 0, 0, 0, 0, new List<InstanceEntry>());
+                    typeMap[name] = e = new TypeEntry();
 
-                e = (
-                    Count:      e.Count + 1,
-                    TotalSize:  e.TotalSize + size,
-                    G0:         e.G0  + (gen == "Gen0" ? 1 : 0),
-                    G1:         e.G1  + (gen == "Gen1" ? 1 : 0),
-                    G2:         e.G2  + (gen == "Gen2" ? 1 : 0),
-                    Loh:        e.Loh + (gen == "LOH"  ? 1 : 0),
-                    MaxSingle:  Math.Max(e.MaxSingle, size),
-                    Largest:    e.Largest
-                );
-
-                if (e.Largest.Count < top || size > (e.Largest.Count > 0 ? e.Largest.Min(x => x.Size) : 0))
-                {
-                    e.Largest.Add(new InstanceEntry(obj.Address, size, gen));
-                    if (e.Largest.Count > top)
-                        e.Largest.RemoveAt(e.Largest.FindIndex(x => x.Size == e.Largest.Min(l => l.Size)));
-                }
-
-                typeMap[name] = e;
+                e.Count++;
+                e.TotalSize += size;
+                if      (gen == "Gen0") e.G0++;
+                else if (gen == "Gen1") e.G1++;
+                else if (gen == "Gen2") e.G2++;
+                else if (gen == "LOH")  e.Loh++;
+                else if (gen == "POH")  e.Poh++;
+                if (size > e.MaxSingle) e.MaxSingle = size;
+                e.TryAddLargest(new InstanceEntry(obj.Address, size, gen), top);
             }
         });
 
@@ -75,7 +105,7 @@ public sealed class TypeInstancesAnalyzer
         foreach (var (name, e) in typeMap)
         {
             e.Largest.Sort((a, b) => b.Size.CompareTo(a.Size));
-            result[name] = new TypeMatchStats(e.Count, e.TotalSize, e.G0, e.G1, e.G2, e.Loh, e.MaxSingle, e.Largest);
+            result[name] = new TypeMatchStats(e.Count, e.TotalSize, e.G0, e.G1, e.G2, e.Loh, e.Poh, e.MaxSingle, e.Largest);
             totalCount += e.Count;
             totalSize  += e.TotalSize;
         }

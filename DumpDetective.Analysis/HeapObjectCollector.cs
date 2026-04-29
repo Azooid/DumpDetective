@@ -62,7 +62,7 @@ internal static class HeapObjectCollector
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
         s.HeapFreeBytes    = freeBytes;
         s.LohObjectCount   = genCounter.LohThresholdObjectCount;
-        s.LohLiveBytes     = genCounter.LohThresholdLiveBytes;
+        s.LohLiveBytes     = genCounter.LohBytes;     // live bytes from LOH segments only (LohThresholdLiveBytes includes large POH objects)
         s.TotalObjectCount = typeStatsC.TotalObjects;
         s.StringTotalBytes = strings.TotalStringSize;
         s.TimerCount       = timerAnalyzer.Result!.Timers.Count;
@@ -151,7 +151,7 @@ internal static class HeapObjectCollector
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
         s.HeapFreeBytes    = freeBytes;
         s.LohObjectCount   = genCounter.LohThresholdObjectCount;
-        s.LohLiveBytes     = genCounter.LohThresholdLiveBytes;
+        s.LohLiveBytes     = genCounter.LohBytes;     // live bytes from LOH segments only
         s.TotalObjectCount = typeStatsC.TotalObjects;
         s.TimerCount       = lwStats.TimerCount;
         s.WcfObjectCount   = lwStats.WcfCount;

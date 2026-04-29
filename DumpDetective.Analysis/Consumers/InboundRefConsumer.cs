@@ -61,10 +61,10 @@ internal sealed class InboundRefConsumer : IHeapObjectConsumer
             {
                 if (refAddr == 0) continue;
 
-                // Select stripe by low 8 bits of the target address.
+                // Select stripe by bits 3-10 of the target address.
                 // Heap addresses are 8-byte aligned so bits 0-2 are always 0;
-                // bits 3-10 give 256 well-distributed buckets across all segments.
-                int stripe = (int)(refAddr & (StripeCount - 1));
+                // shifting right by 3 before masking gives 256 well-distributed buckets.
+                int stripe = (int)((refAddr >> 3) & (StripeCount - 1));
                 lock (_locks[stripe])
                 {
                     // GetValueRefOrAddDefault returns a ref into the dict's internal

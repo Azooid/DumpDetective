@@ -35,6 +35,7 @@ public sealed class ModuleListAnalyzer
 
     private static string ModuleKind(string path)
     {
+        if (string.IsNullOrEmpty(path)) return "Dynamic";
         if (IsGac(path))    return "GAC";
         if (IsSystem(path)) return "System";
         return "App";

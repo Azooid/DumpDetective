@@ -125,20 +125,17 @@ public sealed class MemoryLeakAnalyzer
         }
         else
         {
-            // Derive from per-segment sizes in the typeStats walk
-            gen0Total = gen1Total = gen2Total = lohTotal = pohTotal = 0;
-            foreach (var seg in ctx.Heap.Segments)
-            {
-                long len = (long)seg.ObjectRange.Length;
-                switch (seg.Kind)
-                {
-                    case GCSegmentKind.Generation0: gen0Total += len; break;
-                    case GCSegmentKind.Generation1: gen1Total += len; break;
-                    case GCSegmentKind.Generation2: gen2Total += len; break;
-                    case GCSegmentKind.Large:       lohTotal  += len; break;
-                    case GCSegmentKind.Pinned:      pohTotal  += len; break;
-                }
-            }
+            // Slow path: derive gen totals from the typeStats object walk.
+            // Gen2Size and LohSize are tracked per type during the walk above — summing
+            // them gives the correct live-byte totals consistent with the fast-path values
+            // (snap.Gen2Total / snap.LohTotal also measure live object bytes, not committed
+            // segment sizes).  Gen0 and Gen1 are not individually tracked in the slow path
+            // (short-lived; not leak indicators) so they are reported as 0.
+            gen2Total    = typeStats.Values.Sum(v => v.Gen2Size);
+            lohTotal     = typeStats.Values.Sum(v => v.LohSize);
+            gen0Total    = 0;
+            gen1Total    = 0;
+            pohTotal     = 0;
             totalObjects = allTypes.Sum(r => (int)r.Count);
         }
 

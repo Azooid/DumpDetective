@@ -51,16 +51,20 @@ public sealed class TypeInstancesReport
     private static void RenderGenBreakdown(IRenderSink sink, TypeInstancesData data)
     {
         sink.Section("Generation Distribution");
-        long g0 = data.ByType.Values.Sum(v => v.Gen0);
-        long g1 = data.ByType.Values.Sum(v => v.Gen1);
-        long g2 = data.ByType.Values.Sum(v => v.Gen2);
+        long g0  = data.ByType.Values.Sum(v => v.Gen0);
+        long g1  = data.ByType.Values.Sum(v => v.Gen1);
+        long g2  = data.ByType.Values.Sum(v => v.Gen2);
         long loh = data.ByType.Values.Sum(v => v.Loh);
-        sink.Table(["Gen", "Count", "% of Total"], [
-            ["Gen0", g0.ToString("N0"), $"{g0 * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-            ["Gen1", g1.ToString("N0"), $"{g1 * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-            ["Gen2", g2.ToString("N0"), $"{g2 * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-            ["LOH",  loh.ToString("N0"), $"{loh * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-        ]);
+        long poh = data.ByType.Values.Sum(v => v.Poh);
+        long tot = Math.Max(1, data.TotalCount);
+        var genRows = new List<string[]>();
+        genRows.Add(["Gen0", g0.ToString("N0"),  $"{g0  * 100.0 / tot:F1}%"]);
+        genRows.Add(["Gen1", g1.ToString("N0"),  $"{g1  * 100.0 / tot:F1}%"]);
+        genRows.Add(["Gen2", g2.ToString("N0"),  $"{g2  * 100.0 / tot:F1}%"]);
+        genRows.Add(["LOH",  loh.ToString("N0"), $"{loh * 100.0 / tot:F1}%"]);
+        if (poh > 0)
+            genRows.Add(["POH", poh.ToString("N0"), $"{poh * 100.0 / tot:F1}%"]);
+        sink.Table(["Gen", "Count", "% of Total"], genRows);
     }
 
     private static void RenderLargestInstances(IRenderSink sink, TypeInstancesData data, bool showAddr)

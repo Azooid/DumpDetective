@@ -13,6 +13,7 @@ public sealed record TypeMatchStats(
     int                           Gen1,
     int                           Gen2,
     int                           Loh,
+    int                           Poh,
     long                          MaxSingle,
     IReadOnlyList<InstanceEntry>  LargestInstances);
 

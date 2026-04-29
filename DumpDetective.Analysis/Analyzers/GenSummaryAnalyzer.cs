@@ -87,7 +87,7 @@ public sealed class GenSummaryAnalyzer
                 count++;
                 if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
                 {
-                    update($"Counting objects per generation \u2014 {count:N0} objects  \u2022  gen0:{gen0c:N0}  gen1:{gen1c:N0}  gen2:{gen2c:N0}  loh:{pohObj:N0}...");
+                    update($"Counting objects per generation \u2014 {count:N0} objects  \u2022  gen0:{gen0c:N0}  gen1:{gen1c:N0}  gen2:{gen2c:N0}  poh:{pohObj:N0}...");
                     sw.Restart();
                 }
                 var seg = ctx.Heap.GetSegmentByAddress(obj.Address);

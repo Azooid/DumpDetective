@@ -24,15 +24,15 @@ public sealed class HandleTableAnalyzer
             var sw = System.Diagnostics.Stopwatch.StartNew();
             foreach (var h in ctx.Runtime.EnumerateHandles())
             {
+                var kind = h.HandleKind.ToString();
+                if (filter is not null && !kind.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                    continue;
                 total++;
                 if ((total & 0xFF) == 0 && sw.ElapsedMilliseconds >= 200)
                 {
                     update($"Scanning GC handles — {total:N0} handles  •  {byKind.Count} kinds...");
                     sw.Restart();
                 }
-                var kind = h.HandleKind.ToString();
-                if (filter is not null && !kind.Contains(filter, StringComparison.OrdinalIgnoreCase))
-                    continue;
 
                 if (!byKind.TryGetValue(kind, out var info))
                     info = (0, 0, new Dictionary<string, (int, long)>(StringComparer.Ordinal));

@@ -115,7 +115,7 @@ internal static class RuntimeSubCollectors
         {
             s.ModuleCount++;
             var path = m.Name ?? m.AssemblyName ?? string.Empty;
-            if (!IsSystemAssemblyPath(path)) s.AppModuleCount++;
+            if (path.Length > 0 && !IsSystemAssemblyPath(path)) s.AppModuleCount++;
         }
     }
 

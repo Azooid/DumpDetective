@@ -27,7 +27,16 @@ internal sealed class AsyncMethodConsumer : IHeapObjectConsumer
 
         ref int c = ref CollectionsMarshal.GetValueRefOrAddDefault(MethodCounts, method, out _);
         c++;
-        BacklogTotal++;
+
+        // Only count suspended (Awaiting) state machines in the backlog: state >= 0.
+        // Completed (-1) and Initial (-2) state machines must not inflate the backlog total.
+        try
+        {
+            var field = obj.Type?.GetFieldByName("<>1__state");
+            if (field is null || field.Read<int>(obj, interior: false) >= 0)
+                BacklogTotal++;
+        }
+        catch { BacklogTotal++; } // Conservative: count on read failure
     }
 
     public void OnWalkComplete() { }

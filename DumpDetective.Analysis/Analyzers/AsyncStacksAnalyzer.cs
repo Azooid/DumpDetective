@@ -32,8 +32,13 @@ public sealed class AsyncStacksAnalyzer : IHeapObjectConsumer
         var method = meta.AsyncMethod;
         if (method is null || _entries is null) return;
 
-        _entries.Add(new StateMachineEntry(method, ReadStateLabel(obj), obj.Address));
-        _backlogTotal++;
+        string stateLabel = ReadStateLabel(obj);
+        _entries.Add(new StateMachineEntry(method, stateLabel, obj.Address));
+
+        // Only count suspended (Awaiting) state machines in the backlog.
+        // Completed (-1) and Initial (-2) state machines must not inflate the count.
+        if (stateLabel == "Awaiting")
+            _backlogTotal++;
     }
 
     public void OnWalkComplete()
