@@ -94,6 +94,16 @@ public sealed class TimerLeaksReport
             .OrderBy(kv => PeriodSortKey(kv.Key))
             .Select(kv => new[] { kv.Key, kv.Value.ToString("N0") })
             .ToList();
+
+        // Period bucket distribution donut
+        var bucketSegs = buckets
+            .OrderBy(kv => PeriodSortKey(kv.Key))
+            .Select(kv => (Label: kv.Key, Value: (double)kv.Value))
+            .ToList();
+        if (bucketSegs.Count > 1)
+            sink.DonutChart(bucketSegs, "Timer period distribution",
+                $"{data.Timers.Count:N0}\ntimers");
+
         sink.Table(["Period Range", "Count"], rows, "High-frequency timers cause CPU overhead");
 
         int highFreq = data.Timers.Count(t => t.PeriodMs >= 0 && t.PeriodMs < 100);

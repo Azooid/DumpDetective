@@ -56,6 +56,24 @@ public static class ReportDocReplay
                 case ReportExplain ex:
                     sink.Explain(ex.What, ex.Why, ex.Bullets, ex.Impact, ex.Action);
                     break;
+                case ReportGauges g:
+                    sink.Gauges(
+                        g.Items.Select(i => (i.Label, i.Value, i.Unit)).ToArray(),
+                        g.BarMax);
+                    break;
+                case ReportDonutChart dc:
+                    sink.DonutChart(
+                        dc.Segments.Select(s => (s.Label, s.Value)).ToArray(),
+                        dc.Caption, dc.CenterText);
+                    break;
+                case ReportStackedBar sb:
+                    sink.StackedBar(
+                        sb.Segments.Select(s => (s.Label, s.Value)).ToArray(),
+                        sb.Unit, sb.Caption, sb.ValueMode);
+                    break;
+                case ReportSparkline sp:
+                    sink.Sparkline([.. sp.Values], sp.Caption, sp.Unit, sp.ValueMode);
+                    break;
             }
         }
     }

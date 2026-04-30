@@ -217,6 +217,16 @@ public sealed class HighRefsReport
             })
             .OrderByDescending(r => int.Parse(r[3].Replace(",", "")))
             .ToList();
+        // Category distribution donut
+        var catSegs = candidates
+            .GroupBy(c => Categorize(c.Type))
+            .OrderByDescending(g => g.Count())
+            .Select(g => (g.Key, (double)g.Count()))
+            .ToList();
+        if (catSegs.Count > 1)
+            sink.DonutChart(catSegs, "Hot objects by category",
+                $"{candidates.Count:N0}\nhot objects");
+
         if (hubTypes.Count > 0)
             sink.Table(
                 ["Type Pattern", "Category", "Hot Instances", "Sum Inbound Refs", "Max Inbound Refs", "Retained Size (est.)"],
@@ -227,14 +237,23 @@ public sealed class HighRefsReport
     private static void RenderGenDistribution(IReadOnlyList<HighRefEntry> candidates, IRenderSink sink)
     {
         sink.Section("Generation Distribution");
-        var genDist = candidates
+        var genGroups = candidates
             .GroupBy(c => c.Gen)
             .OrderBy(g => g.Key switch { "Gen0" => 0, "Gen1" => 1, "Gen2" => 2, "LOH" => 3, "POH" => 4, _ => 9 })
-            .Select(g => new[] {
+            .ToList();
+        var genDist = genGroups.Select(g => new[] {
                 g.Key, g.Count().ToString("N0"),
                 g.Sum(c => c.InboundRefs).ToString("N0"),
                 DumpHelpers.FormatSize(g.Sum(c => c.RetainedSize)),
             }).ToList();
+
+        // Hot object count per generation — stacked bar
+        var genBarSegs = genGroups
+            .Select(g => (Label: g.Key, Value: (double)g.Count()))
+            .ToList();
+        if (genBarSegs.Count > 1)
+            sink.StackedBar(genBarSegs, null, "Hot objects by generation");
+
         if (genDist.Count > 0)
             sink.Table(["Generation", "Hot Objects", "Total Inbound Refs", "Retained Size (est.)"], genDist,
                 "Gen2/LOH objects with many inbound refs from younger generations increase GC write-barrier cost");
@@ -251,6 +270,12 @@ public sealed class HighRefsReport
     {
         if (histogram.Count == 0) return;
         sink.Section("Reference Count Distribution");
+        // Object count across ref-count buckets — sparkline
+        if (histogram.Count > 1)
+        {
+            var sparkValues = histogram.Select(h => (double)h.Count).ToList();
+            sink.Sparkline(sparkValues, "Object count across inbound ref-count buckets", " objects");
+        }
         var rows = histogram.Select(h => new[] { h.Label, h.Count.ToString("N0") }).ToList();
         sink.Table(["Inbound Ref Range", "Object Count"], rows,
             "Distribution of all objects by their inbound reference count (all objects ≥ 10)");

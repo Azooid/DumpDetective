@@ -33,10 +33,6 @@ public sealed class ModuleListReport
             bullets: ["'App' modules = your code and third-party packages", "'System' modules = .NET runtime framework assemblies", "Duplicate names in 'Duplicate Assemblies' section are the highest priority to investigate"],
             action: "Ensure binding redirects in app.config point to a single version. Audit multi-targeting or plugin loading scenarios where assemblies are loaded from different directories."
         );
-        var rows = data.Modules
-            .Select(m => new[] { m.FileName, m.Kind, DumpHelpers.FormatSize(m.Size), m.Path })
-            .ToList();
-        sink.Table(["Assembly", "Kind", "Size", "Path"], rows, $"{rows.Count} module(s)");
 
         sink.KeyValues([
             ("Total modules",   data.Modules.Count.ToString("N0")),
@@ -45,6 +41,23 @@ public sealed class ModuleListReport
             ("GAC modules",     data.Modules.Count(m => m.Kind == "GAC").ToString("N0")),
             ("Duplicate names", dupCount.ToString("N0")),
         ]);
+
+        // Module kind breakdown donut
+        {
+            var kindSegs = data.Modules
+                .GroupBy(m => m.Kind.Length > 0 ? m.Kind : "Other")
+                .Select(g => (Label: g.Key, Value: (double)g.Count()))
+                .OrderByDescending(s => s.Value)
+                .ToList();
+            if (kindSegs.Count > 1)
+                sink.DonutChart(kindSegs, "Modules by kind",
+                    $"{data.Modules.Count:N0}\nmodules");
+        }
+
+        var rows = data.Modules
+            .Select(m => new[] { m.FileName, m.Kind, DumpHelpers.FormatSize(m.Size), m.Path })
+            .ToList();
+        sink.Table(["Assembly", "Kind", "Size", "Path"], rows, $"{rows.Count} module(s)");
     }
 
     private static void RenderDuplicateAccordions(

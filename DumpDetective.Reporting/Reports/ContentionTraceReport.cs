@@ -58,6 +58,29 @@ public sealed class ContentionTraceReport
             $"{h.TotalWaitMs:F1} ms",
             $"{h.MaxWaitMs:F1} ms",
         }).ToList();
+        // Wait time breakdown by contention hotspot — stacked bar
+        var hotSegs = data.Hotspots.Take(6)
+            .Select(h => {
+                string lbl = h.Location.Length > 45
+                    ? "\u2026" + h.Location[^44..]
+                    : h.Location;
+                return (Label: lbl, Value: h.TotalWaitMs);
+            })
+            .ToList();
+        if (hotSegs.Count > 0)
+            sink.StackedBar(hotSegs, " ms", "Total wait time by contention hotspot (top 6)");
+
+        // Contention events by thread — donut
+        var threadSegs = data.Events
+            .GroupBy(e => $"T{e.ThreadId}")
+            .OrderByDescending(g => g.Count())
+            .Take(8)
+            .Select(g => (g.Key, (double)g.Count()))
+            .ToList();
+        if (threadSegs.Count > 1)
+            sink.DonutChart(threadSegs, "Contention events by thread (top 8)",
+                $"{data.TotalContentions:N0}\ntotal");
+
         sink.Table(
             ["Call site", "Count", "Total wait", "Max wait"],
             hRows,

@@ -79,6 +79,15 @@ public sealed class TypeInstancesReport
         if (poh > 0)
             genRows.Add(["POH", poh.ToString("N0"), $"{poh * 100.0 / tot:F1}%"]);
         sink.Table(["Gen", "Count", "% of Total"], genRows);
+
+        var genSegs = new List<(string, double)>();
+        if (g0  > 0) genSegs.Add(("Gen0", g0));
+        if (g1  > 0) genSegs.Add(("Gen1", g1));
+        if (g2  > 0) genSegs.Add(("Gen2", g2));
+        if (loh > 0) genSegs.Add(("LOH",  loh));
+        if (poh > 0) genSegs.Add(("POH",  poh));
+        if (genSegs.Count > 1)
+            sink.DonutChart(genSegs, "Instance count by generation", $"{data.TotalCount:N0}\ntotal");
     }
 
     private static void RenderLargestInstances(IRenderSink sink, TypeInstancesData data, bool showAddr)

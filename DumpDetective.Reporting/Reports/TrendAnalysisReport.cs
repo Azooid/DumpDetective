@@ -80,6 +80,12 @@ public static class TrendAnalysisReport
                 $"{s.HealthScore}/100  {ScoreLabel(s.HealthScore)}",
             }).ToList());
 
+        // Health score trend sparkline
+        if (snaps.Count > 1)
+            sink.Sparkline(
+                snaps.Select(s => (double)s.HealthScore).ToList(),
+                "Health score across dumps", "/100");
+
         // ── 1. Incident Summary ───────────────────────────────────────────────
         sink.Section("1. Incident Summary");
         sink.Explain(
@@ -382,6 +388,18 @@ public static class TrendAnalysisReport
         AddRow("Handles — Strong", s => s.StrongHandleCount,        s => s.StrongHandleCount.ToString("N0"));
         AddRow("Handles — Weak",   s => s.WeakHandleCount,          s => s.WeakHandleCount.ToString("N0"), higherIsBad: false);
         AddRow("Modules (App)",    s => s.AppModuleCount,           s => $"{s.AppModuleCount} / {s.ModuleCount}");
+
+        // Key growth sparklines — before the table so trends are visible immediately
+        if (snaps.Count > 1)
+        {
+            sink.Sparkline(snaps.Select(s => (double)s.TotalHeapBytes).ToList(),
+                "Total heap bytes", null, valueMode: "size");
+            sink.Sparkline(snaps.Select(s => (double)s.LohBytes).ToList(),
+                "LOH bytes", null, valueMode: "size");
+            sink.Sparkline(snaps.Select(s => (double)s.FinalizerQueueDepth).ToList(),
+                "Finalizer queue depth", " objects");
+        }
+
         sink.Table(growthCols, growthRows);
 
         // ── 3. Thread & Application Pressure ──────────────────────────────────
@@ -487,6 +505,15 @@ public static class TrendAnalysisReport
                     .ToList();
                 sink.Table(aCols, aRows, "Top async state machine methods across dumps");
             }
+
+            // Thread pressure sparklines — before the tables
+            if (snaps.Count > 1)
+            {
+                sink.Sparkline(snaps.Select(s => (double)s.AsyncBacklogTotal).ToList(),
+                    "Async backlog across dumps", " continuations");
+                sink.Sparkline(snaps.Select(s => (double)s.BlockedThreadCount).ToList(),
+                    "Blocked threads across dumps", " threads");
+            }
         }
 
         // ── 4. Event Leak Analysis ────────────────────────────────────────────
@@ -517,6 +544,12 @@ public static class TrendAnalysisReport
                     s.EventLeakFieldCount  > 0 ? s.EventLeakFieldCount.ToString("N0")  : "—",
                     s.EventLeakMaxOnField  > 0 ? s.EventLeakMaxOnField.ToString("N0")  : "—",
                 }).ToList());
+
+            // Event subscriber growth sparkline
+            if (snaps.Count > 1 && snaps.Any(s => s.EventSubscriberTotal > 0))
+                sink.Sparkline(
+                    snaps.Select(s => (double)s.EventSubscriberTotal).ToList(),
+                    "Total event subscribers across dumps", " instances");
 
             var allFields = snaps
                 .SelectMany(s => s.TopEventLeaks)

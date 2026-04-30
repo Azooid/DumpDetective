@@ -108,6 +108,17 @@ public sealed class CpuTraceReport
             .ToList();
 
         double exclusiveTotal = data.TopMethods.Take(top).Sum(m => m.ExclusivePct);
+
+        // Exclusive CPU % broken down by module — above the table for quick visual
+        var byModule = data.TopMethods
+            .GroupBy(m => m.Module.Length > 0 ? m.Module : "(unknown)")
+            .Select(g => (Label: g.Key, Value: g.Sum(m => m.ExclusivePct)))
+            .OrderByDescending(t => t.Value)
+            .Take(8)
+            .ToList();
+        if (byModule.Count > 0)
+            sink.StackedBar(byModule, "%", "Exclusive CPU % by module (from top methods)");
+
         sink.Table(
             ["Method", "Module", "Excl %", "Incl %", "Excl samples", "Incl samples"],
             rows,

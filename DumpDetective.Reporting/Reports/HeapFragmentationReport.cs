@@ -48,6 +48,27 @@ public sealed class HeapFragmentationReport
             ("Total pinned",    data.Segments.Sum(s => s.PinnedCount).ToString("N0")),
         ]);
 
+        // Per-segment frag % gauges — most fragmented segments first
+        var fragGauges = data.Segments
+            .Where(s => s.CommittedBytes > 0)
+            .Select(s => ($"0x{s.Address:X} ({s.Kind})", s.FreeBytes * 100.0 / s.CommittedBytes, "%"))
+            .OrderByDescending(t => t.Item2)
+            .Take(8)
+            .ToList();
+        if (fragGauges.Count > 0)
+            sink.Gauges(fragGauges, barMax: 100.0);
+
+        // Live vs. free composition — stacked bar
+        if (totalCommitted > 0)
+        {
+            long totalLive = data.Segments.Sum(s => s.LiveBytes);
+            var compSegs = new List<(string, double)>();
+            if (totalLive > 0) compSegs.Add(("Live", (double)totalLive));
+            if (totalFree > 0) compSegs.Add(("Free (fragmented)", (double)totalFree));
+            if (compSegs.Count > 1)
+                sink.StackedBar(compSegs, null, "Committed heap: live vs. fragmented free", valueMode: "size");
+        }
+
         if (totalFrag >= 40)
             sink.Alert(AlertLevel.Critical, $"Heap fragmentation critical: {totalFrag:F1}%",
                 advice: "Reduce GCHandle.Alloc(Pinned) usage. Use MemoryPool<T> / ArrayPool<T> for I/O buffers. Enable Server GC for large workloads.");

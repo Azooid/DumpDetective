@@ -67,6 +67,28 @@ public sealed class ConnectionPoolReport
             ("Pool groups (type+connstr)", poolGroups.Count.ToString("N0")),
         ]);
 
+        // Pool utilisation gauges — one per pool group (capped at 8)
+        if (poolGroups.Count > 0)
+        {
+            var gaugeItems = poolGroups.Take(8)
+                .Select(p => {
+                    string lbl = p.ConnKey.Length > 40 ? p.ConnKey[..40] + "\u2026" : p.ConnKey;
+                    return (Label: lbl, Value: p.UtilPct, Unit: "%");
+                })
+                .ToList();
+            sink.Gauges(gaugeItems, barMax: 100.0);
+        }
+
+        // Connection state distribution donut
+        var stateSegs = connections
+            .GroupBy(c => c.State.Length > 0 ? c.State : "Unknown")
+            .OrderByDescending(g => g.Count())
+            .Select(g => (g.Key, (double)g.Count()))
+            .ToList();
+        if (stateSegs.Count > 1)
+            sink.DonutChart(stateSegs, "Connection state distribution",
+                $"{connections.Count:N0}\ntotal");
+
         if (connections.Count > 50)
             sink.Alert(AlertLevel.Critical, $"{connections.Count:N0} DB connection objects on heap.",
                 advice: "Wrap connections in 'using'. Verify connection pool MaxPoolSize. Do not store DbContext in static fields.");

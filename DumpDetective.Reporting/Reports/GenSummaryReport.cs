@@ -46,6 +46,31 @@ public sealed class GenSummaryReport
             ("Total",  Fmt(total)),
         ]);
 
+        // Generation size breakdown — stacked bar
+        if (total > 0)
+        {
+            var genSegs = new List<(string Label, double Value)>();
+            if (data.Gen0Bytes   > 0) genSegs.Add(("Gen0",   (double)data.Gen0Bytes));
+            if (data.Gen1Bytes   > 0) genSegs.Add(("Gen1",   (double)data.Gen1Bytes));
+            if (data.Gen2Bytes   > 0) genSegs.Add(("Gen2",   (double)data.Gen2Bytes));
+            if (data.LohBytes    > 0) genSegs.Add(("LOH",    (double)data.LohBytes));
+            if (data.PohBytes    > 0) genSegs.Add(("POH",    (double)data.PohBytes));
+            if (data.FrozenBytes > 0) genSegs.Add(("Frozen", (double)data.FrozenBytes));
+            if (genSegs.Count > 1)
+                sink.StackedBar(genSegs, null, "Committed bytes by generation", valueMode: "size");
+        }
+
+        // Object count by generation donut
+        if (totalObj > 0)
+        {
+            var objSegs = new List<(string, double)>();
+            if (data.Gen0ObjCount > 0) objSegs.Add(("Gen0", (double)data.Gen0ObjCount));
+            if (data.Gen1ObjCount > 0) objSegs.Add(("Gen1", (double)data.Gen1ObjCount));
+            if (data.Gen2ObjCount > 0) objSegs.Add(("Gen2", (double)data.Gen2ObjCount));
+            if (objSegs.Count > 1)
+                sink.DonutChart(objSegs, "Object count by generation", $"{totalObj:N0}\nobjects");
+        }
+
         if (total > 0 && data.Gen2Bytes > total * 0.70)
             sink.Alert(AlertLevel.Warning,
                 $"Gen2 holds {data.Gen2Bytes * 100.0 / total:F0}% of committed heap ({Fmt(data.Gen2Bytes)}).",

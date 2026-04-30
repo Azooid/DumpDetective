@@ -150,5 +150,41 @@ public sealed class CaptureSink : IRenderSink
             Action  = action,
         });
 
+    public void Gauges(IReadOnlyList<(string Label, double Value, string Unit)> items, double barMax = 100.0)
+        => CurrentElements().Add(new ReportGauges
+        {
+            Items  = [.. items.Select(i => new ReportGaugeItem(i.Label, i.Value, i.Unit))],
+            BarMax = barMax,
+        });
+
+    public void DonutChart(IReadOnlyList<(string Label, double Value)> segments,
+        string? caption = null, string? centerText = null)
+        => CurrentElements().Add(new ReportDonutChart
+        {
+            Segments   = [.. segments.Select(s => new ReportChartSeg(s.Label, s.Value))],
+            Caption    = caption,
+            CenterText = centerText,
+        });
+
+    public void StackedBar(IReadOnlyList<(string Label, double Value)> segments,
+        string? unit = null, string? caption = null, string? valueMode = null)
+        => CurrentElements().Add(new ReportStackedBar
+        {
+            Segments  = [.. segments.Select(s => new ReportChartSeg(s.Label, s.Value))],
+            Unit      = unit,
+            Caption   = caption,
+            ValueMode = valueMode,
+        });
+
+    public void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
+        string? valueMode = null)
+        => CurrentElements().Add(new ReportSparkline
+        {
+            Values    = [.. values],
+            Caption   = caption,
+            Unit      = unit,
+            ValueMode = valueMode,
+        });
+
     public void Dispose() { }
 }

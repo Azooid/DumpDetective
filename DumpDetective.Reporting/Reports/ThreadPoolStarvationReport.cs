@@ -69,6 +69,12 @@ public sealed class ThreadPoolStarvationReport
     {
         if (data.Adjustments.Count == 0) return;
         sink.Section("Thread Pool Adjustments (last 50)");
+        // Thread pool size growth — sparkline
+        if (data.Adjustments.Count > 1)
+        {
+            var threadCounts = data.Adjustments.Select(a => (double)a.NewCount).ToList();
+            sink.Sparkline(threadCounts, "Thread pool size over adjustments", " threads");
+        }
         var rows = data.Adjustments.Select(a => new[]
         {
             a.Timestamp, a.NewCount.ToString("N0"), a.ReasonName,
@@ -82,6 +88,16 @@ public sealed class ThreadPoolStarvationReport
     {
         if (data.EventCounts.Count == 0) return;
         sink.Section("Event Distribution");
+
+        // Event type distribution — stacked bar
+        var evSegs = data.EventCounts
+            .OrderByDescending(kv => kv.Value)
+            .Take(8)
+            .Select(kv => (Label: kv.Key, Value: (double)kv.Value))
+            .ToList();
+        if (evSegs.Count > 0)
+            sink.StackedBar(evSegs, null, "ThreadPool event type distribution");
+
         var rows = data.EventCounts
             .OrderByDescending(kv => kv.Value)
             .Take(top)

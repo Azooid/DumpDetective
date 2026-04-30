@@ -40,6 +40,14 @@ public sealed class GcRootsReport
                 .Select(g => new[] { g.Key, g.Count().ToString("N0") })
                 .ToList();
             sink.Table(["Root Kind", "Count"], kindRows, "Direct GC root kinds across all target instances");
+
+            var kindSegs = allRoots
+                .GroupBy(r => r.KindLabel)
+                .OrderByDescending(g => g.Count())
+                .Select(g => (g.Key, (double)g.Count()))
+                .ToList();
+            if (kindSegs.Count > 1)
+                sink.DonutChart(kindSegs, "Root kinds", $"{allRoots.Count:N0}\nroots");
         }
 
         // Per-instance details

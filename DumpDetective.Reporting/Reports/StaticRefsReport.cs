@@ -25,20 +25,21 @@ public sealed class StaticRefsReport
         int  declTypeCount  = sizeByDeclType.Count;
         var  largestDecl    = sizeByDeclType.Count > 0 ? sizeByDeclType.MaxBy(kv => kv.Value) : default;
 
-        sink.KeyValues([
-            ("Declaring types",        declTypeCount.ToString("N0")),
-            ("Static fields",          data.Total.ToString("N0")),
-            ("Total retained size",    DumpHelpers.FormatSize(data.TotalSize)
-                                       + (data.IsEstimated ? "  ~" : "")),
-            ("Largest declaring type", largestDecl.Key is null ? "—"
-                : $"{largestDecl.Key.Split('.').Last()}  ({DumpHelpers.FormatSize(largestDecl.Value)})"
-                  + (data.IsEstimated ? " ~" : "")),
-            ("Collection fields",      collections.ToString("N0")),
-            ("Size accuracy",          data.IsEstimated
-                ? $"Estimated (sampling mode — use --bfs-depth to cap traversal)"
-                : "Exact (full BFS)"),
-        ]);
-
+        // Top declaring types by retained size — donut
+        if (sizeByDeclType.Count > 1)
+        {
+            var typeSegs = sizeByDeclType
+                .OrderByDescending(kv => kv.Value)
+                .Take(8)
+                .Select(kv => {
+                    string lbl = kv.Key.Contains('.') ? kv.Key[(kv.Key.LastIndexOf('.')+1)..] : kv.Key;
+                    if (lbl.Length > 28) lbl = lbl[..28] + "\u2026";
+                    return (Label: lbl, Value: (double)kv.Value);
+                })
+                .ToList();
+            sink.DonutChart(typeSegs, "Top 8 declaring types by retained static size",
+                DumpHelpers.FormatSize(data.TotalSize) + "\ntotal");
+        }
         sink.Alert(AlertLevel.Info,
             "Static object references are permanent GC roots — they keep entire object graphs alive for the process lifetime.",
             "Prefer scoped DI registrations over static state. Use WeakReference<T> for caches.");

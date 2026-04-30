@@ -27,7 +27,18 @@ public sealed class WcfChannelsReport
             ("Distinct endpoints",   data.Objects.Select(o => o.Endpoint).Where(e => e.Length > 0).Distinct().Count().ToString("N0")),
         ]);
 
-        if (faultedTotal > 0)
+        // Channel state distribution donut
+        {
+            var stateGroups = data.Objects
+                .GroupBy(o => o.State.Length > 0 ? o.State : "Unknown")
+                .Where(g => g.Count() > 0)
+                .Select(g => (Label: g.Key, Value: (double)g.Count()))
+                .OrderByDescending(s => s.Value)
+                .ToList();
+            if (stateGroups.Count > 1)
+                sink.DonutChart(stateGroups, "WCF channel state distribution",
+                    $"{data.Objects.Count:N0}\nchannels");
+        }
             sink.Alert(AlertLevel.Critical, $"{faultedTotal} faulted WCF channel(s) found.",
                 "Faulted channels cannot be reused and must be aborted before creating new ones.",
                 "Call IChannel.Abort() (not Close()) on faulted channels.");

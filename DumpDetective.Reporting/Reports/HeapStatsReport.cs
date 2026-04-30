@@ -49,6 +49,20 @@ public sealed class HeapStatsReport
             data.TotalSize > 0 ? $"{r.Size * 100.0 / data.TotalSize:F1}%" : "?",
         }).ToList();
 
+        // Top 8 types by total size — donut chart above the table
+        var heapSegs = ordered.Take(8)
+            .Select(r => {
+                string lbl = r.Name.Contains('.')
+                    ? r.Name[(r.Name.LastIndexOf('.') + 1)..]
+                    : r.Name;
+                if (lbl.Length > 30) lbl = lbl[..30] + "\u2026";
+                return (Label: lbl, Value: (double)r.Size);
+            })
+            .ToList();
+        if (heapSegs.Count > 0)
+            sink.DonutChart(heapSegs, "Top 8 types by total size",
+                data.TotalSize > 0 ? $"{DumpHelpers.FormatSize(data.TotalSize)}\ntotal" : null);
+
         sink.Table(["Type", "Gen", "Count", "Total Size", "% of Heap"], rows,
             $"Top {rows.Count} types by {sortBy}" + (genFilter is not null ? $" (gen={genFilter})" : ""));
 

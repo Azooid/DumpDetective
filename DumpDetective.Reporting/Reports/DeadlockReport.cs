@@ -38,6 +38,17 @@ public sealed class DeadlockReport
             ("Named threads found",     data.NamedThreadCount.ToString("N0")),
         ]);
 
+        // ── Lock state chart ─────────────────────────────────────────────────
+        if (data.MonitorLocks.Count > 0 || monitorWaiters > 0)
+        {
+            double contestedPct = data.MonitorLocks.Count > 0 ? contested * 100.0 / data.MonitorLocks.Count : 0;
+            double waitersPct   = data.TotalThreadsByRuntime > 0 ? monitorWaiters * 100.0 / data.TotalThreadsByRuntime : 0;
+            sink.Gauges([
+                ("Contested lock ratio",     contestedPct, "%"),
+                ("Threads blocked on locks", waitersPct,   "%"),
+            ], barMax: 100);
+        }
+
         // ── Verdict ──────────────────────────────────────────────────────────
         if (data.ConfirmedCycles.Count > 0)
         {

@@ -228,6 +228,16 @@ public static class AnalyzeReport
             if (critCount > 0) caption += $"  |  ✗ {critCount} critical";
             if (warnCount > 0) caption += $"  |  ⚠ {warnCount} warning";
             if (infoCount  > 0) caption += $"  |  ℹ {infoCount} info";
+
+            // Severity breakdown donut
+            var sevSegs = new List<(string Label, double Value)>();
+            if (critCount > 0) sevSegs.Add(("✗ Critical", critCount));
+            if (warnCount > 0) sevSegs.Add(("⚠ Warning",  warnCount));
+            if (infoCount  > 0) sevSegs.Add(("ℹ Info",    infoCount));
+            if (sevSegs.Count > 0)
+                sink.DonutChart(sevSegs, "Findings by severity",
+                    $"{s.Findings.Count}\nfindings");
+
             sink.Table(["Severity", "Category", "Finding", "Evidence", "Recommendation"], findingRows, caption);
 
             // Severity legend
@@ -277,6 +287,16 @@ public static class AnalyzeReport
         // Dynamic interpretation of memory distribution
         if (s.TotalHeapBytes > 0)
         {
+            // Generation breakdown stacked bar
+            var genSegs = new List<(string Label, double Value)>();
+            if (s.Gen0Bytes > 0) genSegs.Add(("Gen0", (double)s.Gen0Bytes));
+            if (s.Gen1Bytes > 0) genSegs.Add(("Gen1", (double)s.Gen1Bytes));
+            if (s.Gen2Bytes > 0) genSegs.Add(("Gen2", (double)s.Gen2Bytes));
+            if (s.LohBytes  > 0) genSegs.Add(("LOH",  (double)s.LohBytes));
+            if (s.PohBytes  > 0) genSegs.Add(("POH",  (double)s.PohBytes));
+            if (genSegs.Count > 1)
+                sink.StackedBar(genSegs, null, "Heap committed bytes by generation", valueMode: "size");
+
             double gen2Pct = s.Gen2Bytes * 100.0 / s.TotalHeapBytes;
             double lohPct  = s.LohBytes  * 100.0 / s.TotalHeapBytes;
             if (gen2Pct > 50)
@@ -306,11 +326,24 @@ public static class AnalyzeReport
                     advice: "Run 'heap-fragmentation <dump>' and 'pinned-objects <dump>' to identify pinned handles causing fragmentation.");
         }
         if (s.TopTypes.Count > 0)
+        {
+            // Top 8 types by size — donut above the table
+            var typeSegs = s.TopTypes.Take(8)
+                .Select(t => {
+                    string lbl = t.Name.Contains('.') ? t.Name[(t.Name.LastIndexOf('.') + 1)..] : t.Name;
+                    if (lbl.Length > 30) lbl = lbl[..30] + "\u2026";
+                    return (Label: lbl, Value: (double)t.TotalBytes);
+                })
+                .ToList();
+            sink.DonutChart(typeSegs, "Top 8 types by heap size",
+                s.TotalHeapBytes > 0 ? $"{FormatSize(s.TotalHeapBytes)}\ntotal" : null);
+
             sink.Table(
                 ["Type", "Count", "Total Size"],
                 s.TopTypes.Take(25).Select(t =>
                     new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
                 "Top types by size — types with very high counts or large footprints are the primary leak investigation targets");
+        }
 
         // ── Threads & Thread Pool ─────────────────────────────────────────────
         sink.Section("Threads & Thread Pool");
@@ -338,6 +371,17 @@ public static class AnalyzeReport
             ("TP active",      $"{s.TpActiveWorkers} / {s.TpMaxWorkers} max"),
             ("TP idle",        s.TpIdleWorkers.ToString()),
         ]);
+        // Thread pool utilisation gauges
+        if (s.TpMaxWorkers > 0)
+        {
+            double activePct = s.TpActiveWorkers * 100.0 / s.TpMaxWorkers;
+            double blockedPct = s.ThreadCount > 0 ? s.BlockedThreadCount * 100.0 / s.ThreadCount : 0;
+            sink.Gauges(
+            [
+                ("TP active workers", activePct, "%"),
+                ("Blocked threads",   blockedPct, "%"),
+            ], barMax: 100.0);
+        }
         if (s.BlockedThreadCount > 5)
             sink.Alert(AlertLevel.Warning,
                 $"{s.BlockedThreadCount} blocked threads detected",
@@ -392,9 +436,22 @@ public static class AnalyzeReport
                         "Active exceptions on thread stacks indicate the application was in a failed state at capture time.");
 
             if (s.ExceptionCounts.Count > 0)
+            {
+                // Exception type donut above the table
+                var exSegs = s.ExceptionCounts.Take(8)
+                    .Select(e => {
+                        string lbl = e.Name.Contains('.') ? e.Name[(e.Name.LastIndexOf('.') + 1)..] : e.Name;
+                        return (Label: lbl, Value: (double)e.Count);
+                    })
+                    .ToList();
+                if (exSegs.Count > 0)
+                    sink.DonutChart(exSegs, "Exception count by type (top 8)",
+                        $"{s.ExceptionCounts.Sum(e => e.Count):N0}\ntotal");
+
                 sink.Table(
                     ["Exception Type", "Count"],
                     s.ExceptionCounts.Take(15).Select(e => new[] { e.Name, e.Count.ToString("N0") }).ToList());
+            }
 
             if (ctx is not null)
             {
@@ -472,6 +529,20 @@ public static class AnalyzeReport
             ("WCF objects",     $"{s.WcfObjectCount:N0}  (faulted: {s.WcfFaultedCount:N0})"),
             ("DB connections",  s.ConnectionCount.ToString("N0")),
         ]);
+        // Handle kind distribution donut
+        {
+            var handleSegs = new List<(string Label, double Value)>();
+            if (s.StrongHandleCount > 0) handleSegs.Add(("Strong",  (double)s.StrongHandleCount));
+            if (s.PinnedHandleCount > 0) handleSegs.Add(("Pinned",  (double)s.PinnedHandleCount));
+            if (s.WeakHandleCount   > 0) handleSegs.Add(("Weak",    (double)s.WeakHandleCount));
+            if (handleSegs.Count > 1)
+                sink.DonutChart(handleSegs, "GC handles by kind",
+                    $"{s.StrongHandleCount + s.PinnedHandleCount + s.WeakHandleCount:N0}\nhandles");
+        }
+        // Finalizer queue depth gauge (threshold: 500 = critical)
+        if (s.FinalizerQueueDepth > 0)
+            sink.Gauges([("Finalizer queue depth", (double)s.FinalizerQueueDepth, " objects")],
+                barMax: 500.0);
         if (s.FinalizerQueueDepth >= 500)
             sink.Alert(AlertLevel.Critical,
                 $"Finalizer queue: {s.FinalizerQueueDepth:N0} objects pending cleanup",
@@ -557,9 +628,15 @@ public static class AnalyzeReport
                 ("Wasted bytes",       FormatSize(s.StringWastedBytes)),
                 ("Total string bytes", FormatSize(s.StringTotalBytes)),
             ]);
+            // Wasted vs total string bytes gauge
+            if (s.StringTotalBytes > 0)
+            {
+                double wastePct = s.StringWastedBytes * 100.0 / s.StringTotalBytes;
+                sink.Gauges([("String memory wasted", wastePct, "%")], barMax: 100.0);
+            }
         }
 
-        // ── Modules ───────────────────────────────────────────────────────────
+        // ── Modules ────────────────────────────────────────────────────────────────────────────
         sink.Section("Modules");
         sink.KeyValues(
         [
@@ -603,7 +680,18 @@ public static class AnalyzeReport
                                        ? $"{strType.Count:N0}  ({FormatSize(strType.TotalBytes)})"
                                        : "—"),
             ]);
-
+            // Generation breakdown stacked bar in leak context
+            if (s.TotalHeapBytes > 0)
+            {
+                var leakGenSegs = new List<(string Label, double Value)>();
+                if (s.Gen0Bytes > 0) leakGenSegs.Add(("Gen0", (double)s.Gen0Bytes));
+                if (s.Gen1Bytes > 0) leakGenSegs.Add(("Gen1", (double)s.Gen1Bytes));
+                if (s.Gen2Bytes > 0) leakGenSegs.Add(("Gen2", (double)s.Gen2Bytes));
+                if (s.LohBytes  > 0) leakGenSegs.Add(("LOH",  (double)s.LohBytes));
+                if (s.PohBytes  > 0) leakGenSegs.Add(("POH",  (double)s.PohBytes));
+                if (leakGenSegs.Count > 1)
+                    sink.StackedBar(leakGenSegs, null, "Generation distribution — Gen2 growth is the primary leak signal", valueMode: "size");
+            }
             if (gen2Pct > 50)
                 sink.Alert(AlertLevel.Critical,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap",

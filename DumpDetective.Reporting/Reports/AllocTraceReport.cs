@@ -45,6 +45,19 @@ public sealed class AllocTraceReport
             $"{t.PctOfTotal:F1}%",
             t.Ticks.ToString("N0"),
         }).ToList();
+        // Allocation breakdown by type — donut
+        var allocSegs = data.TopTypes.Take(8)
+            .Select(t => {
+                string lbl = t.TypeName.Contains('.')
+                    ? t.TypeName[(t.TypeName.LastIndexOf('.') + 1)..]
+                    : t.TypeName;
+                return (Label: lbl, Value: (double)t.EstimatedBytes);
+            })
+            .ToList();
+        if (allocSegs.Count > 0)
+            sink.DonutChart(allocSegs, "Allocation breakdown by type (top 8)",
+                $"~{DumpHelpers.FormatSize(data.EstimatedTotalBytes)}\ntotal");
+
         sink.Table(
             ["Type", "Estimated bytes", "% of total", "Ticks"],
             typeRows,

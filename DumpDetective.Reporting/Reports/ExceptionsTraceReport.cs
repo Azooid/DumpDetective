@@ -54,6 +54,19 @@ public sealed class ExceptionsTraceReport
             TrimMsg(t.FirstMessage, 60),
             TrimFrame(t.TopFrame, 70),
         }).ToList();
+        // Exception count by type — donut
+        var exSegs = data.TopTypes.Take(8)
+            .Select(t => {
+                string lbl = t.ExceptionType.Contains('.')
+                    ? t.ExceptionType[(t.ExceptionType.LastIndexOf('.') + 1)..]
+                    : t.ExceptionType;
+                return (Label: lbl, Value: (double)t.Count);
+            })
+            .ToList();
+        if (exSegs.Count > 0)
+            sink.DonutChart(exSegs, "Exception count by type (top 8)",
+                $"{data.TotalThrown:N0}\nthrown");
+
         sink.Table(
             ["Exception type", "Count", "First message", "Top call site"],
             typeRows,

@@ -135,6 +135,34 @@ public sealed class MemoryLeakReport
                 $"Large Object Heap is {DumpHelpers.FormatSize(data.LohTotal)} \u2014 LOH is never compacted by default.",
                 advice: "Use ArrayPool<T> / MemoryPool<T> for large temporary buffers.");
 
+        // Generation breakdown stacked bar
+        if (totalHeap > 0)
+        {
+            var genSegs = new List<(string Label, double Value)>();
+            if (data.Gen0Total > 0) genSegs.Add(("Gen0", (double)data.Gen0Total));
+            if (data.Gen1Total > 0) genSegs.Add(("Gen1", (double)data.Gen1Total));
+            if (data.Gen2Total > 0) genSegs.Add(("Gen2", (double)data.Gen2Total));
+            if (data.LohTotal  > 0) genSegs.Add(("LOH",  (double)data.LohTotal));
+            if (data.PohTotal  > 0) genSegs.Add(("POH",  (double)data.PohTotal));
+            if (genSegs.Count > 1)
+                sink.StackedBar(genSegs, null, "Heap committed bytes by generation", valueMode: "size");
+        }
+
+        // Top 8 types by instance count — donut
+        var typeCountSegs = data.AllTypes
+            .OrderByDescending(r => r.Count)
+            .Take(8)
+            .Select(r => {
+                string lbl = r.Name.Contains('.')
+                    ? r.Name[(r.Name.LastIndexOf('.') + 1)..]
+                    : r.Name;
+                return (Label: lbl, Value: (double)r.Count);
+            })
+            .ToList();
+        if (typeCountSegs.Count > 1)
+            sink.DonutChart(typeCountSegs, "Top 8 types by instance count",
+                data.TotalObjects > 0 ? $"{data.TotalObjects:N0}\ntotal" : null);
+
         sink.Section($"Step 1  \u2014  dumpheap -stat  (top {top} types by total size)");
         sink.Alert(AlertLevel.Info,
             "All managed types sorted by total retained size.",

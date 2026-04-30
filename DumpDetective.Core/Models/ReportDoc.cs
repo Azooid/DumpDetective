@@ -40,12 +40,16 @@ public sealed class ReportSection
 }
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
-[JsonDerivedType(typeof(ReportKeyValues), "keyValues")]
-[JsonDerivedType(typeof(ReportTable),     "table")]
-[JsonDerivedType(typeof(ReportAlert),     "alert")]
-[JsonDerivedType(typeof(ReportText),      "text")]
-[JsonDerivedType(typeof(ReportDetails),   "details")]
-[JsonDerivedType(typeof(ReportExplain),   "explain")]
+[JsonDerivedType(typeof(ReportKeyValues),  "keyValues")]
+[JsonDerivedType(typeof(ReportTable),      "table")]
+[JsonDerivedType(typeof(ReportAlert),      "alert")]
+[JsonDerivedType(typeof(ReportText),       "text")]
+[JsonDerivedType(typeof(ReportDetails),    "details")]
+[JsonDerivedType(typeof(ReportExplain),    "explain")]
+[JsonDerivedType(typeof(ReportGauges),     "gauges")]
+[JsonDerivedType(typeof(ReportDonutChart), "donutChart")]
+[JsonDerivedType(typeof(ReportStackedBar), "stackedBar")]
+[JsonDerivedType(typeof(ReportSparkline),  "sparkline")]
 public abstract class ReportElement { }
 
 public sealed class ReportKeyValues : ReportElement
@@ -101,6 +105,56 @@ public sealed class ReportExplain : ReportElement
     public string?   Impact  { get; set; }
     public string[]? Bullets { get; set; }
     public string?   Action  { get; set; }
+}
+
+// ── Chart elements ────────────────────────────────────────────────────────────
+
+/// Shared (label, value) segment used by DonutChart and StackedBar.
+public sealed class ReportChartSeg
+{
+    public string Label { get; set; } = string.Empty;
+    public double Value { get; set; }
+    public ReportChartSeg() { }
+    public ReportChartSeg(string label, double value) { Label = label; Value = value; }
+}
+
+/// Single gauge item with optional unit.
+public sealed class ReportGaugeItem
+{
+    public string Label { get; set; } = string.Empty;
+    public double Value { get; set; }
+    public string Unit  { get; set; } = string.Empty;
+    public ReportGaugeItem() { }
+    public ReportGaugeItem(string label, double value, string unit) { Label = label; Value = value; Unit = unit; }
+}
+
+public sealed class ReportGauges : ReportElement
+{
+    public List<ReportGaugeItem> Items  { get; set; } = [];
+    public double                BarMax { get; set; } = 100.0;
+}
+
+public sealed class ReportDonutChart : ReportElement
+{
+    public List<ReportChartSeg> Segments   { get; set; } = [];
+    public string?              Caption    { get; set; }
+    public string?              CenterText { get; set; }
+}
+
+public sealed class ReportStackedBar : ReportElement
+{
+    public List<ReportChartSeg> Segments  { get; set; } = [];
+    public string?              Unit      { get; set; }
+    public string?              Caption   { get; set; }
+    public string?              ValueMode { get; set; }
+}
+
+public sealed class ReportSparkline : ReportElement
+{
+    public List<double> Values    { get; set; } = [];
+    public string?      Caption   { get; set; }
+    public string?      Unit      { get; set; }
+    public string?      ValueMode { get; set; }
 }
 
 // ── Top-level JSON envelope ───────────────────────────────────────────────────

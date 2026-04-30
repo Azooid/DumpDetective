@@ -36,6 +36,17 @@ public sealed class WeakRefsReport
             ("Collected",          collectedCount.ToString("N0")),
         ]);
 
+        // Alive vs Collected donut
+        if (aliveCount > 0 || collectedCount > 0)
+        {
+            var lifeSegs = new List<(string Label, double Value)>();
+            if (aliveCount     > 0) lifeSegs.Add(("Alive",     aliveCount));
+            if (collectedCount > 0) lifeSegs.Add(("Collected", collectedCount));
+            if (lifeSegs.Count > 1)
+                sink.DonutChart(lifeSegs, "Weak reference status",
+                    $"{total:N0}\nhandles");
+        }
+
         if (total > 10 && alivePercent < 20)
             sink.Alert(AlertLevel.Warning,
                 $"Only {alivePercent}% of weak references are alive — high object churn or abandoned caches.",
@@ -53,7 +64,19 @@ public sealed class WeakRefsReport
             .Select(g => new[] { g.Key, g.Count().ToString("N0") })
             .ToList();
         if (rows.Count > 0)
+        {
+            // Alive type distribution donut (top 8)
+            var typeSegs = rows.Take(8)
+                .Select(r => {
+                    string lbl = r[0].Contains('.') ? r[0][(r[0].LastIndexOf('.')+1)..] : r[0];
+                    return (lbl, (double)int.Parse(r[1].Replace(",", "")));
+                })
+                .ToList();
+            if (typeSegs.Count > 1)
+                sink.DonutChart(typeSegs, "Alive weak refs by type (top 8)",
+                    $"{rows.Sum(r => int.Parse(r[1].Replace(",", ""))):N0}\nalive");
             sink.Table(["Alive Object Type", "Count"], rows, "Top types currently alive via weak reference");
+        }
     }
 
     private static void RenderCollectedHandles(WeakRefsData data, IRenderSink sink,

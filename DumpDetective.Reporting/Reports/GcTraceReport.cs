@@ -42,6 +42,22 @@ public sealed class GcTraceReport
 
         // Gen summary table
         sink.Section("By Generation", "gc-by-gen");
+        // GC count by generation — donut
+        var genCountSegs = data.GenSummary
+            .Select(g => (Label: g.Generation == 3 ? "LOH/Gen3" : $"Gen {g.Generation}",
+                          Value: (double)g.Count))
+            .ToList();
+        if (genCountSegs.Count > 0)
+            sink.DonutChart(genCountSegs, "GC count by generation", $"{data.TotalGcs}\nGCs");
+
+        // Total pause by generation — stacked bar
+        var genPauseSegs = data.GenSummary
+            .Select(g => (Label: g.Generation == 3 ? "LOH/Gen3" : $"Gen {g.Generation}",
+                          Value: g.TotalPauseMs))
+            .ToList();
+        if (genPauseSegs.Count > 0)
+            sink.StackedBar(genPauseSegs, " ms", "Total pause time by generation");
+
         var genRows = data.GenSummary.Select(g => new[]
         {
             g.Generation == 3 ? "LOH/Gen3" : $"Gen {g.Generation}",
@@ -65,6 +81,13 @@ public sealed class GcTraceReport
             p.HeapSizeBefore > 0 ? DumpHelpers.FormatSize(p.HeapSizeBefore) : "—",
             p.HeapSizeAfter  > 0 ? DumpHelpers.FormatSize(p.HeapSizeAfter)  : "—",
         }).ToList();
+        // GC pause timeline — sparkline over all events in chronological order
+        if (data.Events.Count > 1)
+        {
+            var pauseTimeline = data.Events.Select(e => e.PauseMs).ToList();
+            sink.Sparkline(pauseTimeline, "GC pause timeline", " ms");
+        }
+
         sink.Table(
             ["GC #", "Gen", "Reason", "Type", "Pause", "Heap before", "Heap after"],
             pauseRows,

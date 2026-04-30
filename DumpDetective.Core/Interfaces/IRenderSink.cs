@@ -51,6 +51,46 @@ public interface IRenderSink : IDisposable
     }
 
     /// <summary>
+    /// Renders a donut (ring) chart from named segments.
+    /// <paramref name="centerText"/> appears in the hole; use '\n' for two lines.
+    /// HTML renders an interactive SVG donut; other sinks fall back to a KV table.
+    /// </summary>
+    void DonutChart(IReadOnlyList<(string Label, double Value)> segments,
+                    string? caption = null, string? centerText = null)
+    {
+        double total = segments.Sum(s => s.Value);
+        KeyValues(segments.Select(s =>
+            (s.Label, $"{s.Value:F1}  ({(total > 0 ? s.Value / total * 100 : 0):F1}%)")).ToList(),
+            caption);
+    }
+
+    /// <summary>
+    /// Renders a 100 % stacked horizontal bar from named segments.
+    /// HTML renders a coloured segmented bar + legend; other sinks fall back to a KV table.
+    /// </summary>
+    void StackedBar(IReadOnlyList<(string Label, double Value)> segments,
+                    string? unit = null, string? caption = null,
+                    string? valueMode = null)
+    {
+        double total = segments.Sum(s => s.Value);
+        KeyValues(segments.Select(s =>
+            (s.Label, $"{s.Value:F1}{unit ?? ""}  ({(total > 0 ? s.Value / total * 100 : 0):F1}%)")).ToList(),
+            caption);
+    }
+
+    /// <summary>
+    /// Renders a compact inline sparkline time-series.
+    /// HTML renders an SVG polyline with min/avg/max annotations; other sinks emit a text summary.
+    /// </summary>
+    void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
+                   string? valueMode = null)
+    {
+        if (values.Count == 0) return;
+        string u = unit ?? "";
+        Text($"{caption ?? "Trend"}: min {values.Min():F1}{u}  avg {values.Average():F1}{u}  max {values.Max():F1}{u}");
+    }
+
+    /// <summary>
     /// Emits a structured "explain" block that answers What / Why / Impact / Action.
     /// HTML renders as a styled card; other sinks render as plain text paragraphs.
     /// All parameters are optional — pass only the ones relevant to the section.

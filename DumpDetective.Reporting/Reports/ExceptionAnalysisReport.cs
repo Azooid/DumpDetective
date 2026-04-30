@@ -31,6 +31,21 @@ public sealed class ExceptionAnalysisReport
             return;
         }
 
+        // Exception type distribution — donut above the table
+        var exTypeSegs = data.Totals
+            .OrderByDescending(kv => kv.Value)
+            .Take(8)
+            .Select(kv => {
+                string lbl = kv.Key.Contains('.')
+                    ? kv.Key[(kv.Key.LastIndexOf('.') + 1)..]
+                    : kv.Key;
+                return (Label: lbl, Value: (double)kv.Value);
+            })
+            .ToList();
+        if (exTypeSegs.Count > 0)
+            sink.DonutChart(exTypeSegs, "Exception count by type (top 8)",
+                $"{data.TotalAll:N0}\ntotal");
+
         var summaryRows = data.Totals
             .OrderByDescending(kv => kv.Value)
             .Take(top)

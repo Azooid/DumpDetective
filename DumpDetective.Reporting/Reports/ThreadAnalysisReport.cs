@@ -46,7 +46,25 @@ public sealed class ThreadAnalysisReport
             .Select(g => new[] { g.Key, g.Count().ToString("N0") })
             .ToList();
         if (categories.Count > 1)
+        {
+            var catSegs = categories
+                .Select(r => (Label: r[0], Value: (double)int.Parse(r[1].Replace(",", ""))))
+                .ToList();
+            sink.DonutChart(catSegs, "Thread count by category",
+                $"{data.TotalCount}\nthreads");
             sink.Table(["Category", "Count"], categories, "Thread categories");
+        }
+
+        // Blocked / waiting health gauges
+        if (data.TotalCount > 0 && (data.MonitorBlockedCount > 0 || data.IndependentWaitCount > 0))
+        {
+            double blockedPct = data.MonitorBlockedCount * 100.0 / data.TotalCount;
+            double waitingPct = data.IndependentWaitCount * 100.0 / data.TotalCount;
+            sink.Gauges([
+                ("Monitor-blocked",      blockedPct, "%"),
+                ("Independently waiting", waitingPct, "%"),
+            ], barMax: 100);
+        }
 
         if (data.MonitorBlockedCount >= data.TotalCount / 2 && data.TotalCount > 4)
             sink.Alert(AlertLevel.Critical,

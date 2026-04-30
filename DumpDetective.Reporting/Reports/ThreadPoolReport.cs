@@ -37,6 +37,11 @@ public sealed class ThreadPoolReport
         int max = data.MaxThreads!.Value;
         int active = data.ActiveWorkers!.Value;
         int pct = max > 0 ? active * 100 / max : 0;
+
+        // Active worker utilisation gauge
+        if (max > 0)
+            sink.Gauges([("Active worker threads", (double)active, " threads")], barMax: max);
+
         if (pct >= 100)
             sink.Alert(AlertLevel.Critical,
                 $"Thread pool saturated: {active}/{max} workers ({pct}%)",
@@ -59,6 +64,16 @@ public sealed class ThreadPoolReport
             .Select(kv => new[] { kv.Key, kv.Value.ToString("N0"), $"{kv.Value * 100.0 / totalTasks:F1}%" })
             .ToList();
         sink.Table(["State", "Count", "%"], rows, $"{totalTasks:N0} total Task objects on heap");
+
+        // Task state distribution donut
+        var taskSegs = data.TaskStateCounts
+            .Where(kv => kv.Value > 0)
+            .Select(kv => (Label: kv.Key, Value: (double)kv.Value))
+            .OrderByDescending(s => s.Value)
+            .ToList();
+        if (taskSegs.Count > 1)
+            sink.DonutChart(taskSegs, "Task state distribution",
+                $"{totalTasks:N0}\ntasks");
 
         int waitingToRun = data.TaskStateCounts.GetValueOrDefault("WaitingToRun");
         int maxThreads   = data.MaxThreads ?? 1;

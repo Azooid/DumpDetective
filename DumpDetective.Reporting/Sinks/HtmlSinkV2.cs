@@ -22,6 +22,7 @@ public sealed class HtmlSinkV2 : IRenderSink
     int  _tableSeq;
     int  _chapterSeq;
     int  _treeSeq;
+    int  _chartSeq;
 
     public bool    IsFile   => true;
     public string? FilePath => (_w.BaseStream as FileStream)?.Name;
@@ -251,11 +252,14 @@ public sealed class HtmlSinkV2 : IRenderSink
             _w.Write($"<span class=\"gauge-label\">{H(label)}</span>");
             _w.Write($"<div class=\"gauge-track\"><div class=\"gauge-fill\" style=\"width:{barWidth:F1}%\"></div></div>");
 
-            string valStr = $"{value:F1}{H(unit)}";
+            string valStr = value == Math.Floor(value)
+                ? $"{value:N0}{H(unit)}"
+                : $"{value:F1}{H(unit)}";
             if (pct > 100 && barMax > 0)
             {
                 double mult = value / barMax;
-                _w.Write($"<span class=\"gauge-val\">{valStr}<span class=\"gauge-mult\">×{mult:F1}</span></span>");
+                string multStr = mult >= 10 ? $"{mult:N1}" : $"{mult:F2}";
+                _w.Write($"<span class=\"gauge-val\">{valStr}<span class=\"gauge-mult\">×{multStr}</span></span>");
             }
             else
             {
@@ -263,6 +267,141 @@ public sealed class HtmlSinkV2 : IRenderSink
             }
             _w.WriteLine("</div>");
         }
+        _w.WriteLine("</div>");
+    }
+
+    // ── Chart types ───────────────────────────────────────────────────────────
+
+    private static readonly string[] ChartPalette =
+    [
+        "#6366f1","#22c55e","#f59e0b","#ef4444","#06b6d4",
+        "#8b5cf6","#ec4899","#84cc16","#f97316","#14b8a6",
+        "#0ea5e9","#a855f7","#10b981","#f43f5e","#eab308",
+    ];
+
+    public void DonutChart(IReadOnlyList<(string Label, double Value)> segments,
+                           string? caption = null, string? centerText = null)
+    {
+        double total = segments.Sum(s => s.Value);
+        if (total <= 0) return;
+
+        const double cx = 50, cy = 50, ro = 42, ri = 24;
+        double angle = -Math.PI / 2;   // start at 12 o'clock
+        var paths  = new System.Text.StringBuilder();
+        var legend = new System.Text.StringBuilder();
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var (lbl, val) = segments[i];
+            double frac = val / total;
+            double sweep = frac >= 0.9999 ? Math.PI * 2 * 0.9999 : frac * Math.PI * 2;
+            double endAngle = angle + sweep;
+            int large = sweep > Math.PI ? 1 : 0;
+            string color = ChartPalette[i % ChartPalette.Length];
+            string pct = $"{frac * 100:F1}%";
+
+            double x1 = cx + ro * Math.Cos(angle),  y1 = cy + ro * Math.Sin(angle);
+            double x2 = cx + ro * Math.Cos(endAngle), y2 = cy + ro * Math.Sin(endAngle);
+            double x3 = cx + ri * Math.Cos(endAngle), y3 = cy + ri * Math.Sin(endAngle);
+            double x4 = cx + ri * Math.Cos(angle),  y4 = cy + ri * Math.Sin(angle);
+
+            paths.Append($"""<path d="M{x1:F2},{y1:F2} A{ro},{ro} 0 {large},1 {x2:F2},{y2:F2} L{x3:F2},{y3:F2} A{ri},{ri} 0 {large},0 {x4:F2},{y4:F2} Z" fill="{color}" class="donut-seg"><title>{H(lbl)}: {pct}</title></path>""");
+            legend.Append($"<li class=\"donut-li\"><span class=\"donut-dot\" style=\"background:{color}\"></span><span class=\"donut-lbl\">{H(lbl)}</span><span class=\"donut-pct\">{pct}</span></li>");
+            angle = endAngle;
+        }
+
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"chart-card\"><div class=\"donut-layout\">");
+        _w.WriteLine("<svg class=\"donut-svg\" viewBox=\"0 0 100 100\">");
+        _w.Write(paths);
+        if (centerText is not null)
+        {
+            var parts = centerText.Split('\n');
+            _w.WriteLine($"<text x=\"50\" y=\"{(parts.Length > 1 ? "46" : "52")}\" class=\"donut-ctr-top\">{H(parts[0])}</text>");
+            if (parts.Length > 1)
+                _w.WriteLine($"<text x=\"50\" y=\"58\" class=\"donut-ctr-bot\">{H(parts[1])}</text>");
+        }
+        _w.WriteLine("</svg>");
+        _w.WriteLine($"<ul class=\"donut-legend\">{legend}</ul>");
+        _w.WriteLine("</div></div>");
+    }
+
+    public void StackedBar(IReadOnlyList<(string Label, double Value)> segments,
+                           string? unit = null, string? caption = null,
+                           string? valueMode = null)
+    {
+        double total = segments.Sum(s => s.Value);
+        if (total <= 0) return;
+
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+
+        var track  = new System.Text.StringBuilder();
+        var legend = new System.Text.StringBuilder();
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var (lbl, val) = segments[i];
+            double pct = val / total * 100;
+            string color = ChartPalette[i % ChartPalette.Length];
+            string displayVal = sizeMode
+                ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)val)
+                : $"{val:F1}{H(unit ?? "")}";
+            string tip = $"{H(lbl)}: {displayVal} ({pct:F1}%)";
+            track.Append($"<div class=\"sbar-seg\" style=\"width:{pct:F2}%;background:{color}\" title=\"{tip}\"></div>");
+            legend.Append($"<li class=\"sbar-li\"><span class=\"sbar-dot\" style=\"background:{color}\"></span><span class=\"sbar-lbl\">{H(lbl)}</span><span class=\"sbar-val\">{displayVal}</span><span class=\"sbar-pct\">({pct:F1}%)</span></li>");
+        }
+
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"chart-card\"><div class=\"sbar-wrap\">");
+        _w.WriteLine($"<div class=\"sbar-track\">{track}</div>");
+        _w.WriteLine($"<ul class=\"sbar-legend\">{legend}</ul>");
+        _w.WriteLine("</div></div>");
+    }
+
+    public void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
+                          string? valueMode = null)
+    {
+        if (values.Count == 0) return;
+
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string FormatVal(double v) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{H(unit ?? "")}";
+
+        double min = values.Min(), max = values.Max();
+        double range = max - min;
+        if (range == 0) range = 1;
+
+        const int W = 220, H2 = 52;
+        var pts = new System.Text.StringBuilder();
+        for (int i = 0; i < values.Count; i++)
+        {
+            double x = (double)i / Math.Max(values.Count - 1, 1) * W;
+            double y = H2 - (values[i] - min) / range * (H2 - 8) - 4;
+            pts.Append($"{x:F1},{y:F1} ");
+        }
+
+        // Filled area under the line
+        double x0 = 0, xN = W;
+        var area = new System.Text.StringBuilder();
+        area.Append($"M{x0:F1},{H2} ");
+        for (int i = 0; i < values.Count; i++)
+        {
+            double x = (double)i / Math.Max(values.Count - 1, 1) * W;
+            double y = H2 - (values[i] - min) / range * (H2 - 8) - 4;
+            area.Append($"L{x:F1},{y:F1} ");
+        }
+        area.Append($"L{xN:F1},{H2} Z");
+
+        int id = ++_chartSeq;
+        _w.WriteLine($"<div class=\"chart-card spark-wrap\">");
+        if (caption is not null) _w.WriteLine($"<span class=\"spark-label\">{H(caption)}</span>");
+        _w.WriteLine($"<svg class=\"spark-svg\" viewBox=\"0 0 {W} {H2}\">");
+        _w.WriteLine($"<defs><linearGradient id=\"sg{id}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0%\" stop-color=\"#6366f1\" stop-opacity=\".18\"/><stop offset=\"100%\" stop-color=\"#6366f1\" stop-opacity=\"0\"/></linearGradient></defs>");
+        _w.WriteLine($"<path d=\"{area}\" fill=\"url(#sg{id})\"/>");
+        _w.WriteLine($"<polyline points=\"{pts}\" class=\"spark-line\"/>");
+        _w.WriteLine("</svg>");
+        _w.WriteLine($"<span class=\"spark-stats\">min <b>{FormatVal(min)}</b> &nbsp; avg <b>{FormatVal(values.Average())}</b> &nbsp; max <b>{FormatVal(max)}</b></span>");
         _w.WriteLine("</div>");
     }
 
@@ -609,17 +748,54 @@ public sealed class HtmlSinkV2 : IRenderSink
         .kv-delta{color:#6b7280;font-size:11.5px;font-weight:400}
 
         /* ── Metric gauges ───────────────────────────────────────────────────────── */
-        .gauge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:.3rem .7rem;margin:.35rem 0 .6rem}
-        .gauge-row{display:flex;align-items:center;gap:.65rem;padding:.28rem .6rem;border-radius:6px;background:#f9fafb;border:1px solid #f3f4f6}
-        .gauge-label{color:#6b7280;font-size:12px;white-space:nowrap;flex-shrink:0;min-width:130px}
+        .gauge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(480px,1fr));gap:.3rem .7rem;margin:.35rem 0 .6rem}
+        .gauge-row{display:flex;align-items:center;gap:.65rem;padding:.28rem .6rem;border-radius:6px;background:#f9fafb;border:1px solid #f3f4f6;overflow:hidden}
+        .gauge-label{color:#6b7280;font-size:12px;white-space:nowrap;flex-shrink:0;min-width:155px}
         .gauge-track{flex:1;height:10px;background:#e9eaed;border-radius:999px;overflow:hidden;min-width:80px}
         .gauge-fill{height:100%;border-radius:999px;transition:width .2s}
         .g-ok   .gauge-fill{background:linear-gradient(90deg,#22c55e,#4ade80)}
         .g-med  .gauge-fill{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
         .g-high .gauge-fill{background:linear-gradient(90deg,#f97316,#fb923c)}
         .g-crit .gauge-fill{background:linear-gradient(90deg,#ef4444,#f87171)}
-        .gauge-val{font-weight:700;font-size:12.5px;color:#111827;white-space:nowrap;min-width:58px;text-align:right}
+        .gauge-val{font-weight:700;font-size:12.5px;color:#111827;white-space:nowrap;flex-shrink:0;text-align:right}
         .gauge-mult{font-size:10.5px;font-weight:600;color:#ef4444;margin-left:.3rem}
+
+        /* ── Chart card (shared wrapper) ─────────────────────────────── */
+        .chart-card{display:inline-flex;flex-direction:column;background:var(--bg-card,#fff);border:1px solid var(--border,#e5e7eb);border-radius:8px;padding:.6rem .9rem .5rem;margin:.4rem 0 .6rem;max-width:100%}
+        [data-theme="dark"] .chart-card{background:#1e2235;border-color:#2a3050}
+
+        /* ── Donut chart ─────────────────────────────────────────────────── */
+        .donut-layout{display:flex;align-items:center;gap:1.5rem;flex-wrap:wrap}
+        .donut-svg{width:200px;height:200px;flex-shrink:0;overflow:visible}
+        .donut-seg{cursor:pointer;transition:opacity .15s}
+        .donut-seg:hover{opacity:.75}
+        .donut-ctr-top{text-anchor:middle;dominant-baseline:middle;font-size:9.5px;font-weight:700;fill:#111827}
+        .donut-ctr-bot{text-anchor:middle;dominant-baseline:middle;font-size:7.5px;fill:#6b7280}
+        .donut-legend{list-style:none;padding:0;margin:0;columns:2 160px;column-gap:1rem}
+        .donut-li{display:flex;align-items:center;gap:.45rem;font-size:12px;break-inside:avoid;margin-bottom:.3rem;justify-content:space-between}
+        .donut-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+        .donut-lbl{color:#374151;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1 1 0;min-width:0}
+        .donut-pct{color:#6b7280;font-weight:600;min-width:44px;text-align:right;flex-shrink:0;margin-left:.4rem}
+
+        /* ── Stacked bar ─────────────────────────────────────────────── */
+        .sbar-wrap{margin:.4rem 0 .6rem}
+        .sbar-track{display:flex;height:22px;border-radius:6px;overflow:hidden;width:100%;max-width:640px;background:#f3f4f6}
+        .sbar-seg{height:100%;transition:opacity .15s;cursor:pointer}
+        .sbar-seg:hover{opacity:.8}
+        .sbar-legend{list-style:none;padding:0;margin:.45rem 0 0;display:flex;flex-wrap:wrap;gap:.3rem 1.1rem}
+        .sbar-li{display:flex;align-items:center;gap:.38rem;font-size:11.5px}
+        .sbar-dot{width:9px;height:9px;border-radius:2px;flex-shrink:0}
+        .sbar-lbl{color:#374151}
+        .sbar-val{color:#111827;font-weight:600;margin-left:.15rem}
+        .sbar-pct{color:#9ca3af;font-size:10.5px;margin-left:.1rem}
+
+        /* ── Sparkline ────────────────────────────────────────────────── */
+        .spark-wrap{display:flex;align-items:center;gap:.75rem;margin:.35rem 0 .5rem;flex-wrap:wrap;padding:.3rem .5rem;background:#f9fafb;border:1px solid #f3f4f6;border-radius:6px}
+        .spark-label{font-size:12px;color:#374151;font-weight:600;white-space:nowrap}
+        .spark-svg{flex-shrink:0;height:52px;width:220px;overflow:visible}
+        .spark-line{fill:none;stroke:#6366f1;stroke-width:1.8;stroke-linejoin:round;stroke-linecap:round}
+        .spark-stats{font-size:11.5px;color:#6b7280;white-space:nowrap}
+        .spark-stats b{color:#111827;font-weight:600}
         .score-badge{display:inline-block;padding:.12rem .55rem;border-radius:5px;font-weight:700;font-size:12.5px}
         .badge-ok  {background:#dcfce7;color:#15803d}
         .badge-warn{background:#fef9c3;color:#854d0e}
@@ -927,6 +1103,23 @@ public sealed class HtmlSinkV2 : IRenderSink
         [data-theme="dark"] .ct-leaf{color:#2e3154}
         [data-theme="dark"] .ct-toggle{color:#818cf8}
         [data-theme="dark"] .ctw-cnt{color:#4a5070}
+        /* Donut dark */
+        [data-theme="dark"] .donut-ctr-top{fill:#d1d5e0}
+        [data-theme="dark"] .donut-ctr-bot{fill:#5b6280}
+        [data-theme="dark"] .donut-lbl{color:#8892b0}
+        [data-theme="dark"] .spark-label{color:#8892b0}
+        [data-theme="dark"] .donut-pct{color:#5b6280}
+        /* Stacked bar dark */
+        [data-theme="dark"] .sbar-track{background:#1e2035}
+        [data-theme="dark"] .sbar-lbl{color:#8892b0}
+        [data-theme="dark"] .sbar-val{color:#d1d5e0}
+        [data-theme="dark"] .sbar-pct{color:#4a5070}
+        /* Sparkline dark */
+        [data-theme="dark"] .spark-stats b{color:#d1d5e0}
+        [data-theme="dark"] .spark-label{color:#8892b0}
+        [data-theme="dark"] .spark-stats{color:#5b6280}
+        [data-theme="dark"] .spark-stats b{color:#d1d5e0}
+        [data-theme="dark"] .spark-line{stroke:#818cf8}
         </style>
         </head>
         <body>
