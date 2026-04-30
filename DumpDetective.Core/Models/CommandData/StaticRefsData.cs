@@ -5,7 +5,9 @@ public sealed record StaticRefsData(
     int                             Total,
     long                            TotalSize,
     /// <summary>True when retained sizes were estimated via sampling rather than full BFS.</summary>
-    bool                            IsEstimated = false);
+    bool                            IsEstimated        = false,
+    /// <summary>Number of modules skipped due to corrupt or inconsistent PE metadata.</summary>
+    int                             SkippedModuleCount = 0);
 
 public sealed record StaticFieldEntry(
     string  DeclType,

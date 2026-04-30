@@ -78,6 +78,7 @@ public sealed class StaticRefsAnalyzer
         {
             update("Enumerating static fields...");
             var staticRoots = ctx.GetOrCreateAnalysis<StaticRootEntries>(() => StaticRootEntries.Build(ctx));
+            _skippedModules = staticRoots.SkippedModules;
             foreach (var entry in staticRoots.Entries)
             {
                 if (DumpHelpers.IsSystemType(entry.DeclType)) continue;
@@ -129,6 +130,7 @@ public sealed class StaticRefsAnalyzer
                     // Small per-worker miss cache — avoids copying the full shared MT-size map.
                     // Shared snapshot-derived entries remain read-only in mtSizeCache.
                     var localMtSizeMisses = new Dictionary<ulong, long>(64);
+                    long workerNodesWalked = 0L;
 
                     // Deduplicate identical root addresses within the same declaring type.
                     // If multiple fields point at the same object graph we only BFS it once.
@@ -138,7 +140,8 @@ public sealed class StaticRefsAnalyzer
                     {
                         var first = group.First();
                         var (fieldRet, wasEstimated) = BfsWithSampling(
-                            ctx.Heap, group.Key, visited, nodeCap, mtSizeCache, localMtSizeMisses);
+                            ctx.Heap, group.Key, visited, nodeCap, mtSizeCache, localMtSizeMisses,
+                            ref workerNodesWalked, modeLabel, update);
 
                         entries.Add(new StaticFieldEntry(
                             DeclType:     declType,
@@ -181,12 +184,13 @@ public sealed class StaticRefsAnalyzer
         });
 
         var finalFields = _fields ?? [];
-        return new StaticRefsData(finalFields, finalFields.Count, _totalSz, _isEstimated);
+        return new StaticRefsData(finalFields, finalFields.Count, _totalSz, _isEstimated, _skippedModules);
     }
 
     private List<StaticFieldEntry>? _fields;
     private long _totalSz;
     private bool _isEstimated;
+    private int  _skippedModules;
 
     /// <summary>
     /// BFS from rootAddr using a shared visited set (shared across sibling fields).
@@ -203,7 +207,10 @@ public sealed class StaticRefsAnalyzer
     private static (long Size, bool Estimated) BfsWithSampling(
         ClrHeap heap, ulong rootAddr, HashSet<ulong> visited, long nodeCap,
         IReadOnlyDictionary<ulong, long> mtSizeCache,
-        Dictionary<ulong, long> localMtSizeMisses)
+        Dictionary<ulong, long> localMtSizeMisses,
+        ref long sharedNodesWalked,
+        string modeLabel,
+        Action<string> update)
     {
         if (rootAddr == 0 || !visited.Add(rootAddr)) return (0, false);
         var root = heap.GetObject(rootAddr);
@@ -213,6 +220,8 @@ public sealed class StaticRefsAnalyzer
         int  sampledNodes = 1;
         var  stack        = new Stack<ulong>(64);
         stack.Push(rootAddr);
+        const int ProgressInterval = 250_000;
+        long lastReport = 0;
 
         while (stack.Count > 0)
         {
@@ -235,7 +244,8 @@ public sealed class StaticRefsAnalyzer
 
                     // Look up size from MT cache — avoids heap.GetObject(childAddr)
                     // which would read the object header from the dump file.
-                    // Fall back to GetObject only when MT is unknown (rare for non-system types).
+                    // Variable-size types (string, array) cannot be cached by MT because
+                    // each instance has a unique size — always read from the object directly.
                     long childSize = 0;
                     var  childType = heap.GetObjectType(childAddr);
                     if (childType is not null)
@@ -256,10 +266,18 @@ public sealed class StaticRefsAnalyzer
                         childSize = (long)childObj.Size;
                     }
 
-                    if (childSize == 0) continue;
+                    if (childSize == 0) childSize = 0; // still recurse — child may reference large objects
                     sampledSize  += childSize;
-                    sampledNodes++;
+                    if (childSize > 0) sampledNodes++;
                     stack.Push(childAddr);
+
+                    long total = Interlocked.Increment(ref sharedNodesWalked);
+                    if (total - lastReport >= ProgressInterval)
+                    {
+                        lastReport = total;
+                        update($"BFS [{modeLabel}] \u2014 {total:N0} nodes  \u2022  {DumpHelpers.FormatSize(sampledSize)} retained so far...");
+                    }
+
                     if ((long)visited.Count >= nodeCap) break;
                 }
             }

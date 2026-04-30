@@ -43,6 +43,12 @@ public sealed class StaticRefsReport
             "Static object references are permanent GC roots — they keep entire object graphs alive for the process lifetime.",
             "Prefer scoped DI registrations over static state. Use WeakReference<T> for caches.");
 
+        if (data.SkippedModuleCount > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{data.SkippedModuleCount} module(s) skipped due to corrupt or inconsistent PE metadata.",
+                "These modules could not be enumerated for static fields. Results may be incomplete. " +
+                "This typically affects dynamic modules, mixed-mode assemblies, or partially-loaded modules in the dump.");
+
         RenderFieldAccordions(sink, data, showAddr);
     }
 

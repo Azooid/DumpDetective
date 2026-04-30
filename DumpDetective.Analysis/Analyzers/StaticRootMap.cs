@@ -9,15 +9,19 @@ namespace DumpDetective.Analysis.Analyzers;
 /// </summary>
 internal sealed class StaticRootAddresses
 {
-    public HashSet<ulong> Addresses { get; }
-    private StaticRootAddresses(HashSet<ulong> addresses)
+    public HashSet<ulong> Addresses        { get; }
+    public int            SkippedModules   { get; }
+
+    private StaticRootAddresses(HashSet<ulong> addresses, int skippedModules)
     {
-        Addresses  = addresses;
+        Addresses      = addresses;
+        SkippedModules = skippedModules;
     }
 
     internal static StaticRootAddresses Build(DumpContext ctx)
     {
-        var addresses = new HashSet<ulong>();
+        var addresses      = new HashSet<ulong>();
+        int skippedModules = 0;
 
         try
         {
@@ -25,7 +29,11 @@ internal sealed class StaticRootAddresses
             {
                 foreach (var module in appDomain.Modules)
                 {
-                    foreach (var (mt, _) in module.EnumerateTypeDefToMethodTableMap())
+                    IReadOnlyList<(ulong, int)> typeDefs;
+                    try   { typeDefs = module.EnumerateTypeDefToMethodTableMap().ToList(); }
+                    catch { skippedModules++; continue; } // skip modules with corrupt/inconsistent metadata
+
+                    foreach (var (mt, _) in typeDefs)
                     {
                         if (mt == 0) continue;
                         var clrType = ctx.Heap.GetTypeByMethodTable(mt);
@@ -48,7 +56,7 @@ internal sealed class StaticRootAddresses
         }
         catch { }
 
-        return new StaticRootAddresses(addresses);
+        return new StaticRootAddresses(addresses, skippedModules);
     }
 }
 
@@ -59,16 +67,19 @@ internal sealed class StaticRootAddresses
 /// </summary>
 internal sealed class StaticRootEntries
 {
-    public IReadOnlyList<StaticRootEntry> Entries { get; }
+    public IReadOnlyList<StaticRootEntry> Entries        { get; }
+    public int                            SkippedModules { get; }
 
-    private StaticRootEntries(List<StaticRootEntry> entries)
+    private StaticRootEntries(List<StaticRootEntry> entries, int skippedModules)
     {
-        Entries = entries;
+        Entries        = entries;
+        SkippedModules = skippedModules;
     }
 
     internal static StaticRootEntries Build(DumpContext ctx)
     {
-        var entries = new List<StaticRootEntry>(4096);
+        var entries        = new List<StaticRootEntry>(4096);
+        int skippedModules = 0;
 
         try
         {
@@ -76,7 +87,11 @@ internal sealed class StaticRootEntries
             {
                 foreach (var module in appDomain.Modules)
                 {
-                    foreach (var (mt, _) in module.EnumerateTypeDefToMethodTableMap())
+                    IReadOnlyList<(ulong, int)> typeDefs;
+                    try   { typeDefs = module.EnumerateTypeDefToMethodTableMap().ToList(); }
+                    catch { skippedModules++; continue; } // skip modules with corrupt/inconsistent metadata
+
+                    foreach (var (mt, _) in typeDefs)
                     {
                         if (mt == 0) continue;
                         var clrType = ctx.Heap.GetTypeByMethodTable(mt);
@@ -102,7 +117,7 @@ internal sealed class StaticRootEntries
         }
         catch { }
 
-        return new StaticRootEntries(entries);
+        return new StaticRootEntries(entries, skippedModules);
     }
 }
 

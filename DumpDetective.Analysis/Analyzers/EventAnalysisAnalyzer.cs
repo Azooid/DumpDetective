@@ -29,9 +29,12 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     public void Consume(in ClrObject obj, HeapTypeMeta meta, ClrHeap heap)
     {
         if (meta.DelegateFields.Length == 0 || _totals is null) return;
+        // Skip system-type publishers and generic field names — matches EventDetailConsumer.
+        if (DumpHelpers.IsSystemType(meta.Name)) return;
 
         foreach (var field in meta.DelegateFields)
         {
+            if (field.Name is "action" or "callback" or "handler" or "func" or "del" or "delegate") continue;
             try
             {
                 var delVal = field.Field.ReadObject(obj.Address, false);

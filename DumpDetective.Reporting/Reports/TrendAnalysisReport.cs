@@ -121,7 +121,7 @@ public static class TrendAnalysisReport
             }
 
             IR("Health Score",
-                s => (s.HealthScore, $"{s.HealthScore}/100 {ScoreLabel(s.HealthScore)}"),
+                s => (s.HealthScore + 0.001, $"{s.HealthScore}/100 {ScoreLabel(s.HealthScore)}"),
                 warnAt: tt.ScoreWarn, critAt: tt.ScoreCrit, higherIsBad: false);
             IR("Heap Total",
                 s => (s.TotalHeapBytes / 1048576.0, DumpHelpers.FormatSize(s.TotalHeapBytes)),

@@ -423,7 +423,7 @@ public sealed class HtmlSinkV2 : IRenderSink
         .nav-brand-sub{font-size:9px;color:#9ca3af;letter-spacing:.06em;text-transform:uppercase}
         /* Search */
         .nav-search-wrap{padding:.5rem .75rem .45rem;border-bottom:1px solid #f3f4f6;flex-shrink:0;position:relative}
-        #search-box{width:100%;padding:.3rem;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239ca3af' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cpath d='m21 21-4.35-4.35'/%3E%3C/svg%3E") .5rem center/12px no-repeat;color:#374151;font-size:11px;outline:none;transition:border-color .12s,background .12s}
+        #search-box{width:100%;padding:.3rem;border-radius:6px;border:1px solid #e5e7eb;background:#f9fafb .5rem center/12px no-repeat;color:#374151;font-size:11px;outline:none;transition:border-color .12s,background .12s}
         #search-box::placeholder{color:#9ca3af}
         #search-box:focus{border-color:#4f46e5;background:#fff}
         #search-clear{position:absolute;right:1rem;top:50%;transform:translateY(-50%);width:15px;height:15px;border-radius:50%;background:#d1d5db;color:#6b7280;border:none;cursor:pointer;font-size:9px;font-weight:700;display:none;align-items:center;justify-content:center;line-height:1;padding:0;transition:background .1s,color .1s}

@@ -18,40 +18,61 @@ namespace DumpDetective.Analysis.Analyzers;
 /// </summary>
 public sealed class GcRootsAnalyzer
 {
-    public GcRootsData Analyze(DumpContext ctx, string typeName, int maxResults = 10, bool noIndirect = false)
+    public GcRootsData Analyze(DumpContext ctx, string typeName, int maxResults = 10,
+                               bool noIndirect = false, ulong singleAddress = 0)
     {
         var targets     = new List<GcRootTarget>();
         var directRoots = new Dictionary<ulong, List<GcRootInfo>>();
         var referrers   = new Dictionary<ulong, List<ReferrerInfo>>();
         bool capped     = false;
 
-        // Pass 1: find matching objects
-        CommandBase.RunStatus($"Finding instances of '{typeName}'...", update =>
+        if (singleAddress != 0)
         {
-            long count = 0;
-            var  sw    = System.Diagnostics.Stopwatch.StartNew();
-            int found  = 0;
-            foreach (var obj in ctx.Heap.EnumerateObjects())
+            // Fast path: address supplied — resolve directly without heap scan.
+            CommandBase.RunStatus($"Resolving object at 0x{singleAddress:X}...", () =>
             {
-                if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
-                count++;
-                if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                var obj = ctx.Heap.GetObject(singleAddress);
+                if (obj.IsValid && !obj.IsNull && obj.Type is not null)
                 {
-                    update($"Finding instances \u2014 {count:N0} objects scanned  \u2022  {found} matches...");
-                    sw.Restart();
+                    string gen = GetGen(ctx.Heap, obj.Address);
+                    targets.Add(new GcRootTarget(obj.Address, obj.Type.Name ?? typeName, (long)obj.Size, gen));
+                    directRoots[obj.Address] = new List<GcRootInfo>();
+                    referrers[obj.Address]   = new List<ReferrerInfo>();
                 }
-                string objType = obj.Type.Name ?? "";
-                if (!objType.Contains(typeName, StringComparison.OrdinalIgnoreCase)) continue;
+            });
+        }
+        else
+        {
+            // Pass 1: find matching objects by type name.
+            CommandBase.RunStatus($"Finding instances of '{typeName}'...", update =>
+            {
+                long count = 0;
+                var  sw    = System.Diagnostics.Stopwatch.StartNew();
+                var  total = System.Diagnostics.Stopwatch.StartNew();
+                int found  = 0;
+                foreach (var obj in ctx.Heap.EnumerateObjects())
+                {
+                    if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    count++;
+                    if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                    {
+                        update($"Finding instances \u2014 {count:N0} objects scanned  \u2022  {found} matches...");
+                        sw.Restart();
+                    }
+                    string objType = obj.Type.Name ?? "";
+                    if (!objType.Contains(typeName, StringComparison.OrdinalIgnoreCase)) continue;
 
-                if (found >= maxResults) { capped = true; break; }
+                    if (found >= maxResults) { capped = true; break; }
 
-                string gen = GetGen(ctx.Heap, obj.Address);
-                targets.Add(new GcRootTarget(obj.Address, objType, (long)obj.Size, gen));
-                directRoots[obj.Address] = new List<GcRootInfo>();
-                referrers[obj.Address]   = new List<ReferrerInfo>();
-                found++;
-            }
-        });
+                    string gen = GetGen(ctx.Heap, obj.Address);
+                    targets.Add(new GcRootTarget(obj.Address, objType, (long)obj.Size, gen));
+                    directRoots[obj.Address] = new List<GcRootInfo>();
+                    referrers[obj.Address]   = new List<ReferrerInfo>();
+                    found++;
+                }
+                update($"[SCAN]heap|{count}|{total.ElapsedMilliseconds}");
+            });
+        }
 
         if (targets.Count == 0)
         {
@@ -76,11 +97,20 @@ public sealed class GcRootsAnalyzer
         // Pass 2b: optional 1-hop referrers
         if (!noIndirect)
         {
-            CommandBase.RunStatus("Building referrer map (1-hop)...", () =>
+            CommandBase.RunStatus("Building referrer map (1-hop)...", update =>
             {
+                long count = 0;
+                var  sw    = System.Diagnostics.Stopwatch.StartNew();
+                var  total = System.Diagnostics.Stopwatch.StartNew();
                 foreach (var obj in ctx.Heap.EnumerateObjects())
                 {
                     if (!obj.IsValid || obj.Type is null || obj.Type.IsFree) continue;
+                    count++;
+                    if ((count & 0x3FFF) == 0 && sw.ElapsedMilliseconds >= 200)
+                    {
+                        update($"Building referrer map \u2014 {count:N0} objects scanned...");
+                        sw.Restart();
+                    }
                     try
                     {
                         foreach (var child in obj.EnumerateReferences(carefully: false))
@@ -92,6 +122,7 @@ public sealed class GcRootsAnalyzer
                     }
                     catch { }
                 }
+                update($"[SCAN]heap|{count}|{total.ElapsedMilliseconds}");
             });
         }
 

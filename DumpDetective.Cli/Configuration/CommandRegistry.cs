@@ -148,6 +148,9 @@ public static class CommandRegistry
 
         new ObjectInspectCommand(),
 
+        // ── bfs cache ─────────────────────────────────────────────────────────
+        new BuildBfsCommand(),
+
         // ── trend ─────────────────────────────────────────────────────────────
         new TrendAnalysisCommand(),
         new TrendRenderCommand(),

@@ -71,7 +71,9 @@ public sealed class AnalyzeCommand : ICommand
 
         try
         {
+            var (loadWs, loadMgd) = ToolMemoryDiagnostic.SampleForStep();
             using var dumpCtx = DumpContext.Open(dumpPath);
+            ToolMemoryDiagnostic.RecordPipelineStep("Load dump", loadWs, loadMgd);
             var clrVer = dumpCtx.ClrVersion ?? "unknown";
             log.Success($"Dump loaded  |  CLR {clrVer}", indent: true);
             if (dumpCtx.ArchWarning is not null)
@@ -81,9 +83,11 @@ public sealed class AnalyzeCommand : ICommand
             log.SectionHeader("Collection");
 
             var collSw = Stopwatch.StartNew();
+            var (collWs, collMgd) = ToolMemoryDiagnostic.SampleForStep();
             var snap = full
                 ? DumpCollector.CollectFull(dumpCtx, log.OnProgress)
                 : DumpCollector.CollectLightweight(dumpCtx, log.OnProgress);
+            ToolMemoryDiagnostic.RecordPipelineStep(full ? "Heap walk + scoring (full)" : "Heap walk + scoring", collWs, collMgd);
 
             string scoreLabel = snap.HealthScore >= 80 ? "HEALTHY" : snap.HealthScore >= 50 ? "DEGRADED" : "CRITICAL";
             string scoreColor = snap.HealthScore >= 80 ? "green" : snap.HealthScore >= 50 ? "yellow" : "red";
@@ -96,7 +100,9 @@ public sealed class AnalyzeCommand : ICommand
             log.SectionHeader("Rendering Output");
 
             using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
+            var (rptWs, rptMgd) = ToolMemoryDiagnostic.SampleForStep();
             AnalyzeReport.RenderReport(snap, sink, ctx: dumpCtx);
+            ToolMemoryDiagnostic.RecordPipelineStep("Build summary", rptWs, rptMgd);
             log.Check("Summary report rendered.");
 
             if (full)
@@ -108,7 +114,9 @@ public sealed class AnalyzeCommand : ICommand
                     CommandBase.SetSharedOverride("exact", "true");
                 else if (bfsDepth.HasValue)
                     CommandBase.SetSharedOverride("bfs-depth", bfsDepth.Value.ToString());
+                var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);
+                ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
             }
 

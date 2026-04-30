@@ -30,13 +30,16 @@ internal sealed class AsyncMethodConsumer : IHeapObjectConsumer
 
         // Only count suspended (Awaiting) state machines in the backlog: state >= 0.
         // Completed (-1) and Initial (-2) state machines must not inflate the backlog total.
+        // If the <>1__state field is absent or unreadable the state is "Unknown" —
+        // matches AsyncStacksAnalyzer.ReadStateLabel which also returns "Unknown" in
+        // those cases and does not count them in the backlog.
         try
         {
             var field = obj.Type?.GetFieldByName("<>1__state");
-            if (field is null || field.Read<int>(obj, interior: false) >= 0)
+            if (field is not null && field.Read<int>(obj, interior: false) >= 0)
                 BacklogTotal++;
         }
-        catch { BacklogTotal++; } // Conservative: count on read failure
+        catch { } // Unknown state on read failure — do not count
     }
 
     public void OnWalkComplete() { }

@@ -345,11 +345,18 @@ public static class HeapWalker
                 {
                     var item = arr.GetObjectValue(i);
                     if (!item.IsValid || item.IsNull) continue;
-                    if (!item.ReadObjectField("_target").IsNull) count++;
+                    var target = item.ReadObjectField("_target");
+                    if (target.IsNull) continue;
+                    // Skip system-type subscriber targets — matches EventDetailConsumer.TryGetSub filter.
+                    if (DumpHelpers.IsSystemType(target.Type?.Name ?? string.Empty)) continue;
+                    count++;
                 }
                 return count;
             }
-            return del.ReadObjectField("_target").IsNull ? 0 : 1;
+            // Single-cast delegate
+            var singleTarget = del.ReadObjectField("_target");
+            if (singleTarget.IsNull) return 0;
+            return DumpHelpers.IsSystemType(singleTarget.Type?.Name ?? string.Empty) ? 0 : 1;
         }
         catch { return 0; }
     }

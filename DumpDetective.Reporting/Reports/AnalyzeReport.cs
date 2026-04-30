@@ -48,7 +48,9 @@ public static class AnalyzeReport
                     try
                     {
                         log.StartParallelItem(cmds[i].Name);
+                        var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
                         var doc = cmds[i].BuildReport(ctx);
+                        ToolMemoryDiagnostic.RecordAnalyzerStep(cmds[i].Name, wsBefore, mgdBefore);
                         var details = CommandBase.EndTrace();
                         ReportDocReplay.Replay(doc, captures[i]);
                         foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
@@ -93,7 +95,9 @@ public static class AnalyzeReport
                             CommandBase.SuppressVerbose = true;
                             try
                             {
+                                var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
                                 var doc = cmds[i].BuildReport(ctx);
+                                ToolMemoryDiagnostic.RecordAnalyzerStep(cmds[i].Name, wsBefore, mgdBefore);
                                 ReportDocReplay.Replay(doc, captures[i]);
                                 foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
                                 task.Increment(1);

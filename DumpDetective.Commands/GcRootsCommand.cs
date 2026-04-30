@@ -19,11 +19,14 @@ public sealed class GcRootsCommand : ICommand
         Usage: DumpDetective gc-roots <dump-file> --type <typename> [options]
 
         Options:
-          -t, --type <name>       Type name to trace (case-insensitive substring)  [required]
-          -n, --max-results <N>   Max instances to trace (default: 10)
+          -t, --type <name>       Type name to trace (case-insensitive substring)
+          --address <0xADDR>      Trace a single object by address (skips heap scan; --type optional)
+          -n, --max-results <N>   Max instances to trace when using --type (default: 10)
           --no-indirect           Skip 1-hop referrer scan (faster on large dumps)
           -o, --output <f>        Write report to file (.html / .md / .txt / .json)
           -h, --help              Show this help
+
+        At least one of --type or --address is required.
         """;
 
     public int Run(string[] args)
@@ -32,17 +35,33 @@ public sealed class GcRootsCommand : ICommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         string? typeName   = a.GetOption("type") ?? a.GetOption("t");
+        string? addrStr    = a.GetOption("address");
         int     maxResults = a.GetInt("max-results", 10);
         bool    noIndirect = a.HasFlag("no-indirect");
 
-        if (typeName is null)
+        ulong singleAddress = 0;
+        if (addrStr is not null)
         {
-            AnsiConsole.MarkupLine("[bold red]✗[/] --type is required.");
+            string normalized = addrStr.StartsWith("0x", StringComparison.OrdinalIgnoreCase)
+                ? addrStr[2..] : addrStr;
+            if (!ulong.TryParse(normalized, System.Globalization.NumberStyles.HexNumber,
+                    null, out singleAddress))
+            {
+                AnsiConsole.MarkupLine($"[bold red]✗[/] Invalid address: {addrStr}");
+                return 1;
+            }
+        }
+
+        if (typeName is null && singleAddress == 0)
+        {
+            AnsiConsole.MarkupLine("[bold red]✗[/] --type or --address is required.");
             return 1;
         }
 
+        typeName ??= "<unknown>";
+
         return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
-            (ctx, sink) => RenderWith(ctx, sink, typeName, maxResults, noIndirect));
+            (ctx, sink) => RenderWith(ctx, sink, typeName, maxResults, noIndirect, singleAddress));
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
@@ -50,13 +69,13 @@ public sealed class GcRootsCommand : ICommand
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,
-        string typeName, int maxResults, bool noIndirect)
+        string typeName, int maxResults, bool noIndirect, ulong singleAddress = 0)
     {
         CommandBase.RenderHeader("GC Root Analysis", ctx, sink);
 
         if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
 
-        var data = _analyzer.Analyze(ctx, typeName, maxResults, noIndirect);
+        var data = _analyzer.Analyze(ctx, typeName, maxResults, noIndirect, singleAddress);
         _report.Render(data, sink, noIndirect);
     }
 }

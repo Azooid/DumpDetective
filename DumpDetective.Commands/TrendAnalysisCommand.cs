@@ -122,21 +122,23 @@ public sealed class TrendAnalysisCommand : ICommand
             var dispName = ShortName(path);
             DumpSnapshot? snap = null;
 
-            ToolMemoryDiagnostic.Start();
-
             log.Stage($"Dump {i + 1}/{dumpPaths.Count}: {dispName}");
             log.Info("Loading dump file...", indent: true);
 
             {
+                var (loadWs, loadMgd) = ToolMemoryDiagnostic.SampleForStep();
                 using var dumpCtx = DumpContext.Open(path);
+                ToolMemoryDiagnostic.RecordPipelineStep($"Load dump ({label})", loadWs, loadMgd);
 
                 var clrVer = dumpCtx.ClrVersion ?? "unknown";
                 var archNote = dumpCtx.ArchWarning is not null ? $"  ⚠ {dumpCtx.ArchWarning}" : string.Empty;
                 log.Success($"Dump loaded  |  CLR {clrVer}{archNote}", indent: true);
 
+                var (collWs, collMgd) = ToolMemoryDiagnostic.SampleForStep();
                 snap = full
                     ? DumpCollector.CollectFull(dumpCtx, log.OnProgress)
                     : DumpCollector.CollectLightweight(dumpCtx, log.OnProgress);
+                ToolMemoryDiagnostic.RecordPipelineStep(full ? $"Heap walk + scoring — full ({label})" : $"Heap walk + scoring ({label})", collWs, collMgd);
 
                 snapshots.Add(snap);
                 var sc = TrendAnalysisReport.ScoreColor(snap.HealthScore);
@@ -153,7 +155,9 @@ public sealed class TrendAnalysisCommand : ICommand
                         cap.Header(
                             $"Per-Dump Report: {label}  —  {Path.GetFileName(path)}",
                             $"{snap.FileTime:yyyy-MM-dd HH:mm:ss}  |  CLR {clrVer}  |  Score: {snap.HealthScore}/100  {TrendAnalysisReport.ScoreLabel(snap.HealthScore)}");
+                        var (rptWs, rptMgd) = ToolMemoryDiagnostic.SampleForStep();
                         AnalyzeReport.RenderReport(snap, cap, includeHeader: false);
+                        ToolMemoryDiagnostic.RecordPipelineStep($"Build summary ({label})", rptWs, rptMgd);
                         CommandBase.SetOverride("top",       strTop.ToString());
                         CommandBase.SetOverride("min-count", strMinCnt.ToString());
                         CommandBase.SetOverride("min-waste", strMinWaste.ToString());
@@ -161,7 +165,11 @@ public sealed class TrendAnalysisCommand : ICommand
                             CommandBase.SetSharedOverride("exact", "true");
                         else if (bfsDepth.HasValue)
                             CommandBase.SetSharedOverride("bfs-depth", bfsDepth.Value.ToString());
+                        var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
+                        ToolMemoryDiagnostic.BeginAnalyzerGroup(label);
                         AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, log);
+                        ToolMemoryDiagnostic.EndAnalyzerGroup();
+                        ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
                         CommandBase.ClearOverrides();
                         capturedSubReports[i] = cap.GetDoc();
                     }
@@ -233,7 +241,9 @@ public sealed class TrendAnalysisCommand : ICommand
         log.SectionHeader("Rendering Output");
         log.Info("Building trend report...");
         using var sink = SinkFactory.CreateMulti(renderPaths);
+        var (trendWs, trendMgd) = ToolMemoryDiagnostic.SampleForStep();
         TrendAnalysisReport.RenderTrend(snapshots, sink, ignoreEvents, baselineIndex, dumpPrefix);
+        ToolMemoryDiagnostic.RecordPipelineStep("Render trend report", trendWs, trendMgd);
         log.Check("Trend report rendered.");
 
         if (capturedSubReports is not null)

@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Analysis.Consumers;
 
@@ -34,13 +35,16 @@ internal sealed class LightweightStatsConsumer : IHeapObjectConsumer
         if (meta.IsWcf)
         {
             WcfCount++;
-            // CommunicationState.Faulted == 5 — check the backing field name variants
-            // used across different WCF / CoreWCF assemblies.
-            if (TryReadIntField(obj, "_state", "_communicationState") == 5)
+            // CommunicationState.Faulted == 5 — check all backing field name variants
+            // used across different WCF / CoreWCF assemblies (matches WcfChannelsAnalyzer).
+            if (TryReadIntField(obj, "_state", "_communicationState", "state") == 5)
                 WcfFaulted++;
         }
 
         if (meta.IsConnection) ConnCount++;
+
+        // Skip system-type publishers — matches EventDetailConsumer filter.
+        if (meta.DelegateFields.Length == 0 || DumpHelpers.IsSystemType(meta.Name)) return;
 
         // Walk each delegate-typed field to count subscribers.
         // This is the lightweight equivalent of EventDetailConsumer — it accumulates
@@ -48,6 +52,9 @@ internal sealed class LightweightStatsConsumer : IHeapObjectConsumer
         // subscriber details, keeping memory usage minimal.
         foreach (var field in meta.DelegateFields)
         {
+            // Skip generic-named fields that are unlikely to be event backing fields.
+            // Matches EventDetailConsumer.Consume() filter.
+            if (field.Name is "action" or "callback" or "handler" or "func" or "del" or "delegate") continue;
             try
             {
                 var delVal = field.Field.ReadObject(obj.Address, false);
