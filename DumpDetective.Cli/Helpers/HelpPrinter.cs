@@ -29,6 +29,8 @@ internal static class HelpPrinter
     private static readonly (string Heading, string[] Names)[] s_traceGroups =
     [
         ("Threads / Concurrency",     ["threadpool-starvation"]),
+        ("CPU / Allocation",          ["cpu-trace", "alloc-trace"]),
+        ("GC / Exceptions / Locks",   ["gc-trace", "exceptions-trace", "contention-trace"]),
     ];
 
     public static void Print(IEnumerable<ICommand> commands)
@@ -56,9 +58,9 @@ internal static class HelpPrinter
             }
         }
 
-        // ── .nettrace commands ────────────────────────────────────────────────
+        // ── trace commands (.nettrace / .etl / .etl.zip) ─────────────────────
         grid.AddRow("", "");
-        grid.AddRow("[bold white on grey] .nettrace commands [/]", "");
+        grid.AddRow("[bold white on grey] trace commands (.nettrace / .etl / .etl.zip) [/]", "");
         foreach (var (heading, names) in s_traceGroups)
         {
             grid.AddRow("", "");

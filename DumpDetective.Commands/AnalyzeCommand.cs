@@ -116,22 +116,38 @@ public sealed class AnalyzeCommand : ICommand
                 else if (bfsDepth.HasValue)
                     CommandBase.SetSharedOverride("bfs-depth", bfsDepth.Value.ToString());
 
-                // Pre-load the BFS index cache once on the main thread before the
-                // parallel sub-report workers start.  Workers call
+                // Pre-load (or build) the BFS index cache once on the main thread before
+                // the parallel sub-report workers start.  Workers call
                 // GetOrCreateAnalysis<BfsCacheBox>() which returns instantly from the
                 // Lazy<T> already seeded here — no worker ever touches the file.
                 var bfsCachePath = BfsIndexCache.CachePath(dumpPath);
+                BfsIndexCache? bfsReady = null;
+                var (bfsWs, bfsMgd) = ToolMemoryDiagnostic.SampleForStep();
                 if (BfsIndexCache.IsValid(bfsCachePath, dumpPath))
                 {
                     log.Info("Loading BFS index cache...", indent: true);
-                    var (bfsWs, bfsMgd) = ToolMemoryDiagnostic.SampleForStep();
-                    BfsIndexCache? bfsLoaded = null;
                     CommandBase.RunStatus("Loading BFS index...", update =>
-                        bfsLoaded = BfsIndexCache.Load(bfsCachePath, update));
-                    dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsLoaded));
+                        bfsReady = BfsIndexCache.Load(bfsCachePath, update));
                     ToolMemoryDiagnostic.RecordPipelineStep("BFS cache load", bfsWs, bfsMgd);
-                    log.Check($"BFS index loaded  ({bfsLoaded!.NodeCount:N0} nodes, {bfsLoaded.EdgeCount:N0} edges)", indent: true);
+                    log.Check($"BFS index loaded  ({bfsReady!.NodeCount:N0} nodes, {bfsReady.EdgeCount:N0} edges)", indent: true);
                 }
+                else
+                {
+                    log.Info("No BFS index found — building now (this runs once per dump)...", indent: true);
+                    BfsPass1State p1 = null!;
+                    BfsPass2State p2 = null!;
+                    CommandBase.RunStatus("BFS pass 1/3 — enumerating objects...",
+                        update => p1 = BfsIndexBuilder.BuildPass1(dumpCtx.Heap, update));
+                    CommandBase.RunStatus($"BFS pass 2/3 — counting edges ({p1.NodeCount:N0} nodes)...",
+                        update => p2 = BfsIndexBuilder.BuildPass2(dumpCtx.Heap, p1, update));
+                    CommandBase.RunStatus($"BFS pass 3/3 — filling {p2.TotalEdges:N0} edges...",
+                        update => bfsReady = BfsIndexBuilder.BuildPass3(dumpCtx.Heap, p2, update));
+                    CommandBase.RunStatus("Saving BFS index...",
+                        update => bfsReady!.Save(bfsCachePath, dumpPath, update));
+                    ToolMemoryDiagnostic.RecordPipelineStep("BFS cache build", bfsWs, bfsMgd);
+                    log.Check($"BFS index built and saved  ({bfsReady!.NodeCount:N0} nodes, {bfsReady.EdgeCount:N0} edges)", indent: true);
+                }
+                dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsReady));
 
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);

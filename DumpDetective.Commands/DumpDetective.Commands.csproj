@@ -3,6 +3,7 @@
   <ItemGroup>
     <ProjectReference Include="..\DumpDetective.Core\DumpDetective.Core.csproj" />
     <ProjectReference Include="..\DumpDetective.Analysis\DumpDetective.Analysis.csproj" />
+    <ProjectReference Include="..\DumpDetective.Trace\DumpDetective.Trace.csproj" />
     <ProjectReference Include="..\DumpDetective.Reporting\DumpDetective.Reporting.csproj" />
   </ItemGroup>
 
@@ -21,6 +22,7 @@
     <Using Include="DumpDetective.Core.Utilities" />
     <Using Include="DumpDetective.Analysis" />
     <Using Include="DumpDetective.Analysis.Analyzers" />
+    <Using Include="DumpDetective.Trace.Analyzers" />
     <Using Include="DumpDetective.Core.Models.CommandData" />
     <Using Include="DumpDetective.Reporting" />
     <Using Include="DumpDetective.Reporting.Reports" />

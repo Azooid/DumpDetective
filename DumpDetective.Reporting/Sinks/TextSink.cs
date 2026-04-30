@@ -69,6 +69,27 @@ public sealed class TextSink : IRenderSink
     public void BeginDetails(string title, bool open = false) => _w.WriteLine($"  ▸ {title}");
     public void EndDetails() => _w.WriteLine();
 
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+                         string? caption = null, int topN = 20)
+    {
+        if (caption is not null) _w.WriteLine($"  {caption}");
+        int shown = 0;
+        RenderCtNodes(roots, 0, topN, ref shown);
+    }
+
+    void RenderCtNodes(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string(' ', 4 + depth * 2);
+            _w.WriteLine($"{indent}{n.InclusivePct,5:F1}%  {n.Method}  [{n.Module}]");
+            if (n.Children is { Count: > 0 })
+                RenderCtNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
+
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
     {

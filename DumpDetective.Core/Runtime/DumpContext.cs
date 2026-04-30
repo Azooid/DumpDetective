@@ -89,7 +89,9 @@ public sealed class DumpContext : IDisposable
     /// (e.g. replace a loaded <c>BfsCacheBox</c> with an empty one to free the CSR arrays).
     /// </summary>
     public void ReplaceAnalysis<T>(T replacement) where T : class
-        => _onceCache[typeof(T)] = (object)new Lazy<T>(() => replacement);
+    {
+        _onceCache[typeof(T)] = (object)new Lazy<T>(() => replacement);
+    }
 
     private DumpContext(string path, DataTarget dt, ClrRuntime rt, string? archWarning)
     {

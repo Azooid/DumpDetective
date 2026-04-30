@@ -401,7 +401,7 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `thread-pool-starvation` | No | ThreadPool starvation heuristic analysis |
 | `type-instances` | No | All instances of a given type (`--type <name>` required) |
 | `object-inspect` | No | All field values of an object with optional retained-size BFS (`--address <hex>` required) |
-| `build-bfs` | No | Pre-build the BFS retained-size index cache (`.bfs.idx`) for a dump file |
+| `build-bfs` | No | Pre-build the BFS retained-size index cache (`.bfs.idx`) for a dump file or every dump in a directory |
 
 ---
 
@@ -447,13 +447,16 @@ DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained --retained
 
 ### `build-bfs`
 
-Pre-builds and saves a BFS forward-reference index (`.bfs.idx`) alongside the dump file. Once built, `object-inspect --retained` loads it in seconds instead of re-walking the entire heap.
+Pre-builds and saves a BFS forward-reference index (`.bfs.idx`) alongside each dump file. Once built, `object-inspect --retained` loads it in seconds instead of re-walking the entire heap.
+
+Accepts either a **single dump file** or a **directory** containing multiple dumps. When a directory is given, each `.dmp`/`.mdmp` file is processed sequentially — one at a time so peak memory stays bounded.
 
 ```
-DumpDetective build-bfs <dump-file> [options]
+DumpDetective build-bfs <dump-file-or-directory> [options]
 
 Options:
   --force, -f    Rebuild even if a valid cache already exists
+  --recurse, -r  When input is a directory, also search subdirectories
   -h, --help     Show this help
 ```
 
@@ -485,11 +488,17 @@ Once loaded, `ComputeRetained` runs a pure in-memory BFS with zero ClrMD I/O, co
 
 **Examples:**
 ```bash
-# Build and save (one-time setup)
+# Build and save for a single dump (one-time setup)
 DumpDetective build-bfs app.dmp
 
 # Force rebuild (e.g. after a code update)
 DumpDetective build-bfs app.dmp --force
+
+# Build caches for all dumps in a directory (skips already-valid caches)
+DumpDetective build-bfs D:\dumps
+
+# Build recursively, rebuild all even if caches exist
+DumpDetective build-bfs D:\dumps --recurse --force
 
 # Then use instantly in object-inspect
 DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained

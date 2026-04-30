@@ -35,6 +35,9 @@ public sealed class JsonSink : IRenderSink
     public void BlankLine()          { }
     public void BeginDetails(string title, bool open = false) => _capture.BeginDetails(title, open);
     public void EndDetails()         => _capture.EndDetails();
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+                         string? caption = null, int topN = 20)
+        => _capture.CallTree(roots, caption, topN);
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
         => _capture.Explain(what, why, bullets, impact, action);

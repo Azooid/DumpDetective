@@ -117,6 +117,28 @@ public sealed class CaptureSink : IRenderSink
         if (_detailsStack.Count > 0) _detailsStack.Pop();
     }
 
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+                         string? caption = null, int topN = 20)
+    {
+        // CaptureSink stores structured elements; fall back to a Text entry for now.
+        if (caption is not null) CurrentElements().Add(new ReportText { Content = caption });
+        int shown = 0;
+        FlattenNodes(roots, 0, topN, ref shown);
+    }
+
+    void FlattenNodes(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string(' ', depth * 2);
+            CurrentElements().Add(new ReportText { Content = $"{indent}{n.InclusivePct:F1}%  {n.Method}  [{n.Module}]" });
+            if (n.Children is { Count: > 0 })
+                FlattenNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
+
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
         => CurrentElements().Add(new ReportExplain

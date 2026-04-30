@@ -1,4 +1,5 @@
 using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Models.CommandData;
 
 namespace DumpDetective.Core.Utilities;
 
@@ -44,6 +45,10 @@ public sealed class TeeRenderSink : IRenderSink
 
     public void EndDetails()
     { foreach (var s in _sinks) s.EndDetails(); }
+
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+                         string? caption = null, int topN = 20)
+    { foreach (var s in _sinks) s.CallTree(roots, caption, topN); }
 
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)

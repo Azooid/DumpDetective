@@ -1,5 +1,6 @@
 using System.Text;
 using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Sinks;
@@ -20,6 +21,7 @@ public sealed class HtmlSinkV2 : IRenderSink
     int  _sectionSeq;
     int  _tableSeq;
     int  _chapterSeq;
+    int  _treeSeq;
 
     public bool    IsFile   => true;
     public string? FilePath => (_w.BaseStream as FileStream)?.Name;
@@ -236,6 +238,34 @@ public sealed class HtmlSinkV2 : IRenderSink
         _w.WriteLine("</div>");
     }
 
+    public void Gauges(IReadOnlyList<(string Label, double Value, string Unit)> items, double barMax = 100.0)
+    {
+        _w.WriteLine("<div class=\"gauge-grid\">");
+        foreach (var (label, value, unit) in items)
+        {
+            double pct       = barMax > 0 ? value / barMax * 100.0 : 0;
+            double barWidth  = Math.Min(pct, 100.0);
+            string levelCls  = pct >= 100 ? "g-crit" : pct >= 80 ? "g-high" : pct >= 50 ? "g-med" : "g-ok";
+
+            _w.Write($"<div class=\"gauge-row {levelCls}\">");
+            _w.Write($"<span class=\"gauge-label\">{H(label)}</span>");
+            _w.Write($"<div class=\"gauge-track\"><div class=\"gauge-fill\" style=\"width:{barWidth:F1}%\"></div></div>");
+
+            string valStr = $"{value:F1}{H(unit)}";
+            if (pct > 100 && barMax > 0)
+            {
+                double mult = value / barMax;
+                _w.Write($"<span class=\"gauge-val\">{valStr}<span class=\"gauge-mult\">×{mult:F1}</span></span>");
+            }
+            else
+            {
+                _w.Write($"<span class=\"gauge-val\">{valStr}</span>");
+            }
+            _w.WriteLine("</div>");
+        }
+        _w.WriteLine("</div>");
+    }
+
     public void Table(string[] headers, IReadOnlyList<string[]> rows, string? caption = null)
     {
         int tid = ++_tableSeq;
@@ -352,6 +382,93 @@ public sealed class HtmlSinkV2 : IRenderSink
         }
         _w.WriteLine("</div></details>");
     }
+
+    public void CallTree(IReadOnlyList<CpuCallNode> roots, string? caption = null, int topN = 20)
+    {
+        if (roots is null || roots.Count == 0) return;
+
+        // Unique ID so multiple trees on the same page don't clash.
+        var treeId = $"ctree{System.Threading.Interlocked.Increment(ref _treeSeq)}";
+
+        if (caption is not null)
+            _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+
+        // Expand / Collapse All toolbar for this tree
+        _w.WriteLine($"<div class=\"ctree-toolbar\">");
+        _w.WriteLine($"  <button class=\"ct-expbtn\" onclick=\"ctExpandAll('{treeId}')\">⊞ Expand All</button>");
+        _w.WriteLine($"  <button class=\"ct-expbtn\" onclick=\"ctCollapseAll('{treeId}')\">⊟ Collapse All</button>");
+        _w.WriteLine("</div>");
+
+        _w.WriteLine($"<div class=\"ctree-wrap\" id=\"{treeId}\">");
+        _w.WriteLine("<table class=\"ctree-table\"><thead><tr>");
+        _w.WriteLine("<th class=\"ctw-name\">Method / Module</th>");
+        _w.WriteLine("<th class=\"ctw-bar\">Incl %</th>");
+        _w.WriteLine("<th class=\"ctw-pct\">Incl %</th>");
+        _w.WriteLine("<th class=\"ctw-pct\">Excl %</th>");
+        _w.WriteLine("<th class=\"ctw-cnt\">Incl</th>");
+        _w.WriteLine("<th class=\"ctw-cnt\">Excl</th>");
+        _w.WriteLine("</tr></thead><tbody>");
+
+        // topN limits the number of ROOT nodes shown; children are always fully rendered
+        // (they start collapsed, so depth doesn't inflate visible rows).
+        int rootsShown = 0;
+        foreach (var node in roots)
+        {
+            if (rootsShown >= topN) break;
+            rootsShown++;
+            RenderTreeRow(node, 0);
+        }
+        _w.WriteLine("</tbody></table></div>");
+    }
+
+    private void RenderTreeRow(CpuCallNode node, int depth)
+    {
+        bool hasChildren = node.Children is { Count: > 0 };
+        string toggleId  = hasChildren ? $"ct{System.Threading.Interlocked.Increment(ref _treeSeq)}" : string.Empty;
+        string indent     = depth > 0 ? $"style=\"padding-left:{8 + depth * 18}px\"" : string.Empty;
+
+        // Heat colour: 0–5% → neutral, 5–20% → orange, >20% → red (light/dark aware via CSS vars)
+        string heatClass  = node.InclusivePct >= 20 ? "ct-hot2"
+                          : node.InclusivePct >= 5  ? "ct-hot1"
+                          : "ct-cool";
+
+        // Bar width capped at 100 px (100% = full bar)
+        int barPx = (int)Math.Min(node.InclusivePct, 100);
+
+        _w.Write($"<tr class=\"ctrow {heatClass}\">");
+
+        // Name cell — contains indent spacer, optional toggle chevron, method+module
+        _w.Write("<td class=\"ctw-name\" " + indent + ">");
+        if (hasChildren)
+            _w.Write($"<span class=\"ct-toggle\" onclick=\"ctToggle('{toggleId}',this)\">▶</span> ");
+        else
+            _w.Write("<span class=\"ct-leaf\">·</span> ");
+        _w.Write($"<span class=\"ct-method\" title=\"{H(node.Method)}\">{H(TruncateName(node.Method, 55))}</span>");
+        if (node.Module.Length > 0)
+            _w.Write($" <span class=\"ct-mod\">{H(TruncateName(node.Module, 30))}</span>");
+        _w.WriteLine("</td>");
+
+        // Bar cell
+        _w.WriteLine($"<td class=\"ctw-bar\"><div class=\"ct-bar-bg\"><div class=\"ct-bar\" style=\"width:{barPx}%\"></div></div></td>");
+
+        _w.WriteLine($"<td class=\"ctw-pct\">{node.InclusivePct:F1}%</td>");
+        _w.WriteLine($"<td class=\"ctw-pct\">{node.ExclusivePct:F1}%</td>");
+        _w.WriteLine($"<td class=\"ctw-cnt\">{node.InclusiveSamples:N0}</td>");
+        _w.WriteLine($"<td class=\"ctw-cnt\">{node.ExclusiveSamples:N0}</td>");
+        _w.WriteLine("</tr>");
+
+        if (hasChildren)
+        {
+            _w.WriteLine($"<tr id=\"{toggleId}\" class=\"ct-children\" style=\"display:none\"><td colspan=\"6\" style=\"padding:0\">");
+            _w.WriteLine("<table class=\"ctree-table ctree-nested\"><tbody>");
+            foreach (var child in node.Children)
+                RenderTreeRow(child, depth + 1);
+            _w.WriteLine("</tbody></table></td></tr>");
+        }
+    }
+
+    static string TruncateName(string s, int max) =>
+        s.Length <= max ? s : s[..(max - 1)] + "…";
 
     public void Dispose()
     {
@@ -490,6 +607,19 @@ public sealed class HtmlSinkV2 : IRenderSink
         .kv-val{font-weight:600;color:#111827;font-size:12.5px;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;align-items:center;gap:.25rem}
         .kv-arrow{color:#9ca3af;font-size:11.5px}
         .kv-delta{color:#6b7280;font-size:11.5px;font-weight:400}
+
+        /* ── Metric gauges ───────────────────────────────────────────────────────── */
+        .gauge-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:.3rem .7rem;margin:.35rem 0 .6rem}
+        .gauge-row{display:flex;align-items:center;gap:.65rem;padding:.28rem .6rem;border-radius:6px;background:#f9fafb;border:1px solid #f3f4f6}
+        .gauge-label{color:#6b7280;font-size:12px;white-space:nowrap;flex-shrink:0;min-width:130px}
+        .gauge-track{flex:1;height:10px;background:#e9eaed;border-radius:999px;overflow:hidden;min-width:80px}
+        .gauge-fill{height:100%;border-radius:999px;transition:width .2s}
+        .g-ok   .gauge-fill{background:linear-gradient(90deg,#22c55e,#4ade80)}
+        .g-med  .gauge-fill{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+        .g-high .gauge-fill{background:linear-gradient(90deg,#f97316,#fb923c)}
+        .g-crit .gauge-fill{background:linear-gradient(90deg,#ef4444,#f87171)}
+        .gauge-val{font-weight:700;font-size:12.5px;color:#111827;white-space:nowrap;min-width:58px;text-align:right}
+        .gauge-mult{font-size:10.5px;font-weight:600;color:#ef4444;margin-left:.3rem}
         .score-badge{display:inline-block;padding:.12rem .55rem;border-radius:5px;font-weight:700;font-size:12.5px}
         .badge-ok  {background:#dcfce7;color:#15803d}
         .badge-warn{background:#fef9c3;color:#854d0e}
@@ -614,6 +744,34 @@ public sealed class HtmlSinkV2 : IRenderSink
         .tip-wrap:hover .tip-icon{background:#4f46e5;color:#fff}
         #ftip{display:none;position:fixed;background:#1e1b4b;color:#e0e7ff;font-size:11.5px;font-weight:400;line-height:1.5;padding:.5rem .75rem;border-radius:7px;white-space:normal;width:280px;box-shadow:0 4px 16px rgba(0,0,0,.25);pointer-events:none;z-index:9999;text-align:left}
 
+        /* ── Call Tree ──────────────────────────────────────────────────────────── */
+        .ctree-wrap{margin:.35rem 0;border:1px solid #e5e7eb;border-radius:7px;overflow:hidden}
+        .ctree-toolbar{display:flex;gap:.4rem;margin:.2rem 0 .35rem}
+        .ct-expbtn{padding:.18rem .55rem;border:1px solid #e5e7eb;border-radius:5px;background:#f9fafb;color:#374151;font-size:11px;font-weight:600;cursor:pointer;transition:background .1s,border-color .1s;line-height:1.4}
+        .ct-expbtn:hover{background:#ede9fe;border-color:#a5b4fc;color:#4f46e5}
+        .ctree-table{width:100%;border-collapse:collapse;font-size:11.5px}
+        .ctree-table thead th{background:#f8f9fc;padding:.3rem .65rem;font-size:11px;font-weight:600;color:#374151;border-bottom:1px solid #e5e7eb;white-space:nowrap;text-align:left}
+        .ctw-name{width:55%;min-width:200px}
+        .ctw-bar{width:120px;min-width:80px}
+        .ctw-pct{width:60px;text-align:right;font-variant-numeric:tabular-nums}
+        .ctw-cnt{width:65px;text-align:right;font-variant-numeric:tabular-nums;color:#6b7280;font-size:11px}
+        .ctrow td{padding:.25rem .65rem;border-bottom:1px solid #f3f4f6;vertical-align:middle}
+        .ctrow:last-child td{border-bottom:none}
+        .ctrow:hover td{background:#f5f3ff}
+        .ct-hot2{background:#fff5f5}
+        .ct-hot1{background:#fffbf0}
+        .ct-cool{background:#fff}
+        .ct-toggle{cursor:pointer;font-size:.55rem;color:#4f46e5;user-select:none;transition:transform .1s;display:inline-block}
+        .ct-toggle.open{transform:rotate(90deg)}
+        .ct-leaf{color:#d1d5db;font-size:.7rem}
+        .ct-method{font-weight:500;color:#1a1f2e;font-size:11.5px}
+        .ct-mod{font-size:10.5px;color:#9ca3af;padding:.1em .4em;background:#f3f4f8;border-radius:4px;margin-left:.25rem}
+        .ct-bar-bg{height:8px;background:#f3f4f6;border-radius:999px;overflow:hidden;min-width:60px}
+        .ct-bar{height:8px;background:linear-gradient(90deg,#6366f1,#8b5cf6);border-radius:999px;transition:width .2s}
+        .ct-hot2 .ct-bar{background:linear-gradient(90deg,#ef4444,#f97316)}
+        .ct-hot1 .ct-bar{background:linear-gradient(90deg,#f59e0b,#fbbf24)}
+        .ctree-nested{width:100%}
+
         /* ── Print ───────────────────────────────────────────────────────────────── */
         @media print{
           #sidebar,#back-top{display:none}
@@ -663,6 +821,10 @@ public sealed class HtmlSinkV2 : IRenderSink
         [data-theme="dark"] .kv-row{background:#1a1d2b;border-color:#252840}
         [data-theme="dark"] .kv-key{color:#5b6280}
         [data-theme="dark"] .kv-val{color:#d1d5e0}
+        [data-theme="dark"] .gauge-row{background:#1a1d2b;border-color:#252840}
+        [data-theme="dark"] .gauge-label{color:#5b6280}
+        [data-theme="dark"] .gauge-track{background:#252840}
+        [data-theme="dark"] .gauge-val{color:#d1d5e0}
         [data-theme="dark"] th{background:#1a1d2b;color:#8892b0;border-bottom-color:#252840}
         [data-theme="dark"] th:hover{background:#2d2b5e;color:#818cf8}
         [data-theme="dark"] td{color:#c5cae0;border-bottom-color:#1e2035}
@@ -749,6 +911,22 @@ public sealed class HtmlSinkV2 : IRenderSink
         /* Toggle button */
         #dark-toggle{display:flex;align-items:center;justify-content:center;margin-left:auto;width:24px;height:24px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;color:#6b7280;font-size:13px;cursor:pointer;flex-shrink:0;transition:background .12s,color .12s,border-color .12s;padding:0;line-height:1}
         #dark-toggle:hover{background:#f3f4f8;color:#1a1f2e}
+        /* Call tree dark */
+        [data-theme="dark"] .ctree-wrap{border-color:#252840}
+        [data-theme="dark"] .ct-expbtn{background:#1a1d2b;border-color:#2e3154;color:#8892b0}
+        [data-theme="dark"] .ct-expbtn:hover{background:#2d2b5e;border-color:#4338ca;color:#a5b4fc}
+        [data-theme="dark"] .ctree-table thead th{background:#1a1d2b;color:#8892b0;border-bottom-color:#252840}
+        [data-theme="dark"] .ctrow td{border-bottom-color:#1e2035;color:#c5cae0}
+        [data-theme="dark"] .ctrow:hover td{background:#1e2242}
+        [data-theme="dark"] .ct-hot2{background:#2a1218}
+        [data-theme="dark"] .ct-hot1{background:#1f1a0c}
+        [data-theme="dark"] .ct-cool{background:#13151f}
+        [data-theme="dark"] .ct-method{color:#d1d5e0}
+        [data-theme="dark"] .ct-mod{background:#1e2035;color:#5b6280}
+        [data-theme="dark"] .ct-bar-bg{background:#1e2035}
+        [data-theme="dark"] .ct-leaf{color:#2e3154}
+        [data-theme="dark"] .ct-toggle{color:#818cf8}
+        [data-theme="dark"] .ctw-cnt{color:#4a5070}
         </style>
         </head>
         <body>
@@ -1139,6 +1317,27 @@ public sealed class HtmlSinkV2 : IRenderSink
             }
           });
         })();
+        /* ── Call tree toggle ─────────────────────────────────────────────── */
+        function ctToggle(rowId, btn){
+          var row = document.getElementById(rowId);
+          if(!row) return;
+          var hidden = row.style.display === 'none' || row.style.display === '';
+          row.style.display = hidden ? 'table-row' : 'none';
+          btn.classList.toggle('open', hidden);
+          btn.textContent = hidden ? '▼' : '▶';
+        }
+        function ctExpandAll(treeId){
+          var wrap = document.getElementById(treeId);
+          if(!wrap) return;
+          wrap.querySelectorAll('.ct-children').forEach(function(r){ r.style.display='table-row'; });
+          wrap.querySelectorAll('.ct-toggle').forEach(function(b){ b.classList.add('open'); b.textContent='▼'; });
+        }
+        function ctCollapseAll(treeId){
+          var wrap = document.getElementById(treeId);
+          if(!wrap) return;
+          wrap.querySelectorAll('.ct-children').forEach(function(r){ r.style.display='none'; });
+          wrap.querySelectorAll('.ct-toggle').forEach(function(b){ b.classList.remove('open'); b.textContent='▶'; });
+        }
         </script>
         </body></html>
         """;

@@ -374,6 +374,31 @@ public sealed class HtmlSink : IRenderSink
         _w.WriteLine("</div>");
     }
 
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+                           string? caption = null, int topN = 20)
+    {
+        if (roots is null || roots.Count == 0) return;
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"table-wrap\"><table class=\"data-table\"><thead><tr>");
+        _w.WriteLine("<th>Method</th><th>Module</th><th style=\"text-align:right\">Incl %</th><th style=\"text-align:right\">Excl %</th><th style=\"text-align:right\">Incl</th></tr></thead><tbody>");
+        int shown = 0;
+        RenderNodes(roots, 0, topN, ref shown);
+        _w.WriteLine("</tbody></table></div>");
+    }
+
+    void RenderNodes(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string pad = depth > 0 ? $"style=\"padding-left:{8 + depth * 16}px\"" : string.Empty;
+            _w.WriteLine($"<tr><td {pad}>{H(n.Method)}</td><td>{H(n.Module)}</td><td style=\"text-align:right\">{n.InclusivePct:F1}%</td><td style=\"text-align:right\">{n.ExclusivePct:F1}%</td><td style=\"text-align:right\">{n.InclusiveSamples:N0}</td></tr>");
+            if (n.Children is { Count: > 0 })
+                RenderNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
+
     public void Dispose()
     {
         CloseSection();

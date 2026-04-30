@@ -232,9 +232,7 @@ public sealed class CliArgs
 
             // Positional
             positionals.Add(a);
-            if (dumpPath is null &&
-                (a.EndsWith(".dmp",  StringComparison.OrdinalIgnoreCase) ||
-                 a.EndsWith(".mdmp", StringComparison.OrdinalIgnoreCase)))
+            if (dumpPath is null && IsKnownInputFile(a))
             {
                 dumpPath = a;
             }
@@ -257,6 +255,22 @@ public sealed class CliArgs
 
         return new CliArgs(dumpPath, outputPath, format, help, options, multi, flags, positionals);
     }
+
+    /// <summary>
+    /// Returns true for file extensions recognised as a primary input file:
+    /// memory dumps (.dmp, .mdmp) and trace files (.nettrace, .etl, .etl.zip).
+    /// </summary>
+    public static bool IsKnownInputFile(string path) =>
+        path.EndsWith(".dmp",      StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".mdmp",     StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".etl.zip",  StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsTraceFile(string path) =>
+        path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".etl.zip",  StringComparison.OrdinalIgnoreCase);
 
     private static string NormKey(string name) =>
         name.TrimStart('-').ToLowerInvariant();
