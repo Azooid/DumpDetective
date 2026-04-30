@@ -294,9 +294,9 @@ DumpDetective diff week1.bin week2.bin --command memory-leak --command heap-stat
 
 ---
 
-### `render` / `trend-render`
+### `render`
 
-Converts any DumpDetective JSON or compressed binary file to HTML, Markdown, plain text, or console output -- **no dump file required**.
+Converts any DumpDetective JSON or compressed binary file to HTML, Markdown, plain text, or console output -- **no dump file required**. (Previously also available as `trend-render`; that alias has been removed — use `render` for all file conversions.)
 
 ```
 DumpDetective render <file.json|file.bin> [options]
@@ -601,20 +601,24 @@ DumpDetective.Core/               Models, interfaces, shared utilities
     HeapSnapshot.cs               TypeStats, InboundCounts, StringGroups, gen counters
   Utilities/
     CliArgs.cs                    Shared argument parser (--help, --output, DD_DUMP, flags)
-    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus, SuppressVerbose
+    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus
+    ExecutionContext.cs           Thread-local verbose suppression and parameter overrides
+    OperationTrace.cs             Per-thread operation timing for full-analyze progress display
     DumpHelpers.cs                FormatSize, IsSystemType, OpenDump, SegmentKindLabel
     HealthScorer.cs               Score(DumpSnapshot, ScoringThresholds) -> (Findings, score)
     ProgressLogger.cs             Live spinner + [SCAN] completion lines via Spectre.Console
+    SinkFactory.cs                Creates single or multi-output IRenderSink from path lists
     ThresholdLoader.cs            Lazy-loads dd-thresholds.json; silent fallback to defaults
 
-DumpDetective.Analysis/           ClrMD data collection and heap walking
+DumpDetective.Analysis.Memory/    ClrMD data collection and heap walking
   DumpCollector.cs                CollectFull / CollectLightweight orchestration
   HeapWalker.cs                   Single EnumerateObjects() call feeding all consumers
   HeapObjectCollector.cs          Manages consumer registration and walk execution
-  SharedReferrerCache.cs          Reverse-reference graph; shared between MemoryLeak + HighRefs
   RuntimeSubCollectors.cs         Thread, handle, module, finalizer-queue sub-collectors
   SnapshotPopulator.cs            Writes consumer results back into DumpSnapshot
   TrendRawSerializer.cs           DumpSnapshot JSON storage for trend analysis
+  BfsIndexBuilder.cs              3-pass parallel CSR graph builder for .bfs.idx cache
+  BfsIndexCache.cs                Load / validate / save the .bfs.idx cache
   Consumers/                      IHeapObjectConsumer implementations (one concern each)
     TypeStatsConsumer.cs
     InboundRefConsumer.cs
@@ -626,15 +630,17 @@ DumpDetective.Analysis/           ClrMD data collection and heap walking
     ThreadNameConsumer.cs
     ThreadPoolConsumer.cs
     LightweightStatsConsumer.cs
+    ReferrerConsumer.cs
+    FragmentationConsumer.cs
+    EventDetailConsumer.cs
     ConditionalWeakTableConsumer.cs
   Analyzers/                      Per-command analysis logic (pure POCO in / POCO out)
-    HeapStatsAnalyzer.cs
-    MemoryLeakAnalyzer.cs
-    HighRefsAnalyzer.cs
-    HeapFragmentationAnalyzer.cs
-    StaticRefsAnalyzer.cs
-    EventAnalysisAnalyzer.cs
-    ... (one file per command)
+    HeapStatsAnalyzer.cs          ... (one file per memory-dump command)
+    SharedReferrerCache.cs        Reverse-reference graph shared by MemoryLeak + HighRefs
+
+DumpDetective.Analysis.Trace/     .nettrace / ETL data collection
+  Analyzers/
+    CpuTraceAnalyzer.cs           ... (one file per trace command)
 
 DumpDetective.Reporting/          Output format implementations
   Sinks/
@@ -643,22 +649,36 @@ DumpDetective.Reporting/          Output format implementations
     TextSink.cs
     ConsoleSink.cs
     JsonSink.cs
+    BinSink.cs                    Brotli-compressed JSON
     CaptureSink.cs
+  Reports/                        Per-command report builders (one file per command)
+    AnalyzeReport.cs
+    TrendAnalysisReport.cs
+    HeapStatsReport.cs            ... (one file per command)
   ReportDocReplay.cs              Replays a ReportDoc through any IRenderSink
+  ReportDiffer.cs                 Produces diff ReportDoc from two ReportDoc inputs
+  ReportDocSlicer.cs              Extracts sub-chapters by command name or dump index
+  ObjectInspectRenderer.cs        Field-level retained-size table builder
   ToolMemoryDiagnostic.cs         Peak working-set / managed-heap / private-bytes poller
 
-DumpDetective.Commands/           ICommand implementations (one file per command; 31 total)
-  AnalyzeCommand.cs               Orchestrator; runs FullAnalyzeCommands in parallel
-  HeapStatsCommand.cs
-  MemoryLeakCommand.cs
-  ... (one file per command)
+DumpDetective.Commands/           ICommand implementations
+  Memory/                         Memory-dump commands (namespace DumpDetective.Commands.Memory)
+    AnalyzeCommand.cs             Orchestrator; runs FullAnalyzeCommands in parallel
+    TrendAnalysisCommand.cs       Cross-dump trend report
+    HeapStatsCommand.cs
+    MemoryLeakCommand.cs          ... (one file per memory command; 28 total)
+  Trace/                          Trace commands (namespace DumpDetective.Commands.Trace)
+    TraceAnalyzeCommand.cs        Orchestrator; runs all six trace sub-analyzers
+    CpuTraceCommand.cs
+    AllocTraceCommand.cs          ... (one file per trace command; 7 total)
+  RenderCommand.cs                Convert any JSON/BIN report to any output format
+  DiffCommand.cs                  Compare two saved report files
+  BuildBfsCommand.cs              Pre-build BFS retained-size index cache
 
 DumpDetective.Cli/                Entry point -- the AOT executable
   Program.cs                      Top-level statements; --debug flag; default HTML output injection
-  Configuration/
-    CommandRegistry.cs            Single source of truth for all ICommand instances
-  Helpers/
-    HelpPrinter.cs                Formats --help output
+  CommandRegistry.cs              Single source of truth for all ICommand instances
+  HelpPrinter.cs                  Formats --help output
 
 DumpDetective.Tests/              xUnit test project (no AOT)
 
@@ -668,12 +688,13 @@ dd-thresholds.json                Override default scoring/trend thresholds (pla
 ### Dependency graph
 
 ```
-Cli ─────────────────────► Commands
- |                              |
- |                              v
- |                          Analysis ─────────┐
- |                                            |
- └──────────────► Reporting ────► Core ◄──────┘
+Cli ──────────────────────────────────────► Commands
+ │                                              │
+ │                                              ▼
+ │                               Analysis.Memory ──────┐
+ │                               Analysis.Trace  ──────┤
+ │                                                     │
+ └──────────────────► Reporting ──────────► Core ◄─────┘
 ```
 
 ---
