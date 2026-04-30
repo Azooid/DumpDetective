@@ -61,7 +61,16 @@ public sealed class StaticRefsAnalyzer
     public StaticRefsData Analyze(DumpContext ctx, string? filter = null,
         HashSet<string>? excludes = null, long? bfsDepth = null)
     {
-        // Resolve effective node cap.
+        // Load BFS cache once — replaces ClrMD-based BfsWithSampling entirely when available.
+        BfsIndexCache? bfsCache = null;
+        if (BfsIndexCache.IsValid(BfsIndexCache.CachePath(ctx.DumpPath), ctx.DumpPath))
+        {
+            CommandBase.RunStatus("Loading BFS index...", update =>
+                bfsCache = ctx.GetOrCreateAnalysis<BfsCacheBox>(() =>
+                    new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, update))).Cache);
+        }
+
+        // Resolve effective node cap (only relevant when cache is absent).
         // null  = exact mode (no cap)
         // 0     = exact mode (no cap) → long.MaxValue internally
         // N > 0 = custom sample depth
@@ -94,14 +103,9 @@ public sealed class StaticRefsAnalyzer
                 list.Add((entry.FieldName, entry.FieldType, entry.Addr));
             }
 
-            // Build MethodTable → typical object size cache from the snapshot.
-            // This lets BfsWithSampling look up child sizes without calling
-            // heap.GetObject(childAddr) — eliminating ~50% of dump I/O reads.
-            // For variable-size types (arrays, strings) the cache holds the average
-            // size seen during the heap walk, which is accurate enough for retained
-            // size estimation.
+            // Build MethodTable → typical object size cache (only needed for BfsWithSampling).
             var mtSizeCache = new Dictionary<ulong, long>(4096);
-            if (ctx.Snapshot is { } sizeSnap)
+            if (bfsCache is null && ctx.Snapshot is { } sizeSnap)
             {
                 foreach (var (_, agg) in sizeSnap.TypeStats)
                     if (agg.MT != 0 && agg.Count > 0)
@@ -115,7 +119,8 @@ public sealed class StaticRefsAnalyzer
             int  done    = 0;
             var  sw      = System.Diagnostics.Stopwatch.StartNew();
 
-            string modeLabel = isExactMode ? "exact" : $"sampling({nodeCap:N0} nodes)";
+            string modeLabel = bfsCache is not null ? "bfs-cache"
+                : isExactMode ? "exact" : $"sampling({nodeCap:N0} nodes)";
 
             Parallel.ForEach(
                 Enumerable.Range(0, typeList.Count),
@@ -123,46 +128,69 @@ public sealed class StaticRefsAnalyzer
                 i =>
                 {
                     var (declType, fields) = typeList[i];
-                    // Shared visited set across all fields of this declaring type.
-                    var visited   = new HashSet<ulong>(256);
-                    var entries   = new List<StaticFieldEntry>(fields.Count);
-
-                    // Small per-worker miss cache — avoids copying the full shared MT-size map.
-                    // Shared snapshot-derived entries remain read-only in mtSizeCache.
-                    var localMtSizeMisses = new Dictionary<ulong, long>(64);
-                    long workerNodesWalked = 0L;
+                    var entries = new List<StaticFieldEntry>(fields.Count);
 
                     // Deduplicate identical root addresses within the same declaring type.
-                    // If multiple fields point at the same object graph we only BFS it once.
-                    // The first field row receives the retained size; duplicate rows get 0 so
-                    // the per-type totals remain accurate when grouped in the report.
-                    foreach (var group in fields.GroupBy(f => f.Addr))
+                    // First field row gets retained size; duplicate rows get 0.
+                    if (bfsCache is not null)
                     {
-                        var first = group.First();
-                        var (fieldRet, wasEstimated) = BfsWithSampling(
-                            ctx.Heap, group.Key, visited, nodeCap, mtSizeCache, localMtSizeMisses,
-                            ref workerNodesWalked, modeLabel, update);
-
-                        entries.Add(new StaticFieldEntry(
-                            DeclType:     declType,
-                            FieldName:    first.FieldName,
-                            FieldType:    first.FieldType,
-                            IsCollection: IsCollectionType(first.FieldType),
-                            RetainedSize: fieldRet,
-                            Addr:         group.Key,
-                            IsEstimated:  wasEstimated));
-                        Interlocked.Add(ref totalSz, fieldRet);
-
-                        foreach (var dup in group.Skip(1))
+                        // Fast path: in-memory CSR graph — no ClrMD I/O.
+                        var visitedIdx = new HashSet<int>(256);
+                        foreach (var group in fields.GroupBy(f => f.Addr))
                         {
+                            var first = group.First();
+                            var (fieldRet, _) = bfsCache.ComputeRetained(group.Key, visitedIdx);
+                            Interlocked.Add(ref totalSz, fieldRet);
+
                             entries.Add(new StaticFieldEntry(
                                 DeclType:     declType,
-                                FieldName:    dup.FieldName,
-                                FieldType:    dup.FieldType,
-                                IsCollection: IsCollectionType(dup.FieldType),
-                                RetainedSize: 0,
-                                Addr:         dup.Addr,
+                                FieldName:    first.FieldName,
+                                FieldType:    first.FieldType,
+                                IsCollection: IsCollectionType(first.FieldType),
+                                RetainedSize: fieldRet,
+                                Addr:         group.Key,
+                                IsEstimated:  false));
+
+                            foreach (var dup in group.Skip(1))
+                                entries.Add(new StaticFieldEntry(declType, dup.FieldName, dup.FieldType,
+                                    IsCollectionType(dup.FieldType), 0, dup.Addr, false));
+                        }
+                    }
+                    else
+                    {
+                        // Slow path: BFS over ClrMD heap with optional sampling.
+                        var visited = new HashSet<ulong>(256);
+                        var localMtSizeMisses = new Dictionary<ulong, long>(64);
+                        long workerNodesWalked = 0L;
+
+                        foreach (var group in fields.GroupBy(f => f.Addr))
+                        {
+                            var first = group.First();
+                            var (fieldRet, wasEstimated) = BfsWithSampling(
+                                ctx.Heap, group.Key, visited, nodeCap, mtSizeCache, localMtSizeMisses,
+                                ref workerNodesWalked, modeLabel, update);
+
+                            entries.Add(new StaticFieldEntry(
+                                DeclType:     declType,
+                                FieldName:    first.FieldName,
+                                FieldType:    first.FieldType,
+                                IsCollection: IsCollectionType(first.FieldType),
+                                RetainedSize: fieldRet,
+                                Addr:         group.Key,
                                 IsEstimated:  wasEstimated));
+                            Interlocked.Add(ref totalSz, fieldRet);
+
+                            foreach (var dup in group.Skip(1))
+                            {
+                                entries.Add(new StaticFieldEntry(
+                                    DeclType:     declType,
+                                    FieldName:    dup.FieldName,
+                                    FieldType:    dup.FieldType,
+                                    IsCollection: IsCollectionType(dup.FieldType),
+                                    RetainedSize: 0,
+                                    Addr:         dup.Addr,
+                                    IsEstimated:  wasEstimated));
+                            }
                         }
                     }
 
@@ -180,7 +208,7 @@ public sealed class StaticRefsAnalyzer
             allFields.Sort((a, b) => b.RetainedSize.CompareTo(a.RetainedSize));
             _fields     = allFields;
             _totalSz    = Interlocked.Read(ref totalSz);
-            _isEstimated = !isExactMode;
+            _isEstimated = bfsCache is null && !isExactMode;
         });
 
         var finalFields = _fields ?? [];

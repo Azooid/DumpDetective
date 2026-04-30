@@ -400,7 +400,100 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `gc-roots` | No | GC roots and referrers for a given type (too slow for `--full`) |
 | `thread-pool-starvation` | No | ThreadPool starvation heuristic analysis |
 | `type-instances` | No | All instances of a given type (`--type <name>` required) |
-| `object-inspect` | No | All field values of an object (`--address <hex>` required) |
+| `object-inspect` | No | All field values of an object with optional retained-size BFS (`--address <hex>` required) |
+| `build-bfs` | No | Pre-build the BFS retained-size index cache (`.bfs.idx`) for a dump file |
+
+---
+
+### `object-inspect`
+
+Inspects all fields of a single managed object. With `--retained` it computes the exclusive retained size of every reference field using BFS.
+
+```
+DumpDetective object-inspect <dump-file> --address <hex> [options]
+
+Options:
+  -x, --address <hex>        Object address (hex, e.g. 0x00000276DB084170)  [required]
+  -d, --depth <N>            Recursion depth into references (default: 1)
+  --max-array <N>            Max array elements to show (default: 10)
+  --retained, -r             Compute retained size per reference field
+  --retained-cap <N>         Max BFS nodes per field (0 = unlimited, default: 0)
+  --no-cache                 Ignore existing .bfs.idx cache; use in-request BFS
+  --no-save                  Do not save a new .bfs.idx cache after building
+  -h, --help                 Show this help
+```
+
+**Examples:**
+```bash
+# Inspect a single object (no retained sizes)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170
+
+# Inspect with retained-size BFS per field (builds cache on first run)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+
+# Inspect with cache loaded (fast — no BFS rebuild)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+
+# Recurse 3 levels deep, all fields use cache
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained -d 3
+
+# Cap BFS per field to 1M nodes (fast estimate for very deep graphs)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained --retained-cap 1000000
+```
+
+> **Tip:** Run `build-bfs` once before `object-inspect --retained` so the first retained-size run is instant.
+
+---
+
+### `build-bfs`
+
+Pre-builds and saves a BFS forward-reference index (`.bfs.idx`) alongside the dump file. Once built, `object-inspect --retained` loads it in seconds instead of re-walking the entire heap.
+
+```
+DumpDetective build-bfs <dump-file> [options]
+
+Options:
+  --force, -f    Rebuild even if a valid cache already exists
+  -h, --help     Show this help
+```
+
+**How it works:**
+
+The builder runs a parallel 3-pass algorithm over the managed heap:
+
+| Pass | What it does |
+|---|---|
+| 1 — enumerate | Assigns a stable integer index to every live object; records shallow size |
+| 2 — count edges | Counts outbound references per node (determines CSR array sizes) |
+| 3 — fill edges | Fills the CSR edge arrays with child node indices |
+
+The resulting graph is a **Compressed Sparse Row (CSR)** structure stored as a Brotli-compressed binary file next to the dump (`<dump>.bfs.idx`). The cache is validated against the dump's file size and last-write timestamp — a stale or mismatched cache is automatically ignored and rebuilt.
+
+Once loaded, `ComputeRetained` runs a pure in-memory BFS with zero ClrMD I/O, completing in milliseconds per field regardless of heap size.
+
+**Typical timings (22 GB / 63 M node heap):**
+
+| Phase | Time |
+|---|---:|
+| Pass 1 — enumerate (8 parallel segments) | ~35 s |
+| Pass 2 — count edges (8 parallel segments) | ~40 s |
+| Pass 3 — fill edges (8 parallel segments) | ~38 s |
+| Save (Brotli Optimal, chunked) | ~30 s |
+| **Total build** | **~2.5 min** |
+| Load (subsequent runs) | **~6 s** |
+| Retained BFS per field (post-load) | **< 2 s** |
+
+**Examples:**
+```bash
+# Build and save (one-time setup)
+DumpDetective build-bfs app.dmp
+
+# Force rebuild (e.g. after a code update)
+DumpDetective build-bfs app.dmp --force
+
+# Then use instantly in object-inspect
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+```
 
 ---
 
@@ -713,6 +806,19 @@ For large production dumps with roughly **100 M+ managed objects**, budget rough
 ### Offline `render`
 
 `render` on a pre-saved `.json` completes in **under a second** for any output format. No dump file or ClrMD overhead is involved.
+
+### BFS retained-size cache (`.bfs.idx`)
+
+`object-inspect --retained` computes exclusive retained sizes per reference field using BFS. Without a cache this re-walks the full 168 M-edge graph for every field — on a 22 GB heap that takes several minutes.
+
+Run `build-bfs` once to build and save a Brotli-compressed CSR graph index alongside the dump. On subsequent `object-inspect --retained` runs the index loads in ~6 s and each per-field BFS completes in under 2 s regardless of heap depth or object count.
+
+| Scenario | Time |
+|---|---:|
+| First run (no cache) — 22 GB heap, 63 M objects | ~5–15 min |
+| `build-bfs` (one-time, 8 parallel workers) | ~2.5 min |
+| Load existing cache | ~6 s |
+| Per-field retained BFS (post-load) | < 2 s |
 
 ---
 

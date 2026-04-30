@@ -22,7 +22,7 @@ internal static class HelpPrinter
                                        "deadlock-detection", "async-stacks"]),
         ("Exceptions / Diagnostics",  ["exception-analysis", "event-analysis"]),
         ("Infrastructure / Network",  ["http-requests", "connection-pool", "wcf-channels", "timer-leaks"]),
-        ("Targeted / Interactive",    ["type-instances", "object-inspect", "module-list"]),
+        ("Targeted / Interactive",    ["type-instances", "object-inspect", "module-list", "build-bfs"]),
         ("Replay",                    ["render"]),
     ];
 

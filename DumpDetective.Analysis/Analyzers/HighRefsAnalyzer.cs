@@ -17,11 +17,22 @@ namespace DumpDetective.Analysis.Analyzers;
 ///   triggers the walk; the other gets the result instantly from the cache.
 /// Retained size is estimated by summing the direct children of each hot object
 ///   (capped at 2 000 children to avoid runaway on array-like objects).
+/// When a <c>.bfs.idx</c> cache exists for the dump, the retained size is computed
+///   via a full exclusive BFS over the pre-built in-memory graph instead.
 /// </summary>
 public sealed class HighRefsAnalyzer
 {
     public HighRefsData Analyze(DumpContext ctx, int top = 30, int minRefs = 10)
     {
+        // Load BFS cache once (shared with other parallel analyzers via GetOrCreateAnalysis).
+        BfsIndexCache? bfsCache = null;
+        if (BfsIndexCache.IsValid(BfsIndexCache.CachePath(ctx.DumpPath), ctx.DumpPath))
+        {
+            CommandBase.RunStatus("Loading BFS index...", update =>
+                bfsCache = ctx.GetOrCreateAnalysis<BfsCacheBox>(() =>
+                    new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, update))).Cache);
+        }
+
         HashSet<ulong> topAddrs;
         long totalRefs, totalObjs;
         int  inboundCountsSize;
@@ -55,7 +66,7 @@ public sealed class HighRefsAnalyzer
         }
 
         if (topAddrs.Count == 0)
-            return new HighRefsData([], totalObjs, totalRefs, inboundCountsSize, []);
+            return new HighRefsData([], totalObjs, totalRefs, inboundCountsSize, [], RetainedIsExact: bfsCache is not null);
 
         var refTypes = BuildReferencingTypes(ctx, topAddrs);
         var candidates = new List<HighRefEntry>(topAddrs.Count);
@@ -67,7 +78,9 @@ public sealed class HighRefsAnalyzer
 
             string typeName = obj.Type?.Name ?? "<unknown>";
             long ownSize    = (long)obj.Size;
-            long retained   = ComputeRetained(ctx.Heap, obj);
+            long retained   = bfsCache is not null
+                ? bfsCache.ComputeRetained(addr, new HashSet<int>()).Size
+                : ComputeRetained(ctx.Heap, obj);
             var seg         = ctx.Heap.GetSegmentByAddress(addr);
             string gen = seg?.Kind switch
             {
@@ -131,7 +144,7 @@ public sealed class HighRefsAnalyzer
             histogram = [];
         }
 
-        return new HighRefsData(candidates, totalObjs, totalRefs, inboundCountsSize, histogram);
+        return new HighRefsData(candidates, totalObjs, totalRefs, inboundCountsSize, histogram, RetainedIsExact: bfsCache is not null);
     }
 
     private static (Dictionary<ulong, int>, long, long) BuildInboundCounts(DumpContext ctx)

@@ -58,6 +58,15 @@ public sealed class TypeInstancesAnalyzer
     public TypeInstancesData Analyze(DumpContext ctx, string typeName,
         int top = 50, long minSize = 0, string? genFilter = null)
     {
+        // Load BFS cache once — used to compute retained size for each matched instance.
+        BfsIndexCache? bfsCache = null;
+        if (BfsIndexCache.IsValid(BfsIndexCache.CachePath(ctx.DumpPath), ctx.DumpPath))
+        {
+            CommandBase.RunStatus("Loading BFS index...", update =>
+                bfsCache = ctx.GetOrCreateAnalysis<BfsCacheBox>(() =>
+                    new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, update))).Cache);
+        }
+
         var typeMap = new Dictionary<string, TypeEntry>(StringComparer.Ordinal);
 
         CommandBase.RunStatus($"Scanning for '{typeName}'...", update =>
@@ -102,15 +111,37 @@ public sealed class TypeInstancesAnalyzer
         var result = new Dictionary<string, TypeMatchStats>(typeMap.Count, StringComparer.Ordinal);
         long totalCount = 0, totalSize = 0;
 
+        // If BFS cache available, compute retained for each top-N instance.
+        if (bfsCache is not null && typeMap.Count > 0)
+        {
+            CommandBase.RunStatus("Computing retained sizes (BFS)...", update =>
+            {
+                int done2 = 0;
+                foreach (var e in typeMap.Values)
+                {
+                    for (int j = 0; j < e.Largest.Count; j++)
+                    {
+                        var inst = e.Largest[j];
+                        var (ret, _) = bfsCache.ComputeRetained(inst.Addr, new HashSet<int>());
+                        e.Largest[j] = inst with { RetainedSize = ret };
+                    }
+                    done2++;
+                    if ((done2 & 0x3F) == 0)
+                        update($"Computing retained \u2014 {done2}/{typeMap.Count} types...");
+                }
+            });
+        }
+
         foreach (var (name, e) in typeMap)
         {
             e.Largest.Sort((a, b) => b.Size.CompareTo(a.Size));
-            result[name] = new TypeMatchStats(e.Count, e.TotalSize, e.G0, e.G1, e.G2, e.Loh, e.Poh, e.MaxSingle, e.Largest);
+            long totalRetained = e.Largest.Sum(i => i.RetainedSize);
+            result[name] = new TypeMatchStats(e.Count, e.TotalSize, e.G0, e.G1, e.G2, e.Loh, e.Poh, e.MaxSingle, e.Largest, totalRetained);
             totalCount += e.Count;
             totalSize  += e.TotalSize;
         }
 
-        return new TypeInstancesData(result, totalCount, totalSize, typeName);
+        return new TypeInstancesData(result, totalCount, totalSize, typeName, HasRetained: bfsCache is not null);
     }
 
     private static string GetGen(ClrHeap heap, ulong addr)

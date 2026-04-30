@@ -29,6 +29,15 @@ public sealed class MemoryLeakAnalyzer
         int top = 30, int minCount = 500,
         bool noRootTrace = false, bool includeSystem = false)
     {
+        // Load BFS cache once — used to compute retained sizes for suspect types.
+        BfsIndexCache? bfsCache = null;
+        if (BfsIndexCache.IsValid(BfsIndexCache.CachePath(ctx.DumpPath), ctx.DumpPath))
+        {
+            CommandBase.RunStatus("Loading BFS index...", update =>
+                bfsCache = ctx.GetOrCreateAnalysis<BfsCacheBox>(() =>
+                    new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, update))).Cache);
+        }
+
         // Step 1: build per-type stats (Count, Size, LOH/Gen2 breakdowns, sample addresses)
         // Fast-path: HeapSnapshot built during DumpCollector.CollectFull already has all this
         // data in TypeAgg — no heap walk needed (~18-26s saved for large dumps).
@@ -162,6 +171,26 @@ public sealed class MemoryLeakAnalyzer
             .Take(10)
             .Select(ToSuspect)
             .ToList();
+
+        // If BFS cache available, compute retained size for each suspect from sample addresses.
+        // Shows sum of retained bytes for the up-to-3 samples; useful as an order-of-magnitude
+        // signal for which suspects hold the most exclusive memory.
+        if (bfsCache is not null && (countSuspects.Count > 0 || sizeSuspects.Count > 0))
+        {
+            CommandBase.RunStatus("Computing retained sizes for suspects (BFS)...", () =>
+            {
+                SuspectRow AddRetained(SuspectRow s)
+                {
+                    if (!typeSamples.TryGetValue(s.Name, out var addrs) || addrs.Count == 0) return s;
+                    long totalRet = 0;
+                    foreach (var addr in addrs)
+                        totalRet += bfsCache.ComputeRetained(addr, new HashSet<int>()).Size;
+                    return s with { RetainedSize = totalRet };
+                }
+                countSuspects = countSuspects.Select(AddRetained).ToList();
+                sizeSuspects  = sizeSuspects.Select(AddRetained).ToList();
+            });
+        }
 
         // Step 3: string stats
         long totalStrSize  = 0;

@@ -29,7 +29,7 @@ public sealed class HighRefsReport
             ("Peak inbound ref count",      maxRefs.ToString("N0")),
             ("Widely shared (≥ 10 types)",  widelyShared.ToString("N0")),
             ("Cache-like hot objects",      cacheLike.ToString("N0")),
-            ("Total retained size (est.)", DumpHelpers.FormatSize(totalHotSz)),
+            ("Total retained size" + (data.RetainedIsExact ? "" : " (est.)"), DumpHelpers.FormatSize(totalHotSz)),
         ]);
 
         if (data.Candidates.Count == 0)
@@ -60,15 +60,15 @@ public sealed class HighRefsReport
                 "Shared mutable collections can grow without bound if no eviction policy is enforced.",
                 "Verify that size limits, expiry policies, or bounded queues are in place.");
 
-        RenderMainTable(data.Candidates, sink, showAddr, minRefs);
-        RenderDetailAccordions(data.Candidates, sink);
+        RenderMainTable(data.Candidates, sink, showAddr, minRefs, data.RetainedIsExact);
+        RenderDetailAccordions(data.Candidates, sink, data.RetainedIsExact);
         RenderHubDistribution(data.Candidates, sink);
         RenderGenDistribution(data.Candidates, sink);
         RenderRefHistogram(data.RefHistogram, sink);
     }
 
     private static void RenderMainTable(IReadOnlyList<HighRefEntry> candidates, IRenderSink sink,
-        bool showAddr, int minRefs)
+        bool showAddr, int minRefs, bool retainedIsExact)
     {
         sink.Section($"Top {candidates.Count} Highly-Referenced Objects");
         var tableRows = candidates.Select(c =>
@@ -84,12 +84,17 @@ public sealed class HighRefsReport
         }).ToList();
 
         var headers = showAddr
-            ? new[] { "Address", "Type", "Inbound Refs", "Distinct Ref Types", "Top Source", "Gen", "Own Size", "Retained† Size" }
-            : new[] { "Type", "Inbound Refs", "Distinct Ref Types", "Top Source", "Gen", "Own Size", "Retained† Size" };
-        sink.Table(headers, tableRows, $"Sorted by inbound reference count  |  min-refs = {minRefs}  |  † Retained = own + direct children");
+            ? new[] { "Address", "Type", "Inbound Refs", "Distinct Ref Types", "Top Source", "Gen", "Own Size",
+                      retainedIsExact ? "Retained Size" : "Retained\u2020 Size" }
+            : new[] { "Type", "Inbound Refs", "Distinct Ref Types", "Top Source", "Gen", "Own Size",
+                      retainedIsExact ? "Retained Size" : "Retained\u2020 Size" };
+        string footNote = retainedIsExact
+            ? $"Sorted by inbound reference count  |  min-refs = {minRefs}  |  Retained = full exclusive BFS (from .bfs.idx cache)"
+            : $"Sorted by inbound reference count  |  min-refs = {minRefs}  |  \u2020 Retained = own + direct children (shallow estimate)";
+        sink.Table(headers, tableRows, footNote);
     }
 
-    private static void RenderDetailAccordions(IReadOnlyList<HighRefEntry> candidates, IRenderSink sink)
+    private static void RenderDetailAccordions(IReadOnlyList<HighRefEntry> candidates, IRenderSink sink, bool retainedIsExact)
     {
         sink.Section("Object Detail");
         foreach (var c in candidates)
@@ -104,7 +109,7 @@ public sealed class HighRefsReport
                 ["Full Type",            c.Type],
                 ["Address",              $"0x{c.Addr:X16}"],
                 ["Own Size",             DumpHelpers.FormatSize(c.OwnSize)],
-                ["Retained Size (est.)", DumpHelpers.FormatSize(c.RetainedSize)],
+                ["Retained Size" + (retainedIsExact ? "" : " (est.)"), DumpHelpers.FormatSize(c.RetainedSize)],
                 ["Generation",           c.Gen],
                 ["Inbound Refs",         c.InboundRefs.ToString("N0")],
                 ["Distinct Ref Types",   c.DistinctSourceTypes.ToString("N0")],

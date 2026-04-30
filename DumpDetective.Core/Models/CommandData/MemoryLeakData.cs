@@ -20,7 +20,8 @@ public sealed record MemoryLeakData(
 
 public sealed record SuspectRow(
     string Name, long Count, long Size, string Gen,
-    long Gen2Count, long Gen2Size, long LohCount, long LohSize);
+    long Gen2Count, long Gen2Size, long LohCount, long LohSize,
+    long RetainedSize = 0);  // sum of retained for sampled instances; 0 = not computed
 
 public sealed record AccumulationPatternData(
     long   StringCount,

@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using DumpDetective.Analysis;
+using DumpDetective.Core.Runtime;
 
 namespace DumpDetective.Commands;
 
@@ -165,12 +166,31 @@ public sealed class TrendAnalysisCommand : ICommand
                             CommandBase.SetSharedOverride("exact", "true");
                         else if (bfsDepth.HasValue)
                             CommandBase.SetSharedOverride("bfs-depth", bfsDepth.Value.ToString());
+
+                        // Pre-load BFS index for this dump before sub-reports run.
+                        var bfsCachePath = BfsIndexCache.CachePath(path);
+                        if (BfsIndexCache.IsValid(bfsCachePath, path))
+                        {
+                            log.Info("Loading BFS index cache...", indent: true);
+                            var (bfsWs, bfsMgd) = ToolMemoryDiagnostic.SampleForStep();
+                            BfsIndexCache? bfsLoaded = null;
+                            CommandBase.RunStatus("Loading BFS index...", update =>
+                                bfsLoaded = BfsIndexCache.Load(bfsCachePath, update));
+                            dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsLoaded));
+                            ToolMemoryDiagnostic.RecordPipelineStep($"BFS cache load ({label})", bfsWs, bfsMgd);
+                            log.Check($"BFS index loaded  ({bfsLoaded!.NodeCount:N0} nodes, {bfsLoaded.EdgeCount:N0} edges)", indent: true);
+                        }
+
                         var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                         ToolMemoryDiagnostic.BeginAnalyzerGroup(label);
                         AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, log);
                         ToolMemoryDiagnostic.EndAnalyzerGroup();
                         ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
                         CommandBase.ClearOverrides();
+
+                        // Release BFS cache so CSR arrays are freed before the next dump loads.
+                        dumpCtx.ReplaceAnalysis(new BfsCacheBox(null));
+
                         capturedSubReports[i] = cap.GetDoc();
                     }
                     catch (Exception ex)

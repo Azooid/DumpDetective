@@ -146,6 +146,16 @@ public sealed class BfsIndexCache
     }
 
     /// <summary>
+    /// Convenience: checks whether a valid cache exists for <paramref name="dumpPath"/> and
+    /// loads it if so.  Returns <see langword="null"/> when no valid cache file is found.
+    /// </summary>
+    public static BfsIndexCache? TryLoad(string dumpPath, Action<string>? update = null)
+    {
+        string cachePath = CachePath(dumpPath);
+        return IsValid(cachePath, dumpPath) ? Load(cachePath, update) : null;
+    }
+
+    /// <summary>
     /// Loads a .bfs.idx file.  Assumes <see cref="IsValid"/> was already checked (or the
     /// caller trusts the file).
     /// </summary>

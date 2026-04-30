@@ -4,7 +4,8 @@ public sealed record TypeInstancesData(
     IReadOnlyDictionary<string, TypeMatchStats> ByType,
     long                                        TotalCount,
     long                                        TotalSize,
-    string                                      SearchTerm);
+    string                                      SearchTerm,
+    bool                                        HasRetained = false);
 
 public sealed record TypeMatchStats(
     long                          Count,
@@ -15,6 +16,7 @@ public sealed record TypeMatchStats(
     int                           Loh,
     int                           Poh,
     long                          MaxSingle,
-    IReadOnlyList<InstanceEntry>  LargestInstances);
+    IReadOnlyList<InstanceEntry>  LargestInstances,
+    long                          TotalRetainedSize = 0);
 
-public sealed record InstanceEntry(ulong Addr, long Size, string Gen);
+public sealed record InstanceEntry(ulong Addr, long Size, string Gen, long RetainedSize = 0);

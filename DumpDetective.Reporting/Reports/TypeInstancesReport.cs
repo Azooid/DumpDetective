@@ -28,6 +28,10 @@ public sealed class TypeInstancesReport
             ("Total size",       DumpHelpers.FormatSize(data.TotalSize)),
             ("Distinct types",   data.ByType.Count.ToString("N0")),
         ]);
+        if (data.HasRetained)
+            sink.Alert(AlertLevel.Info,
+                "Retained sizes computed via BFS index cache (.bfs.idx).",
+                "Each instance's retained size is the exclusive bytes that would be freed if that object were collected.");
 
         RenderTypeSummary(sink, data);
         RenderGenBreakdown(sink, data);
@@ -38,14 +42,24 @@ public sealed class TypeInstancesReport
     {
         var rows = data.ByType
             .OrderByDescending(kv => kv.Value.TotalSize)
-            .Select(kv => new[]
+            .Select(kv =>
             {
-                kv.Key,
-                kv.Value.Count.ToString("N0"),
-                DumpHelpers.FormatSize(kv.Value.TotalSize),
-                DumpHelpers.FormatSize(kv.Value.MaxSingle),
+                var row = new List<string>
+                {
+                    kv.Key,
+                    kv.Value.Count.ToString("N0"),
+                    DumpHelpers.FormatSize(kv.Value.TotalSize),
+                    DumpHelpers.FormatSize(kv.Value.MaxSingle),
+                };
+                if (data.HasRetained)
+                    row.Add(DumpHelpers.FormatSize(kv.Value.TotalRetainedSize));
+                return row.ToArray();
             }).ToList();
-        sink.Table(["Exact Type", "Count", "Total Size", "Largest Instance"], rows);
+
+        var headers = data.HasRetained
+            ? new[] { "Exact Type", "Count", "Total Size", "Largest Instance", "Retained (samples)" }
+            : new[] { "Exact Type", "Count", "Total Size", "Largest Instance" };
+        sink.Table(headers, rows);
     }
 
     private static void RenderGenBreakdown(IRenderSink sink, TypeInstancesData data)
@@ -77,11 +91,14 @@ public sealed class TypeInstancesReport
             .ToList();
 
         var headers = showAddr
-            ? new[] { "Size", "Gen", "Address" }
-            : new[] { "Size", "Gen" };
+            ? data.HasRetained ? new[] { "Retained", "Size", "Gen", "Address" } : new[] { "Size", "Gen", "Address" }
+            : data.HasRetained ? new[] { "Retained", "Size", "Gen" }            : new[] { "Size", "Gen" };
         var rows = allLargest.Select(e =>
         {
-            var row = new List<string> { DumpHelpers.FormatSize(e.Size), e.Gen };
+            var row = new List<string>();
+            if (data.HasRetained) row.Add(DumpHelpers.FormatSize(e.RetainedSize));
+            row.Add(DumpHelpers.FormatSize(e.Size));
+            row.Add(e.Gen);
             if (showAddr) row.Add($"0x{e.Addr:X16}");
             return row.ToArray();
         }).ToList();

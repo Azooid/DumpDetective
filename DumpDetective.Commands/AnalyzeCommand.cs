@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using DumpDetective.Analysis;
+using DumpDetective.Core.Runtime;
 
 namespace DumpDetective.Commands;
 
@@ -114,10 +115,32 @@ public sealed class AnalyzeCommand : ICommand
                     CommandBase.SetSharedOverride("exact", "true");
                 else if (bfsDepth.HasValue)
                     CommandBase.SetSharedOverride("bfs-depth", bfsDepth.Value.ToString());
+
+                // Pre-load the BFS index cache once on the main thread before the
+                // parallel sub-report workers start.  Workers call
+                // GetOrCreateAnalysis<BfsCacheBox>() which returns instantly from the
+                // Lazy<T> already seeded here — no worker ever touches the file.
+                var bfsCachePath = BfsIndexCache.CachePath(dumpPath);
+                if (BfsIndexCache.IsValid(bfsCachePath, dumpPath))
+                {
+                    log.Info("Loading BFS index cache...", indent: true);
+                    var (bfsWs, bfsMgd) = ToolMemoryDiagnostic.SampleForStep();
+                    BfsIndexCache? bfsLoaded = null;
+                    CommandBase.RunStatus("Loading BFS index...", update =>
+                        bfsLoaded = BfsIndexCache.Load(bfsCachePath, update));
+                    dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsLoaded));
+                    ToolMemoryDiagnostic.RecordPipelineStep("BFS cache load", bfsWs, bfsMgd);
+                    log.Check($"BFS index loaded  ({bfsLoaded!.NodeCount:N0} nodes, {bfsLoaded.EdgeCount:N0} edges)", indent: true);
+                }
+
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
+
+                // Release the BFS cache after all sub-reports have consumed it so the
+                // large CSR arrays (IndexToAddr, Sizes, Offsets, Children) can be collected.
+                dumpCtx.ReplaceAnalysis(new BfsCacheBox(null));
             }
 
             if (sink.IsFile)
