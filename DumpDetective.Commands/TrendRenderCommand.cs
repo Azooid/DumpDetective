@@ -1,18 +1,22 @@
-using System.IO.Compression;
-using System.Text;
-using System.Text.Json;
-using DumpDetective.Analysis;
-using DumpDetective.Core.Json;
-using DumpDetective.Reporting;
+using DumpDetective.Core.Runtime;
 
 namespace DumpDetective.Commands;
 
 /// <summary>
-/// Converts a DumpDetective JSON file to any output format without re-analyzing.
-/// Handles both "trend-raw" (from trend-analysis --output *.json) and "report" formats.
+/// Backward-compat alias for <see cref="RenderCommand"/> — kept so existing scripts that
+/// use <c>trend-render</c> continue to work.
 /// </summary>
 public sealed class TrendRenderCommand : ICommand
 {
+    private readonly RenderCommand _inner = new();
+
+    public string Name               => "trend-render";
+    public string Description        => "Alias for 'render'. Convert a JSON/BIN report file to any output format.";
+    public bool   IncludeInFullAnalyze => false;
+
+    public int Run(string[] args) => _inner.Run(args);
+    public void Render(DumpContext ctx, IRenderSink sink) => _inner.Render(ctx, sink);
+}
     public string Name               => "trend-render";
     public string Description        => "Convert a trend-raw JSON file to HTML/Markdown/text without re-analyzing.";
     public bool   IncludeInFullAnalyze => false; // replay only

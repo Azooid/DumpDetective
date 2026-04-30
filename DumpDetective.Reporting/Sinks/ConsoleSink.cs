@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using Spectre.Console;
 
 namespace DumpDetective.Reporting.Sinks;
@@ -76,7 +76,7 @@ public sealed class ConsoleSink : IRenderSink
         => AnsiConsole.MarkupLine($"[bold]▸ {Markup.Escape(title)}[/]");
     public void EndDetails() { }
 
-    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                          string? caption = null, int topN = 20)
     {
         if (caption is not null)
@@ -85,7 +85,7 @@ public sealed class ConsoleSink : IRenderSink
         PrintNodes(roots, 0, topN, ref shown);
     }
 
-    static void PrintNodes(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> nodes, int depth, int topN, ref int shown)
+    static void PrintNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
     {
         foreach (var n in nodes)
         {

@@ -13,12 +13,12 @@ internal sealed class HeapSnapshot
     private  Dictionary<string, TypeAgg>?            _typeStats;
     internal Dictionary<ulong, int>                  InboundCounts => _inboundCounts ?? [];
     private  Dictionary<ulong, int>?                 _inboundCounts;
-    internal Dictionary<string, (int Count, long TotalSize)> StringGroups => _stringGroups ?? [];
-    private  Dictionary<string, (int Count, long TotalSize)>? _stringGroups;
+    internal Dictionary<string, StringGroupStats> StringGroups => _stringGroups ?? [];
+    private  Dictionary<string, StringGroupStats>? _stringGroups;
 
     // Pre-distilled from InboundCounts — survive after ReleaseInboundCounts().
-    internal (ulong Addr, int Count)[]        TopInboundAddrs   { get; private set; } = [];
-    internal (int Lo, int Hi, int Count)[]    InboundHistogram  { get; private set; } = [];
+    internal HeapAddrCount[]   TopInboundAddrs   { get; private set; } = [];
+    internal InboundBucket[]   InboundHistogram  { get; private set; } = [];
     internal int                              InboundCountsSize { get; private set; }
 
     // Generation byte totals
@@ -48,16 +48,16 @@ internal sealed class HeapSnapshot
     private HeapSnapshot(
         Dictionary<string, TypeAgg> typeStats,
         Dictionary<ulong, int> inboundCounts,
-        Dictionary<string, (int, long)> stringGroups,
+        Dictionary<string, StringGroupStats> stringGroups,
         long gen0, long gen1, long gen2, long loh, long poh,
         long gen0c, long gen1c, long gen2c,
         long frozenObjCount, long frozenObjSize,
         long pohObjCount, long pohObjSize,
         long totalObjs, long totalRefs,
         long totalStringCount, long totalStringSize,
-        (ulong Addr, int Count)[]     topInboundAddrs,
-        (int Lo, int Hi, int Count)[] inboundHistogram,
-        int                           inboundCountsSize)
+        HeapAddrCount[]   topInboundAddrs,
+        InboundBucket[]   inboundHistogram,
+        int               inboundCountsSize)
     {
         _typeStats          = typeStats;
         _inboundCounts      = inboundCounts;
@@ -108,16 +108,16 @@ internal sealed class HeapSnapshot
     internal static HeapSnapshot Create(
         Dictionary<string, TypeAgg> typeStats,
         Dictionary<ulong, int> inboundCounts,
-        Dictionary<string, (int, long)> stringGroups,
+        Dictionary<string, StringGroupStats> stringGroups,
         long gen0, long gen1, long gen2, long loh, long poh,
         long gen0c, long gen1c, long gen2c,
         long frozenObjCount, long frozenObjSize,
         long pohObjCount, long pohObjSize,
         long totalObjs, long totalRefs,
         long totalStringCount, long totalStringSize,
-        (ulong Addr, int Count)[]     topInboundAddrs,
-        (int Lo, int Hi, int Count)[] inboundHistogram,
-        int                           inboundCountsSize)
+        HeapAddrCount[]   topInboundAddrs,
+        InboundBucket[]   inboundHistogram,
+        int               inboundCountsSize)
         => new(typeStats, inboundCounts, stringGroups,
                gen0, gen1, gen2, loh, poh,
                gen0c, gen1c, gen2c,
@@ -135,7 +135,7 @@ internal sealed class HeapSnapshot
     {
         var typeStats     = new Dictionary<string, TypeAgg>(2048, StringComparer.Ordinal);
         var inboundCounts = new Dictionary<ulong, int>(65536);
-        var stringGroups  = new Dictionary<string, (int, long)>(StringComparer.Ordinal);
+        var stringGroups  = new Dictionary<string, StringGroupStats>(StringComparer.Ordinal);
 
         long gen0 = 0, gen1 = 0, gen2 = 0, loh = 0, poh = 0;
         long gen0c = 0, gen1c = 0, gen2c = 0;
@@ -212,8 +212,8 @@ internal sealed class HeapSnapshot
                 {
                     var val = obj.AsString(maxLength: 512) ?? string.Empty;
                     ref var sg = ref CollectionsMarshal.GetValueRefOrAddDefault(stringGroups, val, out bool sgExisted);
-                    if (sgExisted) sg = (sg.Item1 + 1, sg.Item2 + size);
-                    else           sg = (1, size);
+                    if (sgExisted) sg = new StringGroupStats(sg.Count + 1, sg.TotalSize + size);
+                    else           sg = new StringGroupStats(1, size);
                 }
                 catch { /* skip corrupted string objects */ }
             }

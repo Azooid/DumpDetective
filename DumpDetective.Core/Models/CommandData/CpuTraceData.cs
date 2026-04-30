@@ -1,3 +1,5 @@
+using DumpDetective.Core.Models;
+
 namespace DumpDetective.Core.Models.CommandData;
 
 /// <summary>
@@ -9,8 +11,8 @@ public sealed record CpuTraceData(
     double                          SamplingIntervalMs,
     string?                         FilteredProcess,
     IReadOnlyList<CpuMethodStats>   TopMethods,
-    IReadOnlyList<CpuCallNode>      HotPath,
-    IReadOnlyList<CpuCallNode>      CallTree,
+    IReadOnlyList<CallTreeNode>     HotPath,
+    IReadOnlyList<CallTreeNode>     CallTree,
     CpuStats?                       Stats = null);
 
 /// <summary>
@@ -36,15 +38,3 @@ public sealed record CpuMethodStats(
     double ExclusivePct,
     double InclusivePct);
 
-/// <summary>
-/// Node in the inclusive call tree.
-/// Children are sorted descending by <see cref="InclusiveSamples"/>.
-/// </summary>
-public sealed record CpuCallNode(
-    string                      Method,
-    string                      Module,
-    int                         InclusiveSamples,
-    int                         ExclusiveSamples,
-    double                      InclusivePct,
-    double                      ExclusivePct,
-    IReadOnlyList<CpuCallNode>  Children);

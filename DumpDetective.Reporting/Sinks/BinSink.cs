@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Json;
 using System.IO.Compression;
@@ -36,7 +36,7 @@ public sealed class BinSink : IRenderSink
     public void BlankLine()          { }
     public void BeginDetails(string title, bool open = false) => _capture.BeginDetails(title, open);
     public void EndDetails()         => _capture.EndDetails();
-    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                          string? caption = null, int topN = 20)
         => _capture.CallTree(roots, caption, topN);
     public void Explain(string? what, string? why = null, string[]? bullets = null,

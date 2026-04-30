@@ -20,8 +20,8 @@
 
   <ItemGroup>
     <ProjectReference Include="..\DumpDetective.Core\DumpDetective.Core.csproj" />
-    <ProjectReference Include="..\DumpDetective.Analysis\DumpDetective.Analysis.csproj" />
-    <ProjectReference Include="..\DumpDetective.Trace\DumpDetective.Trace.csproj" />
+    <ProjectReference Include="..\DumpDetective.Analysis.Memory\DumpDetective.Analysis.Memory.csproj" />
+    <ProjectReference Include="..\DumpDetective.Analysis.Trace\DumpDetective.Analysis.Trace.csproj" />
     <ProjectReference Include="..\DumpDetective.Reporting\DumpDetective.Reporting.csproj" />
     <ProjectReference Include="..\DumpDetective.Commands\DumpDetective.Commands.csproj" />
   </ItemGroup>

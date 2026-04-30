@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 
 namespace DumpDetective.Reporting.Sinks;
 
@@ -69,7 +69,7 @@ public sealed class TextSink : IRenderSink
     public void BeginDetails(string title, bool open = false) => _w.WriteLine($"  ▸ {title}");
     public void EndDetails() => _w.WriteLine();
 
-    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                          string? caption = null, int topN = 20)
     {
         if (caption is not null) _w.WriteLine($"  {caption}");
@@ -77,7 +77,7 @@ public sealed class TextSink : IRenderSink
         RenderCtNodes(roots, 0, topN, ref shown);
     }
 
-    void RenderCtNodes(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> nodes, int depth, int topN, ref int shown)
+    void RenderCtNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
     {
         foreach (var n in nodes)
         {

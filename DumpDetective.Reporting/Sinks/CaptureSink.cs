@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Utilities;
 
@@ -117,7 +117,7 @@ public sealed class CaptureSink : IRenderSink
         if (_detailsStack.Count > 0) _detailsStack.Pop();
     }
 
-    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                          string? caption = null, int topN = 20)
     {
         // CaptureSink stores structured elements; fall back to a Text entry for now.
@@ -126,7 +126,7 @@ public sealed class CaptureSink : IRenderSink
         FlattenNodes(roots, 0, topN, ref shown);
     }
 
-    void FlattenNodes(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> nodes, int depth, int topN, ref int shown)
+    void FlattenNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
     {
         foreach (var n in nodes)
         {

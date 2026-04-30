@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using DumpDetective.Analysis;
+using DumpDetective.Analysis.Memory;
 using DumpDetective.Core.Runtime;
 
 namespace DumpDetective.Commands;
@@ -11,6 +11,10 @@ namespace DumpDetective.Commands;
 /// </summary>
 public sealed class AnalyzeCommand : ICommand
 {
+    private readonly IReadOnlyList<ICommand> _fullAnalyzeCommands;
+    public AnalyzeCommand(IReadOnlyList<ICommand> fullAnalyzeCommands)
+        => _fullAnalyzeCommands = fullAnalyzeCommands;
+
     public string Name               => "analyze";
     public string Description        => "Scored health report for a single dump (use --full for all sub-reports).";
     public bool   IncludeInFullAnalyze => false;  // orchestrator — not nested
@@ -150,7 +154,7 @@ public sealed class AnalyzeCommand : ICommand
                 dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsReady));
 
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
-                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, log);
+                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, _fullAnalyzeCommands, log);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
 

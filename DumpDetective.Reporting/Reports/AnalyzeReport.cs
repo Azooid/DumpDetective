@@ -21,10 +21,9 @@ public static class AnalyzeReport
     /// Runs all <see cref="ICommand.IncludeInFullAnalyze"/> commands in parallel,
     /// captures each to its own <see cref="CaptureSink"/>, then replays in order.
     /// </summary>
-    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, ProgressLogger? log = null)
+    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, IReadOnlyList<ICommand> commands, ProgressLogger? log = null)
     {
-        var cmds  = (CommandBase.FullAnalyzeCommandsProvider?.Invoke() ?? []).ToArray();
-        int total = cmds.Length;
+        int total = commands.Count;
 
         var captures = new CaptureSink[total];
         for (int i = 0; i < total; i++) captures[i] = new CaptureSink();
@@ -47,23 +46,23 @@ public static class AnalyzeReport
                     var csw = Stopwatch.StartNew();
                     try
                     {
-                        log.StartParallelItem(cmds[i].Name);
+                        log.StartParallelItem(commands[i].Name);
                         var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
-                        var doc = cmds[i].BuildReport(ctx);
-                        ToolMemoryDiagnostic.RecordAnalyzerStep(cmds[i].Name, wsBefore, mgdBefore);
+                        var doc = commands[i].BuildReport(ctx);
+                        ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
                         var details = CommandBase.EndTrace();
                         ReportDocReplay.Replay(doc, captures[i]);
-                        foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
+                        foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= commands[i].Name;
                         csw.Stop();
-                        log.CompleteParallelItem(cmds[i].Name, csw.ElapsedMilliseconds, details);
+                        log.CompleteParallelItem(commands[i].Name, csw.ElapsedMilliseconds, details);
                     }
                     catch (Exception ex)
                     {
                         CommandBase.EndTrace();
                         csw.Stop();
-                        log.Warn($"{cmds[i].Name} failed: {ex.Message}", indent: true);
+                        log.Warn($"{commands[i].Name} failed: {ex.Message}", indent: true);
                         captures[i].Alert(AlertLevel.Warning,
-                            $"⚠ {cmds[i].Name} could not complete",
+                            $"⚠ {commands[i].Name} could not complete",
                             ex.Message,
                             "This sub-report was skipped. All other reports are unaffected.");
                     }
@@ -96,20 +95,20 @@ public static class AnalyzeReport
                             try
                             {
                                 var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
-                                var doc = cmds[i].BuildReport(ctx);
-                                ToolMemoryDiagnostic.RecordAnalyzerStep(cmds[i].Name, wsBefore, mgdBefore);
+                                var doc = commands[i].BuildReport(ctx);
+                                ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
                                 ReportDocReplay.Replay(doc, captures[i]);
-                                foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
+                                foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= commands[i].Name;
                                 task.Increment(1);
                                 int n = (int)task.Value;
                                 task.Description = n >= total
                                     ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
-                                    : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(cmds[i].Description)}[/]";
+                                    : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(commands[i].Description)}[/]";
                             }
                             catch (Exception ex)
                             {
                                 captures[i].Alert(AlertLevel.Warning,
-                                    $"⚠ {cmds[i].Name} could not complete",
+                                    $"⚠ {commands[i].Name} could not complete",
                                     ex.Message,
                                     "This sub-report was skipped. All other reports are unaffected.");
                                 task.Increment(1);

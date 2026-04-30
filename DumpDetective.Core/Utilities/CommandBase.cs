@@ -12,131 +12,26 @@ namespace DumpDetective.Core.Utilities;
 /// </summary>
 public static class CommandBase
 {
-    /// <summary>
-    /// When <see langword="true"/> on the current thread, console spinners and
-    /// progress output (PrintAnalyzing, RunStatus, TimedStatus) are suppressed.
-    /// <c>[ThreadStatic]</c> so each parallel full-analyze worker is isolated.
-    /// </summary>
-    [ThreadStatic] private static bool _suppressVerbose;
-    public static bool SuppressVerbose { get => _suppressVerbose; set => _suppressVerbose = value; }
-
-    /// <summary>
-    /// Per-thread parameter overrides set by orchestrators (e.g. <c>analyze --full</c>,
-    /// <c>trend-analysis --full</c>) before running sub-commands in parallel.
-    /// Sub-commands read these via <see cref="GetOverride"/> to apply caller-specified
-    /// filter params (e.g. <c>--min-waste</c>, <c>--top</c>).
-    /// Keyed by the same names used in <see cref="CliArgs"/> (lowercase, no dashes).
-    /// </summary>
-    [ThreadStatic] private static Dictionary<string, string>? _overrides;
-
-    /// <summary>
-    /// Shared (cross-thread) overrides published by the orchestrator before spawning
-    /// parallel workers. Worker threads read this via <see cref="GetOverride"/> because
-    /// <c>[ThreadStatic]</c> values set on the calling thread are invisible to worker
-    /// threads. Only written from the main thread before Parallel.ForEach; never written
-    /// during parallel execution, so no lock is needed.
-    /// </summary>
-    private static volatile Dictionary<string, string>? _sharedOverrides;
-
-    /// <summary>
-    /// Sets a parameter override. Use <see cref="SetSharedOverride"/> when the value
-    /// must be visible to parallel worker threads (e.g. orchestrator flags like --exact).
-    /// </summary>
-    public static void SetOverride(string key, string value)
+    // ── SuppressVerbose — forwarded to ExecutionContext ───────────────────────
+    public static bool SuppressVerbose
     {
-        _overrides ??= new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        _overrides[key] = value;
+        get => ExecutionContext.SuppressVerbose;
+        set => ExecutionContext.SuppressVerbose = value;
     }
 
-    /// <summary>
-    /// Sets a shared (cross-thread) override. Call this from the orchestrator thread
-    /// before launching parallel sub-report workers so all threads see the value.
-    /// </summary>
-    public static void SetSharedOverride(string key, string value)
-    {
-        var d = _sharedOverrides is null
-            ? new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, string>(_sharedOverrides, StringComparer.OrdinalIgnoreCase);
-        d[key] = value;
-        _sharedOverrides = d; // atomic reference swap — volatile write
-    }
+    // ── Parameter overrides — forwarded to ExecutionContext ───────────────────
+    public static void SetOverride(string key, string value)       => ExecutionContext.SetOverride(key, value);
+    public static void SetSharedOverride(string key, string value) => ExecutionContext.SetSharedOverride(key, value);
+    public static void ClearOverrides()                            => ExecutionContext.ClearOverrides();
+    public static string? GetOverride(string key)                  => ExecutionContext.GetOverride(key);
+    public static int  GetOverrideInt (string key, int  @default)  => ExecutionContext.GetOverrideInt(key, @default);
+    public static long GetOverrideLong(string key, long @default)  => ExecutionContext.GetOverrideLong(key, @default);
 
-    /// <summary>Clears all per-thread AND shared overrides.</summary>
-    public static void ClearOverrides()
-    {
-        _overrides       = null;
-        _sharedOverrides = null;
-    }
-
-    /// <summary>
-    /// Returns an override value. Checks per-thread overrides first, then shared
-    /// (cross-thread) overrides, then returns <see langword="null"/>.
-    /// </summary>
-    public static string? GetOverride(string key)
-    {
-        if (_overrides is not null && _overrides.TryGetValue(key, out var v)) return v;
-        if (_sharedOverrides is not null && _sharedOverrides.TryGetValue(key, out v)) return v;
-        return null;
-    }
-
-    /// <summary>Returns a per-thread override value, or <paramref name="default"/> if not set.</summary>
-    public static int GetOverrideInt(string key, int @default) =>
-        GetOverride(key) is string v && int.TryParse(v, out var n) ? n : @default;
-
-    /// <summary>Returns a per-thread override value, or <paramref name="default"/> if not set.</summary>
-    public static long GetOverrideLong(string key, long @default) =>
-        GetOverride(key) is string v && long.TryParse(v, out var n) ? n : @default;
-
-    // ── Per-command operation trace ───────────────────────────────────────────
-    // [ThreadStatic] so parallel full-analyze workers each have their own trace.
-
-    [ThreadStatic] private static List<(string Label, long Ms)>? _trace;
-
-    /// <summary>
-    /// Activates operation tracing on this thread. Call immediately before
-    /// <c>BuildReport</c>. Every subsequent <see cref="RunStatus"/> call will
-    /// record its label and elapsed milliseconds into the trace.
-    /// </summary>
-    public static void BeginTrace() => _trace = new List<(string, long)>(8);
-
-    /// <summary>
-    /// Ends tracing, formats the recorded entries into sub-lines (2 per line),
-    /// and clears the trace list. Returns <see langword="null"/> when nothing
-    /// was traced (command used only cached snapshot data).
-    /// </summary>
-    public static string[]? EndTrace()
-    {
-        var t = _trace;
-        _trace = null;
-        if (t is null || t.Count == 0) return null;
-
-        var formatted = new List<string>(t.Count);
-        foreach (var (label, ms) in t)
-        {
-            string elapsed = ms < 1000 ? $"{ms}ms" : $"{ms / 1000.0:F1}s";
-            // Strip trailing "..." from messages like "Scanning GC handles..."
-            string clean = label.EndsWith("...") ? label[..^3].TrimEnd() : label;
-            formatted.Add($"{clean} • {elapsed}");
-        }
-
-        // Pack 2 entries per sub-line for compact display
-        var lines = new List<string>();
-        for (int i = 0; i < formatted.Count; i += 2)
-        {
-            lines.Add(i + 1 < formatted.Count
-                ? $"{formatted[i]}  |  {formatted[i + 1]}"
-                : formatted[i]);
-        }
-        return lines.ToArray();
-    }
+    // ── Operation trace — forwarded to OperationTrace ─────────────────────────
+    public static void     BeginTrace() => OperationTrace.BeginTrace();
+    public static string[]? EndTrace()  => OperationTrace.EndTrace();
 
     public const string OutputFormats = ".html / .md / .txt / .json";
-
-    /// <summary>
-    /// Injected by the Cli project at startup so that <c>AnalyzeCommand</c> (in Commands)
-    /// can iterate all full-analyze commands without a circular project reference.
-    /// </summary>
-    public static Func<IEnumerable<ICommand>>? FullAnalyzeCommandsProvider { get; set; }
 
     /// <summary>
     /// Injected by <c>ReportingBootstrap.Register()</c> so the default <see cref="ICommand.BuildReport"/>
@@ -297,7 +192,7 @@ public static class CommandBase
         finally
         {
             sw.Stop();
-            _trace?.Add((message, sw.ElapsedMilliseconds));
+            OperationTrace.Add(message, sw.ElapsedMilliseconds);
             PrintDone(message, sw.ElapsedMilliseconds);
         }
     }
@@ -325,7 +220,7 @@ public static class CommandBase
         finally
         {
             sw.Stop();
-            _trace?.Add((message, sw.ElapsedMilliseconds));
+            OperationTrace.Add(message, sw.ElapsedMilliseconds);
             PrintDone(message, sw.ElapsedMilliseconds, scanSuffix);
         }
     }

@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
-      <_Parameter1>DumpDetective.Analysis</_Parameter1>
+      <_Parameter1>DumpDetective.Analysis.Memory</_Parameter1>
     </AssemblyAttribute>
   </ItemGroup>
 

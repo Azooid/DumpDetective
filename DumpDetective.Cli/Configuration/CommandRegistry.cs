@@ -1,5 +1,5 @@
-using DumpDetective.Analysis.Analyzers;
-using DumpDetective.Trace.Analyzers;
+using DumpDetective.Analysis.Memory.Analyzers;
+using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Commands;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Reporting.Reports;

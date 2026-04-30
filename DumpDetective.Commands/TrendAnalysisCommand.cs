@@ -1,5 +1,5 @@
 using System.Diagnostics;
-using DumpDetective.Analysis;
+using DumpDetective.Analysis.Memory;
 using DumpDetective.Core.Runtime;
 
 namespace DumpDetective.Commands;
@@ -9,6 +9,10 @@ namespace DumpDetective.Commands;
 /// </summary>
 public sealed class TrendAnalysisCommand : ICommand
 {
+    private readonly IReadOnlyList<ICommand> _fullAnalyzeCommands;
+    public TrendAnalysisCommand(IReadOnlyList<ICommand> fullAnalyzeCommands)
+        => _fullAnalyzeCommands = fullAnalyzeCommands;
+
     public string Name               => "trend-analysis";
     public string Description        => "Analyze multiple dumps for memory/leak trends (--full for sub-reports).";
     public bool   IncludeInFullAnalyze => false; // multi-dump, not nested
@@ -199,7 +203,7 @@ public sealed class TrendAnalysisCommand : ICommand
 
                         var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                         ToolMemoryDiagnostic.BeginAnalyzerGroup(label);
-                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, log);
+                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, _fullAnalyzeCommands, log);
                         ToolMemoryDiagnostic.EndAnalyzerGroup();
                         ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
                         CommandBase.ClearOverrides();

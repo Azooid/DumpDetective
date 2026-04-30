@@ -1,4 +1,4 @@
-namespace DumpDetective.Core.Interfaces;
+﻿namespace DumpDetective.Core.Interfaces;
 
 public enum AlertLevel { Info, Warning, Critical }
 
@@ -30,10 +30,10 @@ public interface IRenderSink : IDisposable
 
     /// <summary>
     /// Renders a call-tree hierarchy (e.g. CPU hot-path or full call tree).
-    /// <c>HtmlSinkV2</c> renders an interactive collapsible flame-style tree.
+    /// <c>HtmlSink</c> renders an interactive collapsible flame-style tree.
     /// All other sinks fall back to an indented text representation.
     /// </summary>
-    void CallTree(IReadOnlyList<DumpDetective.Core.Models.CommandData.CpuCallNode> roots,
+    void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                   string? caption = null, int topN = 20);
 
     /// <summary>
@@ -41,7 +41,7 @@ public interface IRenderSink : IDisposable
     /// Each item has a label, a value, and an optional bar fill percentage (0–100).
     /// If <paramref name="barMax"/> is &gt; 0 the bar is filled to <c>value/barMax×100</c>;
     /// values above <paramref name="barMax"/> fill the bar fully and show a ×N badge.
-    /// <c>HtmlSinkV2</c> renders the full gauge widget; all other sinks fall back to KeyValues.
+    /// <c>HtmlSink</c> renders the full gauge widget; all other sinks fall back to KeyValues.
     /// </summary>
     void Gauges(IReadOnlyList<(string Label, double Value, string Unit)> items,
                 double barMax = 100.0)
