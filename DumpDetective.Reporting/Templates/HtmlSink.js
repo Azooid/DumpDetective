@@ -144,6 +144,125 @@ function clearNavSearch() {
   }
 }
 
+/* ── Theme toggle ───────────────────────────────────────────────────── */
+(function () {
+  function isDark() {
+    return document.documentElement.getAttribute('data-theme') === 'dark';
+  }
+
+  function setIcon() {
+    var icon = document.getElementById('dark-icon');
+    if (!icon) return;
+    icon.textContent = isDark() ? '☀' : '🌙';
+  }
+
+  window.toggleDark = function () {
+    var root = document.documentElement;
+    if (isDark()) {
+      root.removeAttribute('data-theme');
+      localStorage.setItem('dd-theme', 'light');
+    } else {
+      root.setAttribute('data-theme', 'dark');
+      localStorage.setItem('dd-theme', 'dark');
+    }
+    setIcon();
+  };
+
+  setIcon();
+})();
+
+/* ── Section card accordion controls ─────────────────────────────────── */
+window.toggleCard = function (cardId) {
+  const card = document.getElementById(cardId);
+  if (!card || !card.classList.contains('card')) return;
+  card.classList.toggle('collapsed');
+};
+
+window.expandAll = function () {
+  document.querySelectorAll('#report-root .card.collapsed').forEach(function (card) {
+    card.classList.remove('collapsed');
+  });
+};
+
+window.collapseAll = function () {
+  document.querySelectorAll('#report-root .card').forEach(function (card) {
+    card.classList.add('collapsed');
+  });
+};
+
+/* ── Critical alert jump ─────────────────────────────────────────────── */
+(function () {
+  var btn = document.getElementById('jump-crit');
+  var lastIdx = -1;
+
+  function getCrits() {
+    return Array.from(document.querySelectorAll('#report-root .alert-crit'));
+  }
+
+  function syncBtn() {
+    if (!btn) return;
+    btn.classList.toggle('vis', getCrits().length > 0);
+  }
+
+  window.jumpCrit = function () {
+    var crits = getCrits();
+    if (!crits.length) return;
+
+    var nextIdx;
+    if (lastIdx >= 0 && lastIdx < crits.length - 1) {
+      nextIdx = lastIdx + 1;
+    } else if (lastIdx >= crits.length - 1) {
+      nextIdx = 0;
+    } else {
+      nextIdx = crits.findIndex(function (el) {
+        return el.getBoundingClientRect().top > 80;
+      });
+      if (nextIdx < 0) nextIdx = 0;
+    }
+
+    var target = crits[nextIdx];
+    if (!target) return;
+
+    var collapsedCard = target.closest('.card.collapsed');
+    if (collapsedCard) collapsedCard.classList.remove('collapsed');
+
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    lastIdx = nextIdx;
+  };
+
+  syncBtn();
+  window.addEventListener('load', syncBtn);
+})();
+
+/* ── Call tree controls ──────────────────────────────────────────────── */
+window.ctToggle = function (rowId, el) {
+  var row = document.getElementById(rowId);
+  if (!row) return;
+
+  var isHidden = row.style.display === 'none' || getComputedStyle(row).display === 'none';
+  row.style.display = isHidden ? 'table-row' : 'none';
+  if (el && el.classList) el.classList.toggle('open', isHidden);
+
+  if (!isHidden) {
+    row.querySelectorAll('.ct-toggle.open').forEach(function (t) { t.classList.remove('open'); });
+    row.querySelectorAll('.ct-children').forEach(function (child) { child.style.display = 'none'; });
+  }
+};
+
+window.ctExpandAll = function (treeId) {
+  var root = document.getElementById(treeId);
+  if (!root) return;
+  root.querySelectorAll('.ct-toggle').forEach(function (t) { t.classList.add('open'); });
+  root.querySelectorAll('.ct-children').forEach(function (row) { row.style.display = 'table-row'; });
+};
+
+window.ctCollapseAll = function (treeId) {
+  var root = document.getElementById(treeId);
+  if (!root) return;
+  root.querySelectorAll('.ct-toggle').forEach(function (t) { t.classList.remove('open'); });
+  root.querySelectorAll('.ct-children').forEach(function (row) { row.style.display = 'none'; });
+};
+
 /* ── Active nav highlight (track only generated nav-track elements with nav links) ─── */
 (function () {
   const navLinks = Array.from(document.querySelectorAll('#nav-list a'));

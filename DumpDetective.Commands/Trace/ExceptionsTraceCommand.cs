@@ -20,7 +20,7 @@ public sealed class ExceptionsTraceCommand : ICommand
     }
 
     public string Name               => "exceptions-trace";
-    public string Description        => "First-chance exception analysis from a .nettrace, .etl, or .etl.zip trace (exception flood detection, top types, call sites).";
+    public string Description        => "First-chance exception analysis from a .nettrace or .etl trace (exception flood detection, top types, call sites).";
     public bool   IncludeInFullAnalyze => false;
 
     private const string Help = """
@@ -44,7 +44,7 @@ public sealed class ExceptionsTraceCommand : ICommand
 
         Examples:
           DumpDetective exceptions-trace app.nettrace
-          DumpDetective exceptions-trace perf.etl.zip --process w3wp --top 40
+                    DumpDetective exceptions-trace perf.etl --process w3wp --top 40
           DumpDetective exceptions-trace app.nettrace --output exceptions.html
         """;
 
@@ -82,5 +82,5 @@ public sealed class ExceptionsTraceCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "exceptions-trace requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "exceptions-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 }

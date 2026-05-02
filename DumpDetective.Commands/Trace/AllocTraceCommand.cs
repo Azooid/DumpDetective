@@ -20,7 +20,7 @@ public sealed class AllocTraceCommand : ICommand
     }
 
     public string Name               => "alloc-trace";
-    public string Description        => "Allocation hotspot analysis from a .nettrace, .etl, or .etl.zip trace (GCAllocationTick — top allocating types and call sites).";
+    public string Description        => "Allocation hotspot analysis from a .nettrace or .etl trace (GCAllocationTick — top allocating types and call sites).";
     public bool   IncludeInFullAnalyze => false;
 
     private const string Help = """
@@ -46,7 +46,7 @@ public sealed class AllocTraceCommand : ICommand
 
         Examples:
           DumpDetective alloc-trace app.nettrace
-          DumpDetective alloc-trace perf.etl.zip --process w3wp --top 30
+                    DumpDetective alloc-trace perf.etl --process w3wp --top 30
           DumpDetective alloc-trace app.nettrace --output alloc.html
         """;
 
@@ -84,5 +84,5 @@ public sealed class AllocTraceCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "alloc-trace requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "alloc-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 }

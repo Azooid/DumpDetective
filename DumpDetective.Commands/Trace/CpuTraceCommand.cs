@@ -20,7 +20,7 @@ public sealed class CpuTraceCommand : ICommand
     }
 
     public string Name               => "cpu-trace";
-    public string Description        => "CPU hot-path analysis from a .nettrace, .etl, or .etl.zip trace file (call tree + hot path, VS-style).";
+    public string Description        => "CPU hot-path analysis from a .nettrace or .etl trace file (call tree + hot path, VS-style).";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
 
     private const string Help = """
@@ -34,7 +34,6 @@ public sealed class CpuTraceCommand : ICommand
         Supported input formats:
           .nettrace    EventPipe trace collected with --profile cpu-sampling
           .etl         Windows ETW trace with kernel CPU sampling
-          .etl.zip     Compressed ETW trace (PerfView output)
 
         Collecting a CPU trace:
           dotnet-trace:  dotnet trace collect --profile cpu-sampling -p <pid>
@@ -50,7 +49,7 @@ public sealed class CpuTraceCommand : ICommand
 
         Examples:
           DumpDetective cpu-trace app.nettrace
-          DumpDetective cpu-trace perf.etl.zip --top 40 --process w3wp
+                    DumpDetective cpu-trace perf.etl --top 40 --process w3wp
           DumpDetective cpu-trace app.nettrace --output cpu-report.html
         """;
 
@@ -66,7 +65,7 @@ public sealed class CpuTraceCommand : ICommand
 
         if (tracePath is null)
         {
-            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace, .etl, or .etl.zip).");
+            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace or .etl).");
             AnsiConsole.MarkupLine(Markup.Escape(Help));
             return 1;
         }
@@ -79,7 +78,7 @@ public sealed class CpuTraceCommand : ICommand
 
         if (!CliArgs.IsTraceFile(tracePath))
         {
-            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace, .etl, or .etl.zip — got: {Markup.Escape(Path.GetFileName(tracePath))}");
+            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace or .etl — got: {Markup.Escape(Path.GetFileName(tracePath))}");
             return 1;
         }
 
@@ -110,5 +109,5 @@ public sealed class CpuTraceCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "cpu-trace requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "cpu-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 }

@@ -58,9 +58,9 @@ internal static class HelpPrinter
             }
         }
 
-        // ── trace commands (.nettrace / .etl / .etl.zip) ─────────────────────
+        // ── trace commands (.nettrace / .etl) ─────────────────────────────────
         grid.AddRow("", "");
-        grid.AddRow("[bold white on grey] trace commands (.nettrace / .etl / .etl.zip) [/]", "");
+        grid.AddRow("[bold white on grey] trace commands (.nettrace / .etl) [/]", "");
         foreach (var (heading, names) in s_traceGroups)
         {
             grid.AddRow("", "");

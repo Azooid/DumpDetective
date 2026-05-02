@@ -14,19 +14,18 @@ public sealed class ThreadPoolStarvationCommand : ICommand
     }
 
     public string Name               => "threadpool-starvation";
-    public string Description        => "Detect thread-pool starvation by parsing a .nettrace, .etl, or .etl.zip trace file.";
+    public string Description        => "Detect thread-pool starvation by parsing a .nettrace or .etl trace file.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
 
     private const string Help = """
         Usage: DumpDetective threadpool-starvation <trace-file> [options]
 
-        Parses a .nettrace, .etl, or .etl.zip file for WaitHandleWait and ThreadPool
+        Parses a .nettrace or .etl file for WaitHandleWait and ThreadPool
         adjustment events to surface potential starvation patterns.
 
         Supported input formats:
           .nettrace    EventPipe trace (dotnet-trace / VS diagnostic tools)
           .etl         Windows ETW trace (PerfView, xperf, WPR)
-          .etl.zip     Compressed ETW trace (PerfView "Collect" output)
 
         Options:
           -n, --top <N>        Number of top wait events to display (default: 20)
@@ -36,7 +35,6 @@ public sealed class ThreadPoolStarvationCommand : ICommand
         Examples:
           DumpDetective threadpool-starvation perf.nettrace
           DumpDetective threadpool-starvation perf.etl --top 50 --output report.html
-          DumpDetective threadpool-starvation perf.etl.zip --output report.html
         """;
 
     public int Run(string[] args)
@@ -49,7 +47,7 @@ public sealed class ThreadPoolStarvationCommand : ICommand
 
         if (tracePath is null)
         {
-            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace, .etl, or .etl.zip).");
+            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace or .etl).");
             AnsiConsole.MarkupLine(Markup.Escape(Help));
             return 1;
         }
@@ -62,7 +60,7 @@ public sealed class ThreadPoolStarvationCommand : ICommand
 
         if (!CliArgs.IsTraceFile(tracePath))
         {
-            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace, .etl, or .etl.zip — got: {Markup.Escape(Path.GetFileName(tracePath))}");
+            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace or .etl — got: {Markup.Escape(Path.GetFileName(tracePath))}");
             return 1;
         }
 
@@ -90,6 +88,6 @@ public sealed class ThreadPoolStarvationCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "threadpool-starvation requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "threadpool-starvation requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 
 }

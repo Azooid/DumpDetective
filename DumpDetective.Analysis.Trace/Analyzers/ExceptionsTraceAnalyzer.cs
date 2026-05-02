@@ -5,7 +5,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
-/// Parses first-chance exception events from a .nettrace / .etl / .etl.zip trace.
+/// Parses first-chance exception events from a .nettrace / .etl trace.
 /// Surfaces exception flood patterns by type and originating call site.
 /// </summary>
 public sealed class ExceptionsTraceAnalyzer

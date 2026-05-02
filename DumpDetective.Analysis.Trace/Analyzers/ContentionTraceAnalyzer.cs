@@ -5,7 +5,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
-/// Parses ContentionStart/Stop events from a .nettrace / .etl / .etl.zip trace.
+/// Parses ContentionStart/Stop events from a .nettrace / .etl trace.
 /// Identifies lock contention hotspots by call site and wait duration.
 /// </summary>
 public sealed class ContentionTraceAnalyzer

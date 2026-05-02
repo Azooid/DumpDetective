@@ -20,7 +20,7 @@ public sealed class ContentionTraceCommand : ICommand
     }
 
     public string Name               => "contention-trace";
-    public string Description        => "Lock contention analysis from a .nettrace, .etl, or .etl.zip trace (hotspot call sites, wait times, threads affected).";
+    public string Description        => "Lock contention analysis from a .nettrace or .etl trace (hotspot call sites, wait times, threads affected).";
     public bool   IncludeInFullAnalyze => false;
 
     private const string Help = """
@@ -43,7 +43,7 @@ public sealed class ContentionTraceCommand : ICommand
 
         Examples:
           DumpDetective contention-trace app.nettrace
-          DumpDetective contention-trace perf.etl.zip --process w3wp
+                    DumpDetective contention-trace perf.etl --process w3wp
           DumpDetective contention-trace app.nettrace --output contention.html
         """;
 
@@ -81,5 +81,5 @@ public sealed class ContentionTraceCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "contention-trace requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "contention-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 }

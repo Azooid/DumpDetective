@@ -256,19 +256,17 @@ public sealed class CliArgs
 
     /// <summary>
     /// Returns true for file extensions recognised as a primary input file:
-    /// memory dumps (.dmp, .mdmp) and trace files (.nettrace, .etl, .etl.zip).
+    /// memory dumps (.dmp, .mdmp) and trace files (.nettrace, .etl).
     /// </summary>
     public static bool IsKnownInputFile(string path) =>
         path.EndsWith(".dmp",      StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".mdmp",     StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
-        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase) ||
-        path.EndsWith(".etl.zip",  StringComparison.OrdinalIgnoreCase);
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
 
     public static bool IsTraceFile(string path) =>
         path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
-        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase) ||
-        path.EndsWith(".etl.zip",  StringComparison.OrdinalIgnoreCase);
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
 
     private static string NormKey(string name) =>
         name.TrimStart('-').ToLowerInvariant();

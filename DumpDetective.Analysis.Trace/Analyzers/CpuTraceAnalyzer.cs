@@ -6,7 +6,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
-/// Parses CPU sampling events from a .nettrace / .etl / .etl.zip trace file and builds
+/// Parses CPU sampling events from a .nettrace / .etl trace file and builds
 /// a call tree + hot-path chain identical in concept to Visual Studio's CPU Usage view.
 ///
 /// Hot path: from the call-tree root, follow the child with the highest inclusive-sample

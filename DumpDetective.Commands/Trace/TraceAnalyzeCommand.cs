@@ -77,7 +77,6 @@ public sealed class TraceAnalyzeCommand : ICommand
         Supported input formats:
           .nettrace    EventPipe trace collected with a suitable profile
           .etl         Windows ETW trace
-          .etl.zip     Compressed ETW trace (PerfView output)
 
         Options:
           -n, --top <N>            Top N items per section (default: 20)
@@ -88,7 +87,7 @@ public sealed class TraceAnalyzeCommand : ICommand
 
         Examples:
           DumpDetective trace-analyze app.nettrace
-          DumpDetective trace-analyze perf.etl.zip --process w3wp --output report.html
+                    DumpDetective trace-analyze perf.etl --process w3wp --output report.html
           DumpDetective trace-analyze app.nettrace --top 30 --show-system
         """;
 
@@ -104,7 +103,7 @@ public sealed class TraceAnalyzeCommand : ICommand
 
         if (tracePath is null)
         {
-            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace, .etl, or .etl.zip).");
+            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace or .etl).");
             AnsiConsole.MarkupLine(Markup.Escape(Help));
             return 1;
         }
@@ -115,7 +114,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         }
         if (!CliArgs.IsTraceFile(tracePath))
         {
-            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace, .etl, or .etl.zip — got: {Markup.Escape(Path.GetFileName(tracePath))}");
+            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace or .etl — got: {Markup.Escape(Path.GetFileName(tracePath))}");
             return 1;
         }
 
@@ -236,5 +235,5 @@ public sealed class TraceAnalyzeCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "trace-analyze requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "trace-analyze requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 }

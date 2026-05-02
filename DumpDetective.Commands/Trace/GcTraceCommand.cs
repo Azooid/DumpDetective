@@ -20,7 +20,7 @@ public sealed class GcTraceCommand : ICommand
     }
 
     public string Name               => "gc-trace";
-    public string Description        => "GC pause analysis from a .nettrace, .etl, or .etl.zip trace (pause times, trigger reasons, heap sizes per collection).";
+    public string Description        => "GC pause analysis from a .nettrace or .etl trace (pause times, trigger reasons, heap sizes per collection).";
     public bool   IncludeInFullAnalyze => false;
 
     private const string Help = """
@@ -43,7 +43,7 @@ public sealed class GcTraceCommand : ICommand
 
         Examples:
           DumpDetective gc-trace app.nettrace
-          DumpDetective gc-trace perf.etl.zip --process w3wp --top 50
+                    DumpDetective gc-trace perf.etl --process w3wp --top 50
           DumpDetective gc-trace app.nettrace --output gc-report.html
         """;
 
@@ -81,13 +81,13 @@ public sealed class GcTraceCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "gc-trace requires a trace file (.nettrace, .etl, or .etl.zip) — it cannot analyze a memory dump.");
+            "gc-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 
     internal static bool ValidateTrace(string? tracePath, string help)
     {
         if (tracePath is null)
         {
-            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace, .etl, or .etl.zip).");
+            AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace or .etl).");
             AnsiConsole.MarkupLine(Markup.Escape(help));
             return false;
         }
@@ -98,7 +98,7 @@ public sealed class GcTraceCommand : ICommand
         }
         if (!CliArgs.IsTraceFile(tracePath))
         {
-            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace, .etl, or .etl.zip — got: {Markup.Escape(Path.GetFileName(tracePath))}");
+            AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace or .etl — got: {Markup.Escape(Path.GetFileName(tracePath))}");
             return false;
         }
         return true;

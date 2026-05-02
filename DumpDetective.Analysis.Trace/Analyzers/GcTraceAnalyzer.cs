@@ -5,7 +5,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
-/// Parses GC events from a .nettrace / .etl / .etl.zip trace file.
+/// Parses GC events from a .nettrace / .etl trace file.
 /// Extracts per-GC pause times, generation, trigger reason, heap sizes before/after.
 /// </summary>
 public sealed class GcTraceAnalyzer

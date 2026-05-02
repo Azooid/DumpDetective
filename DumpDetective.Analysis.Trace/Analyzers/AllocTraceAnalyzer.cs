@@ -5,7 +5,7 @@ using Microsoft.Diagnostics.Tracing.Etlx;
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
-/// Parses GCAllocationTick events from a .nettrace / .etl / .etl.zip trace.
+/// Parses GCAllocationTick events from a .nettrace / .etl trace.
 /// Each tick fires approximately every 100 KB allocated — totals are sampled estimates.
 /// Identifies the hottest allocating types and call sites.
 /// </summary>
