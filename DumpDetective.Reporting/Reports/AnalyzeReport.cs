@@ -15,6 +15,38 @@ namespace DumpDetective.Reporting.Reports;
 /// </summary>
 public static class AnalyzeReport
 {
+    private static readonly (string Heading, string[] Names)[] s_fullAnalyzeGroups =
+    [
+        ("Heap Overview",
+        [
+            "heap-stats", "gen-summary", "heap-fragmentation", "large-objects", "pinned-objects",
+        ]),
+        ("Retention / Leak Signals",
+        [
+            "memory-leak", "high-refs", "string-duplicates", "static-refs", "weak-refs",
+        ]),
+        ("GC / Lifetime",
+        [
+            "finalizer-queue", "handle-table",
+        ]),
+        ("Threads / Concurrency",
+        [
+            "thread-analysis", "thread-pool", "deadlock-detection", "async-stacks",
+        ]),
+        ("Exceptions / Diagnostics",
+        [
+            "exception-analysis", "event-analysis",
+        ]),
+        ("Infrastructure / Network",
+        [
+            "http-requests", "connection-pool", "wcf-channels", "timer-leaks",
+        ]),
+        ("Runtime Inventory",
+        [
+            "module-list",
+        ]),
+    ];
+
     // ── Sub-reports (full mode) ───────────────────────────────────────────────
 
     /// <summary>
@@ -123,8 +155,37 @@ public static class AnalyzeReport
             AnsiConsole.MarkupLine($"[dim]  ✓ {total}/{total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
         }
 
+        // Replay order is grouped for report readability/navigation only.
+        // Execution order remains unchanged in the parallel build loop above.
+        var grouped = new List<(string Heading, List<int> Indexes)>();
+        foreach (var (heading, _) in s_fullAnalyzeGroups)
+            grouped.Add((heading, []));
+        grouped.Add(("Other", []));
+
+        int otherIdx = grouped.Count - 1;
         for (int i = 0; i < total; i++)
-            ReportDocReplay.Replay(captures[i].GetDoc(), sink);
+        {
+            string name = commands[i].Name;
+            int bucket = -1;
+            for (int g = 0; g < s_fullAnalyzeGroups.Length; g++)
+            {
+                if (s_fullAnalyzeGroups[g].Names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    bucket = g;
+                    break;
+                }
+            }
+            grouped[bucket >= 0 ? bucket : otherIdx].Indexes.Add(i);
+        }
+
+        foreach (var (heading, indexes) in grouped)
+        {
+            if (indexes.Count == 0) continue;
+
+            sink.Header($"{heading} ({indexes.Count})", navLevel: 2, commandName: null);
+            foreach (var idx in indexes)
+                ReportDocReplay.Replay(captures[idx].GetDoc(), sink);
+        }
     }
 
     // ── Scored summary renderer ───────────────────────────────────────────────

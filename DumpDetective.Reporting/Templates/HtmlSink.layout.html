@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dump Detective Report — {GEN_DATE}</title>
+<script>
+/* Apply theme before first paint to prevent white flash */
+(function(){
+  var s=localStorage.getItem('dd-theme');
+  if(s==='dark'||(!s&&window.matchMedia('(prefers-color-scheme:dark)').matches))
+    document.documentElement.setAttribute('data-theme','dark');
+})();
+</script>
+<style>
+{STYLES}
+</style>
+</head>
+<body>
+<nav id="sidebar">
+  <div class="nav-brand">
+    <div class="nav-brand-icon">DD</div>
+    <div class="nav-brand-text">
+      <span class="nav-brand-title">Dump Detective</span>
+      <span class="nav-brand-sub" title="Generated {GEN_DATETIME}">{APP_VERSION} · {GEN_TIME}</span>
+    </div>
+    <button id="dark-toggle" onclick="toggleDark()" title="Toggle dark/light mode"><span id="dark-icon">🌙</span></button>
+  </div>
+  <div class="nav-search-wrap">
+    <input id="search-box" placeholder="Filter ..." oninput="filterNav(this.value)">
+    <button id="search-clear" title="Clear search" onclick="clearNavSearch()">×</button>
+  </div>
+  <div id="sev-bar"></div>
+  <div class="nav-inner">
+    <div class="nav-section-label">Sections</div>
+    <div id="nav-list"></div>
+  </div>
+</nav>
+<div id="content">
+<div id="expand-bar"><span id="exp-bar-label">Sections:</span><div id="exp-bar-sep"></div><button class="exp-btn" onclick="expandAll()" title="Expand all sections">⊞ Expand All</button><button class="exp-btn" onclick="collapseAll()" title="Collapse all sections">⊟ Collapse All</button><div class="global-page-size-wrap"><span class="global-page-size-label">Rows/page</span><select id="global-page-size" class="global-page-size-select" onchange="setGlobalPageSize(this.value)"><option value="10">10</option><option value="50" selected>50</option><option value="100">100</option><option value="500">500</option><option value="1000">1000</option></select></div></div>
+<main id="report-root">
+{DOC_SPLIT}</main></div>
+<button id="back-top" title="Back to top" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+<button id="jump-crit" title="Jump to next critical alert" onclick="jumpCrit()">⚠</button>
+<script>
+{SCRIPTS}
+</script>
+</body></html>

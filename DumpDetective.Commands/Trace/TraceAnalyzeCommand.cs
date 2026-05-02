@@ -1,8 +1,10 @@
 using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Models;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
+using DumpDetective.Reporting.Sinks;
 using DumpDetective.Analysis.Trace.Analyzers;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Spectre.Console;
@@ -18,6 +20,13 @@ namespace DumpDetective.Commands.Trace;
 /// </summary>
 public sealed class TraceAnalyzeCommand : ICommand
 {
+    private static readonly (string Heading, string[] Names)[] s_traceGroups =
+    [
+        ("CPU / Allocation", ["cpu-trace", "alloc-trace"]),
+        ("GC / Exceptions / Locks", ["gc-trace", "exceptions-trace", "contention-trace"]),
+        ("Threads / Concurrency", ["thread-pool-starvation"]),
+    ];
+
     private readonly CpuTraceAnalyzer              _cpu;
     private readonly AllocTraceAnalyzer            _alloc;
     private readonly GcTraceAnalyzer               _gc;
@@ -122,6 +131,7 @@ public sealed class TraceAnalyzeCommand : ICommand
             string traceFileName = Path.GetFileName(tracePath);
             using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0
                 ? a.EffectiveOutputPaths : null);
+            var captured = new Dictionary<string, ReportDoc>(StringComparer.OrdinalIgnoreCase);
 
             sink.Header("Trace Analysis",
                 $"File: {traceFileName}" +
@@ -130,40 +140,67 @@ public sealed class TraceAnalyzeCommand : ICommand
 
             RunAnalyzer("cpu-trace", () =>
             {
-                sink.Header("CPU Trace", traceFileName, navLevel: 2, commandName: "cpu-trace");
+                var cap = new CaptureSink();
+                cap.Header("CPU Trace", traceFileName, navLevel: 3, commandName: "cpu-trace");
                 var data = _cpu.Analyze(trace!, traceFileName, top, processFilter, filterSystem);
-                _cpuReport.Render(data, sink, top);
+                _cpuReport.Render(data, cap, top);
+                captured["cpu-trace"] = cap.GetDoc();
             });
             RunAnalyzer("alloc-trace", () =>
             {
-                sink.Header("Allocation Trace", traceFileName, navLevel: 2, commandName: "alloc-trace");
+                var cap = new CaptureSink();
+                cap.Header("Allocation Trace", traceFileName, navLevel: 3, commandName: "alloc-trace");
                 var data = _alloc.Analyze(trace!, traceFileName, top, processFilter);
-                _allocReport.Render(data, sink, top);
+                _allocReport.Render(data, cap, top);
+                captured["alloc-trace"] = cap.GetDoc();
             });
             RunAnalyzer("gc-trace", () =>
             {
-                sink.Header("GC Trace", traceFileName, navLevel: 2, commandName: "gc-trace");
+                var cap = new CaptureSink();
+                cap.Header("GC Trace", traceFileName, navLevel: 3, commandName: "gc-trace");
                 var data = _gc.Analyze(trace!, traceFileName, top, processFilter);
-                _gcReport.Render(data, sink, top);
+                _gcReport.Render(data, cap, top);
+                captured["gc-trace"] = cap.GetDoc();
             });
             RunAnalyzer("contention-trace", () =>
             {
-                sink.Header("Contention Trace", traceFileName, navLevel: 2, commandName: "contention-trace");
+                var cap = new CaptureSink();
+                cap.Header("Contention Trace", traceFileName, navLevel: 3, commandName: "contention-trace");
                 var data = _contention.Analyze(trace!, traceFileName, top, processFilter);
-                _contentionReport.Render(data, sink, top);
+                _contentionReport.Render(data, cap, top);
+                captured["contention-trace"] = cap.GetDoc();
             });
             RunAnalyzer("exceptions-trace", () =>
             {
-                sink.Header("Exceptions Trace", traceFileName, navLevel: 2, commandName: "exceptions-trace");
+                var cap = new CaptureSink();
+                cap.Header("Exceptions Trace", traceFileName, navLevel: 3, commandName: "exceptions-trace");
                 var data = _exceptions.Analyze(trace!, traceFileName, top, processFilter);
-                _exceptionsReport.Render(data, sink, top);
+                _exceptionsReport.Render(data, cap, top);
+                captured["exceptions-trace"] = cap.GetDoc();
             });
             RunAnalyzer("thread-pool-starvation", () =>
             {
-                sink.Header("Thread Pool Starvation", traceFileName, navLevel: 2, commandName: "thread-pool-starvation");
+                var cap = new CaptureSink();
+                cap.Header("Thread Pool Starvation", traceFileName, navLevel: 3, commandName: "thread-pool-starvation");
                 var data = _starvation.Analyze(trace!, traceFileName, top);
-                _starvationReport.Render(data, sink, top);
+                _starvationReport.Render(data, cap, top);
+                captured["thread-pool-starvation"] = cap.GetDoc();
             });
+
+            // Grouped replay improves report navigation visibility while preserving
+            // analyzer run order above.
+            foreach (var (heading, names) in s_traceGroups)
+            {
+                int available = names.Count(n => captured.ContainsKey(n));
+                if (available == 0) continue;
+
+                sink.Header($"{heading} ({available})", traceFileName, navLevel: 2);
+                foreach (var name in names)
+                {
+                    if (captured.TryGetValue(name, out var doc))
+                        ReportDocReplay.Replay(doc, sink);
+                }
+            }
 
             foreach (var p in a.EffectiveOutputPaths.Where(p =>
                 !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
