@@ -4,6 +4,18 @@ A command-line tool for analysing .NET memory dumps (`.dmp` / `.mdmp`). Built on
 
 Every command writes an HTML report alongside the dump file by default. Use `--output report.json` (or `.bin`) to save a structured report, then `DumpDetective render report.json` (or `render report.bin`) to convert it to any format at any time without re-opening the dump.
 
+## Features
+
+- Full health analysis with scored findings across heap, GC, leaks, threading, exceptions, timers, connections, events, and runtime inventory.
+- Targeted commands for focused investigations such as `object-inspect`, `gc-roots`, `type-instances`, and `thread-pool-starvation`.
+- Multi-dump trend analysis with saved raw snapshots that can be re-rendered later without reopening the original dumps.
+- Interactive HTML reports with grouped navigation, collapsible sections, charts, dark mode, sortable/filterable tables, and pagination.
+- Structured export to HTML, Markdown, text, JSON, and Brotli-compressed binary, plus `render` support for format conversion after collection.
+- BFS retained-size caching through `.bfs.idx` files for faster repeated retained-size analysis on large dumps.
+- Recent cleanup and report-pipeline simplification removed stale command wiring and made the HTML/reporting surface easier to maintain.
+- Recent HTML improvements added more built-in charts, stronger active-section tracking, collapsible grouped navigation, and better large-table controls including global and per-table page sizing.
+- The HTML shell, CSS, and JavaScript are now maintained as separate source templates while still emitting a single self-contained `.html` output file.
+
 ---
 
 ## Requirements
@@ -32,13 +44,74 @@ Hardware requirements scale with the dump you are analysing. The numbers below a
 
 | Component | Recommended | Why |
 |---|---|---|
-| RAM | 16 GB free (for a 25 GB dump) | Peak working set ≈ 0.5–0.6× dump size; OS also needs headroom |
+| RAM | 16 GB free minimum, 24 GB preferred for `analyze --full` on very large dumps | Heap walk, BFS cache load, and the heaviest sub-reports can temporarily push peak working set into the 15-17 GB range on 100M+ object dumps; newer BFS caching intentionally trades more RAM for less repeated retained-size work |
 | Storage | **NVMe SSD** | Random I/O across entire dump file; faster SSD = faster heap walk |
 | CPU | **8 physical cores (16 logical)** | Heap walk uses 8 workers; a second concurrent walk (event-analysis or heap-fragmentation) can spin up another 8 — 16 logical cores prevents contention |
 
-> **Rule of thumb:** free RAM ≥ 0.6 × dump file size. For a 25 GB dump keep at least 16 GB free. If you are tight on RAM, close other applications before running — the OS will use any free memory as file-system cache for the dump, which speeds up the walk significantly.
+> **Rule of thumb:** free RAM should scale with both dump size and analysis mode. Lightweight or single-command runs are usually much cheaper than `analyze --full`. For very large dumps, keep at least 16 GB free; 24 GB+ is safer if you want all sub-reports, BFS-heavy retention analysis, and fragmentation metrics in one run.
 
 > **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. An NVMe SSD completes a 25 GB / 110 M object dump in ~6–8 minutes. A spinning disk will typically take 20–40 minutes for the same dump and may cause the OS to thrash swap.
+
+### Measured Full-Analyze Benchmark
+
+The numbers below come from a real `DumpDetective analyze --full` run on a production-style IIS worker dump of **~25 GB** with **110,472,530 managed objects**.
+
+**End-to-end timings**
+
+| Stage | Time |
+|---|---:|
+| Dump load | ~1s |
+| Collection total | 112.9s |
+| BFS index load | 12.3s |
+| All 23 sub-reports (parallel) | 281.5s |
+| Total execution time | 409.0s |
+
+**Collection breakdown**
+
+| Step | Objects | Time | Throughput |
+|---|---:|---:|---:|
+| Thread scan | 155 | 419ms | ~369/s |
+| Handle scan | 19,418 | 2.5s | ~7,782/s |
+| Heap walk | 110,472,530 | 77.0s | ~1,434,559/s |
+| Finalizer queue scan | 4,273,410 | 32.9s | ~129,839/s |
+
+**Peak tool memory usage**
+
+| Metric | Start | Peak | Growth |
+|---|---:|---:|---:|
+| Working set | 10.6 MB | 15.53 GB | +15.52 GB |
+| Managed heap | 245.6 KB | 15.65 GB | +15.65 GB |
+| Private bytes | 5.9 MB | 16.68 GB | +16.68 GB |
+
+**Memory growth by stage**
+
+| Stage | Working Set Delta | Working Set After | Managed Delta |
+|---|---:|---:|---:|
+| Load dump | +733.8 MB | 746.4 MB | +719.5 MB |
+| Heap walk + scoring (full) | +8.25 GB | 8.97 GB | +4.94 GB |
+| BFS cache load | +4.18 GB | 13.15 GB | +5.71 GB |
+| Sub-reports (all) | +1.82 GB | 14.97 GB | -2.55 GB |
+
+**Slowest analyzers in this run**
+
+| Analyzer | Time |
+|---|---:|
+| memory-leak | 281.5s |
+| high-refs | 280.6s |
+| event-analysis | 265.4s |
+| heap-fragmentation | 264.4s |
+| large-objects | 204.0s |
+| finalizer-queue | 200.1s |
+
+**What this means in practice**
+
+- On a ~25 GB dump, the single heap walk is fast enough to process ~110.5M objects in about 77 seconds on a healthy machine.
+- `analyze --full` is dominated by the retention-heavy analyzers (`memory-leak`, `high-refs`, `event-analysis`, `heap-fragmentation`, `large-objects`, `finalizer-queue`), not by dump load time.
+- BFS cache load is a major but predictable memory spike. If you are short on RAM, prefer targeted commands before running the full combined report.
+- The current BFS cache path is intentionally more aggressive about caching forward-graph data up front. In exchange for a larger in-memory cache, retained-size work is faster and size-estimate precision is better.
+- On very large heaps, this tradeoff is material: a roughly 100M-object dump can produce a `.bfs.idx` file around 725 MB, add about 3 GB of RAM while loaded, and remove roughly 3-7 minutes of repeated retained-size work from the overall report.
+- In practice, that change can pull a large full-report run from roughly 600-800 seconds down into the 200-400 second range, while also improving retained-size estimate accuracy.
+- For a dump of this scale (~25 GB), **NVMe storage and at least 16 GB free RAM are strongly recommended**. If you regularly run full analysis on similar dumps, plan for 24 GB+ free RAM.
 
 ---
 
@@ -474,6 +547,20 @@ The resulting graph is a **Compressed Sparse Row (CSR)** structure stored as a B
 
 Once loaded, `ComputeRetained` runs a pure in-memory BFS with zero ClrMD I/O, completing in milliseconds per field regardless of heap size.
 
+This cache is now intentionally optimized for report speed rather than minimum memory footprint. A small change in the retained-size caching path improved estimate precision and made repeated retained-size work much cheaper, but the loaded cache can consume noticeably more RAM on very large heaps.
+
+**Observed tradeoff on a large heap:**
+
+| Metric | Example value |
+|---|---:|
+| Managed objects | ~100 M |
+| `.bfs.idx` file size | ~725 MB |
+| Additional RAM after cache load | ~3 GB |
+| Repeated retained-size work avoided | ~3-7 min |
+| Typical full-report improvement | ~600-800s -> ~200-400s |
+
+If you have enough memory headroom, this is usually a net win: faster reports, less repeated BFS work, and better retained-size estimate accuracy. If RAM is tight, use targeted commands or skip cache loading with `--no-cache`.
+
 **Typical timings (22 GB / 63 M node heap):**
 
 | Phase | Time |
@@ -512,7 +599,7 @@ Specify an output file with `-o` / `--output`, or use `--format` without a filen
 
 | Extension / keyword | `--format` value | Format |
 |---|---|---|
-| `.html` | `html` | Interactive HTML — sticky sidebar nav, collapsible sections, sortable/filterable tables, **dark mode toggle**, styled alert cards |
+| `.html` | `html` | Interactive HTML — sticky sidebar nav, grouped/collapsible sub-report navigation, built-in charts, sortable/filterable paged tables, **dark mode toggle**, styled alert cards |
 | `.md` | `md` | Markdown — suitable for wiki pages or GitHub |
 | `.json` | `json` | Structured JSON — full report data, re-renderable to any other format with `render` |
 | `.bin` | `bin` | Brotli-compressed JSON — same structure as `.json`, ~50–70% smaller, non-human-readable |
@@ -555,6 +642,17 @@ DumpDetective render snapshots.json --format md   # -> snapshots.md
 ### Dark mode (HTML output)
 
 The HTML report includes a **🌙 Dark mode** toggle button in the sidebar. Your preference is saved in `localStorage` and respected on subsequent opens. The initial theme follows your OS `prefers-color-scheme` setting.
+
+### HTML report UX
+
+The HTML renderer is designed for large real-world dumps and full combined reports. Current capabilities include:
+
+- Grouped sub-report navigation in the sidebar for `analyze --full` and trend-style combined outputs.
+- Collapsible nav groups with stable active-section highlighting while scrolling through large reports.
+- Self-contained charts and summary visuals embedded directly into the generated HTML.
+- Sortable, filterable tables with paging.
+- Global rows-per-page control plus per-table override for especially large sections.
+- A single output file with embedded CSS and JavaScript, so reports remain portable and easy to share.
 
 ### JSON / binary output and re-rendering
 
