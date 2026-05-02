@@ -1,7 +1,7 @@
 using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
-using DumpDetective.Analysis;
+using DumpDetective.Analysis.Memory;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Json;
 using DumpDetective.Core.Models;

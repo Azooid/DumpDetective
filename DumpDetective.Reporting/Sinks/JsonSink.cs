@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Json;
 using System.Text.Json;
@@ -35,9 +35,24 @@ public sealed class JsonSink : IRenderSink
     public void BlankLine()          { }
     public void BeginDetails(string title, bool open = false) => _capture.BeginDetails(title, open);
     public void EndDetails()         => _capture.EndDetails();
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
+                         string? caption = null, int topN = 20)
+        => _capture.CallTree(roots, caption, topN);
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
         => _capture.Explain(what, why, bullets, impact, action);
+
+    public void Gauges(IReadOnlyList<(string Label, double Value, string Unit)> items, double barMax = 100.0)
+        => _capture.Gauges(items, barMax);
+    public void DonutChart(IReadOnlyList<(string Label, double Value)> segments,
+        string? caption = null, string? centerText = null)
+        => _capture.DonutChart(segments, caption, centerText);
+    public void StackedBar(IReadOnlyList<(string Label, double Value)> segments,
+        string? unit = null, string? caption = null, string? valueMode = null)
+        => _capture.StackedBar(segments, unit, caption, valueMode);
+    public void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
+        string? valueMode = null)
+        => _capture.Sparkline(values, caption, unit, valueMode);
 
     public void Dispose()
     {

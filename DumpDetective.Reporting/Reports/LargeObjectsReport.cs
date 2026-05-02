@@ -44,6 +44,19 @@ public sealed class LargeObjectsReport
             .OrderByDescending(t => t.Size)
             .Take(top)
             .ToList();
+
+        // Top 8 types by size — donut above the table
+        if (typeAgg.Count > 1 && data.TotalSize > 0)
+        {
+            var segs = typeAgg.Take(8).Select(t => {
+                string lbl = t.Type.Contains('.') ? t.Type[(t.Type.LastIndexOf('.')+1)..] : t.Type;
+                if (lbl.Length > 28) lbl = lbl[..28] + "\u2026";
+                return (Label: lbl, Value: (double)t.Size);
+            }).ToList();
+            sink.DonutChart(segs, "Top 8 LOH types by size",
+                $"{DumpHelpers.FormatSize(data.TotalSize)}\nLOH total");
+        }
+
         var rows = typeAgg.Select(t => new[]
         {
             t.Type,
@@ -100,6 +113,14 @@ public sealed class LargeObjectsReport
             ("LOH free (holes)",  DumpHelpers.FormatSize(data.LohFree)),
             ("LOH fragmentation", $"{lohFragPct:F1}%"),
         ]);
+
+        // LOH live vs free stacked bar
+        var lohSegs = new List<(string, double)>();
+        if (data.LohLive > 0) lohSegs.Add(("Live objects", (double)data.LohLive));
+        if (data.LohFree > 0) lohSegs.Add(("Free (holes)", (double)data.LohFree));
+        if (lohSegs.Count > 1)
+            sink.StackedBar(lohSegs, null, "LOH committed: live vs. free space", valueMode: "size");
+
         if (lohFragPct >= 50)
             sink.Alert(AlertLevel.Critical,
                 $"LOH is {lohFragPct:F0}% fragmented. Reuse of large arrays is being prevented by holes.",

@@ -115,7 +115,21 @@ public sealed class FinalizerQueueReport
         IEnumerable<KeyValuePair<string, FinalizerTypeStats>> sorted, int top, int totalTypes)
     {
         sink.Section("Types by Queue Size");
-        var rows = sorted.Select(kv =>
+        var sortedList = sorted.ToList();
+
+        // Pending finalizations by type — donut above the table
+        var finSegs = sortedList.Take(8)
+            .Select(kv => {
+                string lbl = kv.Key.Contains('.')
+                    ? kv.Key[(kv.Key.LastIndexOf('.') + 1)..]
+                    : kv.Key;
+                return (Label: lbl, Value: (double)kv.Value.Count);
+            })
+            .ToList();
+        if (finSegs.Count > 0)
+            sink.DonutChart(finSegs, "Pending finalizations by type (top 8)", null);
+
+        var rows = sortedList.Select(kv =>
         {
             var v = kv.Value;
             long avg = v.Count > 0 ? v.Size / v.Count : 0;

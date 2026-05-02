@@ -20,8 +20,7 @@ public static class ReportingBootstrap
         {
             null                                                                               => new ConsoleSink(),
             { } p when p.Equals("console", StringComparison.OrdinalIgnoreCase)               => new ConsoleSink(),
-            // { } p when p.EndsWith(".html", StringComparison.OrdinalIgnoreCase)       => new HtmlSink(p),
-            { } p when p.EndsWith(".html", StringComparison.OrdinalIgnoreCase)               => new HtmlSinkV2(p),
+            { } p when p.EndsWith(".html", StringComparison.OrdinalIgnoreCase)               => new HtmlSink(p),
             { } p when p.EndsWith(".md",   StringComparison.OrdinalIgnoreCase)               => new MarkdownSink(p),
             { } p when p.EndsWith(".json", StringComparison.OrdinalIgnoreCase)               => new JsonSink(p),
             { } p when p.EndsWith(".bin",  StringComparison.OrdinalIgnoreCase)               => new BinSink(p),

@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using Spectre.Console;
 
 namespace DumpDetective.Reporting.Sinks;
@@ -75,6 +75,28 @@ public sealed class ConsoleSink : IRenderSink
     public void BeginDetails(string title, bool open = false)
         => AnsiConsole.MarkupLine($"[bold]▸ {Markup.Escape(title)}[/]");
     public void EndDetails() { }
+
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
+                         string? caption = null, int topN = 20)
+    {
+        if (caption is not null)
+            AnsiConsole.MarkupLine($"[bold]{Markup.Escape(caption)}[/]");
+        int shown = 0;
+        PrintNodes(roots, 0, topN, ref shown);
+    }
+
+    static void PrintNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string(' ', depth * 2);
+            AnsiConsole.MarkupLine($"  {indent}[dim]{n.InclusivePct,5:F1}%[/]  {Markup.Escape(n.Method)}  [dim]{Markup.Escape(n.Module)}[/]");
+            if (n.Children is { Count: > 0 })
+                PrintNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
 
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)

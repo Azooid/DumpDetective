@@ -44,42 +44,40 @@ public sealed class CliArgs
             var specified = GetAll("output");
             var formats   = GetAll("format");
 
+            // ── Case 1: explicit -o paths ──────────────────────────────────────────
             if (specified.Count > 0)
             {
-                // Explicit -o paths are the base; supplement with any --format values not already covered.
                 if (formats.Count == 0) return specified;
 
-                // Derive additional paths from the first -o path (or dump path as fallback).
-                var basePath = specified[0];
-                var result   = new List<string>(specified);
+                // Supplement with any --format values whose extension isn't already covered.
+                var result      = new List<string>(specified);
                 var coveredExts = new HashSet<string>(
                     specified.Select(p => Path.GetExtension(p).TrimStart('.').ToLowerInvariant()),
                     StringComparer.OrdinalIgnoreCase);
+                var basePath    = specified[0];
 
                 foreach (var fmt in formats)
                 {
                     if (fmt.Equals("console", StringComparison.OrdinalIgnoreCase)) continue;
-                    if (!coveredExts.Add(fmt)) continue; // already have this extension
+                    if (!coveredExts.Add(fmt)) continue;
                     result.Add(Path.ChangeExtension(basePath, fmt));
                 }
                 return result;
             }
 
-            // No -o: synthesise one path per --format against DumpPath
+            // ── Case 2: --format only, derive paths from dump basename ─────────────
             if (formats.Count > 0 && DumpPath is not null)
             {
-                var dir = Path.GetDirectoryName(DumpPath) ?? ".";
-                var fn  = Path.GetFileNameWithoutExtension(DumpPath).Replace(' ', '_');
+                var dir   = Path.GetDirectoryName(DumpPath) ?? ".";
+                var fn    = Path.GetFileNameWithoutExtension(DumpPath).Replace(' ', '_');
                 var paths = formats
                     .Where(f => !f.Equals("console", StringComparison.OrdinalIgnoreCase))
                     .Select(f => Path.Combine(dir, fn + "." + f))
                     .ToArray();
-                if (paths.Length > 0) return paths;
-                // Only "console" format — treat as no output
-                return [];
+                return paths;   // empty array when every format is "console"
             }
 
-            // Legacy: single OutputPath synthesised by Parse (e.g. from --format without dumpPath)
+            // ── Case 3: neither -o nor --format ────────────────────────────────────
             return OutputPath is not null ? (IReadOnlyList<string>)[OutputPath] : [];
         }
     }
@@ -232,9 +230,7 @@ public sealed class CliArgs
 
             // Positional
             positionals.Add(a);
-            if (dumpPath is null &&
-                (a.EndsWith(".dmp",  StringComparison.OrdinalIgnoreCase) ||
-                 a.EndsWith(".mdmp", StringComparison.OrdinalIgnoreCase)))
+            if (dumpPath is null && IsKnownInputFile(a))
             {
                 dumpPath = a;
             }
@@ -257,6 +253,20 @@ public sealed class CliArgs
 
         return new CliArgs(dumpPath, outputPath, format, help, options, multi, flags, positionals);
     }
+
+    /// <summary>
+    /// Returns true for file extensions recognised as a primary input file:
+    /// memory dumps (.dmp, .mdmp) and trace files (.nettrace, .etl).
+    /// </summary>
+    public static bool IsKnownInputFile(string path) =>
+        path.EndsWith(".dmp",      StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".mdmp",     StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
+
+    public static bool IsTraceFile(string path) =>
+        path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
 
     private static string NormKey(string name) =>
         name.TrimStart('-').ToLowerInvariant();

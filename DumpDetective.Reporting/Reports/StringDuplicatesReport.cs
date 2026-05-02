@@ -50,6 +50,24 @@ public sealed class StringDuplicatesReport
 
         if (candidates.Count == 0) { sink.Text("No duplicate strings found matching the criteria."); return; }
 
+        // Waste ratio gauge
+        if (data.TotalSize > 0)
+        {
+            double wastePct = wastedAll * 100.0 / data.TotalSize;
+            sink.Gauges([("Wasted / total string bytes", wastePct, "%")], barMax: 100.0);
+        }
+
+        // Top 8 duplicate groups by wasted bytes — donut
+        var dupSegs = candidates.Take(8)
+            .Select(r => {
+                string lbl = r.Value.Length > 30 ? r.Value[..30] + "\u2026" : r.Value;
+                return (Label: lbl, Value: (double)r.Wasted);
+            })
+            .ToList();
+        if (dupSegs.Count > 0)
+            sink.DonutChart(dupSegs, "Top duplicate groups by wasted bytes",
+                $"{DumpHelpers.FormatSize(wastedAll)}\nwasted");
+
         var rows = candidates.Select(r =>
         {
             string display = r.Value.Length > 72 ? r.Value[..72] + "\u2026" : r.Value;
@@ -65,6 +83,16 @@ public sealed class StringDuplicatesReport
         sink.Table(["Count", "Wasted", "Total", "Length", "Pattern", "Value"], rows,
             $"Top {rows.Count} duplicate groups by wasted bytes" +
             (pattern is not null ? $" (filter={pattern})" : ""));
+
+        // Pattern/hint distribution donut
+        var hintSegs = candidates
+            .GroupBy(r => r.Hint.Length > 0 ? r.Hint : "other")
+            .OrderByDescending(g => g.Sum(r => r.Wasted))
+            .Select(g => (g.Key, (double)g.Sum(r => r.Wasted)))
+            .ToList();
+        if (hintSegs.Count > 1)
+            sink.DonutChart(hintSegs, "Wasted bytes by string pattern",
+                $"{DumpHelpers.FormatSize(wastedAll)}\nwasted");
 
         RenderInternCandidates(candidates, sink);
     }

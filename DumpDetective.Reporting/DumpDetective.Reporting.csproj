@@ -4,6 +4,12 @@
     <ProjectReference Include="..\DumpDetective.Core\DumpDetective.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="Templates\HtmlSink.layout.html" LogicalName="HtmlSink.layout.html" />
+    <EmbeddedResource Include="Templates\HtmlSink.css" LogicalName="HtmlSink.css" />
+    <EmbeddedResource Include="Templates\HtmlSink.js" LogicalName="HtmlSink.js" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>

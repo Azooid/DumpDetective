@@ -135,6 +135,34 @@ public sealed class MemoryLeakReport
                 $"Large Object Heap is {DumpHelpers.FormatSize(data.LohTotal)} \u2014 LOH is never compacted by default.",
                 advice: "Use ArrayPool<T> / MemoryPool<T> for large temporary buffers.");
 
+        // Generation breakdown stacked bar
+        if (totalHeap > 0)
+        {
+            var genSegs = new List<(string Label, double Value)>();
+            if (data.Gen0Total > 0) genSegs.Add(("Gen0", (double)data.Gen0Total));
+            if (data.Gen1Total > 0) genSegs.Add(("Gen1", (double)data.Gen1Total));
+            if (data.Gen2Total > 0) genSegs.Add(("Gen2", (double)data.Gen2Total));
+            if (data.LohTotal  > 0) genSegs.Add(("LOH",  (double)data.LohTotal));
+            if (data.PohTotal  > 0) genSegs.Add(("POH",  (double)data.PohTotal));
+            if (genSegs.Count > 1)
+                sink.StackedBar(genSegs, null, "Heap committed bytes by generation", valueMode: "size");
+        }
+
+        // Top 8 types by instance count — donut
+        var typeCountSegs = data.AllTypes
+            .OrderByDescending(r => r.Count)
+            .Take(8)
+            .Select(r => {
+                string lbl = r.Name.Contains('.')
+                    ? r.Name[(r.Name.LastIndexOf('.') + 1)..]
+                    : r.Name;
+                return (Label: lbl, Value: (double)r.Count);
+            })
+            .ToList();
+        if (typeCountSegs.Count > 1)
+            sink.DonutChart(typeCountSegs, "Top 8 types by instance count",
+                data.TotalObjects > 0 ? $"{data.TotalObjects:N0}\ntotal" : null);
+
         sink.Section($"Step 1  \u2014  dumpheap -stat  (top {top} types by total size)");
         sink.Alert(AlertLevel.Info,
             "All managed types sorted by total retained size.",
@@ -256,17 +284,28 @@ public sealed class MemoryLeakReport
         }
         else
         {
+            bool hasRetained = suspects.Any(t => t.RetainedSize > 0);
+            var suspectHeaders = hasRetained
+                ? new[] { "Type", "Count \u2193", "Total Size", "Retained (samples)", "in Gen2", "in LOH" }
+                : new[] { "Type", "Count \u2193", "Total Size", "in Gen2", "in LOH" };
             sink.Table(
-                ["Type", "Count \u2193", "Total Size", "in Gen2", "in LOH"],
-                suspects.Select(t => new[]
+                suspectHeaders,
+                suspects.Select(t =>
                 {
-                    t.Name.Length > 65 ? t.Name[..65] + "\u2026" : t.Name,
-                    t.Count.ToString("N0"),
-                    DumpHelpers.FormatSize(t.Size),
-                    t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014",
-                    t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "\u2014",
+                    var row = new List<string>
+                    {
+                        t.Name.Length > 65 ? t.Name[..65] + "\u2026" : t.Name,
+                        t.Count.ToString("N0"),
+                        DumpHelpers.FormatSize(t.Size),
+                    };
+                    if (hasRetained) row.Add(t.RetainedSize > 0 ? DumpHelpers.FormatSize(t.RetainedSize) : "\u2014");
+                    row.Add(t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014");
+                    row.Add(t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "\u2014");
+                    return row.ToArray();
                 }).ToList(),
-                "High count + Gen2 presence = not being collected = strong managed memory leak signal.");
+                hasRetained
+                    ? "High count + Gen2 presence = not being collected = strong managed memory leak signal.  Retained = sum of BFS-retained bytes for sampled instances."
+                    : "High count + Gen2 presence = not being collected = strong managed memory leak signal.");
         }
     }
 
@@ -287,20 +326,26 @@ public sealed class MemoryLeakReport
         }
         else
         {
+            bool hasRetained = sizeSuspects.Any(t => t.RetainedSize > 0);
+            var sizeHeaders = hasRetained
+                ? new[] { "Type", "Total Size \u2193", "Count", "Avg / Instance", "Retained (samples)", "in Gen2", "in LOH" }
+                : new[] { "Type", "Total Size \u2193", "Count", "Avg / Instance", "in Gen2", "in LOH" };
             sink.Table(
-                ["Type", "Total Size \u2193", "Count", "Avg / Instance", "in Gen2", "in LOH"],
+                sizeHeaders,
                 sizeSuspects.Select(t =>
                 {
                     long avg = t.Count > 0 ? t.Size / t.Count : 0;
-                    return new[]
+                    var row = new List<string>
                     {
                         t.Name.Length > 60 ? t.Name[..60] + "\u2026" : t.Name,
                         DumpHelpers.FormatSize(t.Size),
                         t.Count.ToString("N0"),
                         DumpHelpers.FormatSize(avg),
-                        t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014",
-                        t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "\u2014",
                     };
+                    if (hasRetained) row.Add(t.RetainedSize > 0 ? DumpHelpers.FormatSize(t.RetainedSize) : "\u2014");
+                    row.Add(t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014");
+                    row.Add(t.LohCount  > 0 ? $"{t.LohCount:N0}  ({DumpHelpers.FormatSize(t.LohSize)})"  : "\u2014");
+                    return row.ToArray();
                 }).ToList(),
                 "Few instances with huge average size = large-array or cache accumulation. LOH = never compacted by GC.");
         }

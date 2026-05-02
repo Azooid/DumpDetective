@@ -80,8 +80,18 @@ public sealed class DumpContext : IDisposable
     /// <see cref="GetOrCreateAnalysis{T}"/> calls return it immediately without executing a factory.
     /// Call this during collection to pre-populate expensive caches before parallel sub-reports run.
     /// </summary>
-    internal void PreloadAnalysis<T>(T value) where T : class
+    public void PreloadAnalysis<T>(T value) where T : class
         => _onceCache.TryAdd(typeof(T), (object)new Lazy<T>(() => value));
+
+    /// <summary>
+    /// Replaces the cached value for <typeparamref name="T"/> with <paramref name="replacement"/>.
+    /// Use this to release a large in-memory cache after all consumers have finished
+    /// (e.g. replace a loaded <c>BfsCacheBox</c> with an empty one to free the CSR arrays).
+    /// </summary>
+    public void ReplaceAnalysis<T>(T replacement) where T : class
+    {
+        _onceCache[typeof(T)] = (object)new Lazy<T>(() => replacement);
+    }
 
     private DumpContext(string path, DataTarget dt, ClrRuntime rt, string? archWarning)
     {

@@ -15,16 +15,47 @@ namespace DumpDetective.Reporting.Reports;
 /// </summary>
 public static class AnalyzeReport
 {
+    private static readonly (string Heading, string[] Names)[] s_fullAnalyzeGroups =
+    [
+        ("Heap Overview",
+        [
+            "heap-stats", "gen-summary", "heap-fragmentation", "large-objects", "pinned-objects",
+        ]),
+        ("Retention / Leak Signals",
+        [
+            "memory-leak", "high-refs", "string-duplicates", "static-refs", "weak-refs",
+        ]),
+        ("GC / Lifetime",
+        [
+            "finalizer-queue", "handle-table",
+        ]),
+        ("Threads / Concurrency",
+        [
+            "thread-analysis", "thread-pool", "deadlock-detection", "async-stacks",
+        ]),
+        ("Exceptions / Diagnostics",
+        [
+            "exception-analysis", "event-analysis",
+        ]),
+        ("Infrastructure / Network",
+        [
+            "http-requests", "connection-pool", "wcf-channels", "timer-leaks",
+        ]),
+        ("Runtime Inventory",
+        [
+            "module-list",
+        ]),
+    ];
+
     // ── Sub-reports (full mode) ───────────────────────────────────────────────
 
     /// <summary>
     /// Runs all <see cref="ICommand.IncludeInFullAnalyze"/> commands in parallel,
     /// captures each to its own <see cref="CaptureSink"/>, then replays in order.
     /// </summary>
-    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, ProgressLogger? log = null)
+    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, IReadOnlyList<ICommand> commands, ProgressLogger? log = null)
     {
-        var cmds  = (CommandBase.FullAnalyzeCommandsProvider?.Invoke() ?? []).ToArray();
-        int total = cmds.Length;
+        int total = commands.Count;
 
         var captures = new CaptureSink[total];
         for (int i = 0; i < total; i++) captures[i] = new CaptureSink();
@@ -47,21 +78,23 @@ public static class AnalyzeReport
                     var csw = Stopwatch.StartNew();
                     try
                     {
-                        log.StartParallelItem(cmds[i].Name);
-                        var doc = cmds[i].BuildReport(ctx);
+                        log.StartParallelItem(commands[i].Name);
+                        var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
+                        var doc = commands[i].BuildReport(ctx);
+                        ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
                         var details = CommandBase.EndTrace();
                         ReportDocReplay.Replay(doc, captures[i]);
-                        foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
+                        foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= commands[i].Name;
                         csw.Stop();
-                        log.CompleteParallelItem(cmds[i].Name, csw.ElapsedMilliseconds, details);
+                        log.CompleteParallelItem(commands[i].Name, csw.ElapsedMilliseconds, details);
                     }
                     catch (Exception ex)
                     {
                         CommandBase.EndTrace();
                         csw.Stop();
-                        log.Warn($"{cmds[i].Name} failed: {ex.Message}", indent: true);
+                        log.Warn($"{commands[i].Name} failed: {ex.Message}", indent: true);
                         captures[i].Alert(AlertLevel.Warning,
-                            $"⚠ {cmds[i].Name} could not complete",
+                            $"⚠ {commands[i].Name} could not complete",
                             ex.Message,
                             "This sub-report was skipped. All other reports are unaffected.");
                     }
@@ -93,19 +126,21 @@ public static class AnalyzeReport
                             CommandBase.SuppressVerbose = true;
                             try
                             {
-                                var doc = cmds[i].BuildReport(ctx);
+                                var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
+                                var doc = commands[i].BuildReport(ctx);
+                                ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
                                 ReportDocReplay.Replay(doc, captures[i]);
-                                foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= cmds[i].Name;
+                                foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= commands[i].Name;
                                 task.Increment(1);
                                 int n = (int)task.Value;
                                 task.Description = n >= total
                                     ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
-                                    : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(cmds[i].Description)}[/]";
+                                    : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(commands[i].Description)}[/]";
                             }
                             catch (Exception ex)
                             {
                                 captures[i].Alert(AlertLevel.Warning,
-                                    $"⚠ {cmds[i].Name} could not complete",
+                                    $"⚠ {commands[i].Name} could not complete",
                                     ex.Message,
                                     "This sub-report was skipped. All other reports are unaffected.");
                                 task.Increment(1);
@@ -120,8 +155,37 @@ public static class AnalyzeReport
             AnsiConsole.MarkupLine($"[dim]  ✓ {total}/{total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
         }
 
+        // Replay order is grouped for report readability/navigation only.
+        // Execution order remains unchanged in the parallel build loop above.
+        var grouped = new List<(string Heading, List<int> Indexes)>();
+        foreach (var (heading, _) in s_fullAnalyzeGroups)
+            grouped.Add((heading, []));
+        grouped.Add(("Other", []));
+
+        int otherIdx = grouped.Count - 1;
         for (int i = 0; i < total; i++)
-            ReportDocReplay.Replay(captures[i].GetDoc(), sink);
+        {
+            string name = commands[i].Name;
+            int bucket = -1;
+            for (int g = 0; g < s_fullAnalyzeGroups.Length; g++)
+            {
+                if (s_fullAnalyzeGroups[g].Names.Contains(name, StringComparer.OrdinalIgnoreCase))
+                {
+                    bucket = g;
+                    break;
+                }
+            }
+            grouped[bucket >= 0 ? bucket : otherIdx].Indexes.Add(i);
+        }
+
+        foreach (var (heading, indexes) in grouped)
+        {
+            if (indexes.Count == 0) continue;
+
+            sink.Header($"{heading} ({indexes.Count})", navLevel: 2, commandName: null);
+            foreach (var idx in indexes)
+                ReportDocReplay.Replay(captures[idx].GetDoc(), sink);
+        }
     }
 
     // ── Scored summary renderer ───────────────────────────────────────────────
@@ -224,6 +288,16 @@ public static class AnalyzeReport
             if (critCount > 0) caption += $"  |  ✗ {critCount} critical";
             if (warnCount > 0) caption += $"  |  ⚠ {warnCount} warning";
             if (infoCount  > 0) caption += $"  |  ℹ {infoCount} info";
+
+            // Severity breakdown donut
+            var sevSegs = new List<(string Label, double Value)>();
+            if (critCount > 0) sevSegs.Add(("✗ Critical", critCount));
+            if (warnCount > 0) sevSegs.Add(("⚠ Warning",  warnCount));
+            if (infoCount  > 0) sevSegs.Add(("ℹ Info",    infoCount));
+            if (sevSegs.Count > 0)
+                sink.DonutChart(sevSegs, "Findings by severity",
+                    $"{s.Findings.Count}\nfindings");
+
             sink.Table(["Severity", "Category", "Finding", "Evidence", "Recommendation"], findingRows, caption);
 
             // Severity legend
@@ -273,6 +347,16 @@ public static class AnalyzeReport
         // Dynamic interpretation of memory distribution
         if (s.TotalHeapBytes > 0)
         {
+            // Generation breakdown stacked bar
+            var genSegs = new List<(string Label, double Value)>();
+            if (s.Gen0Bytes > 0) genSegs.Add(("Gen0", (double)s.Gen0Bytes));
+            if (s.Gen1Bytes > 0) genSegs.Add(("Gen1", (double)s.Gen1Bytes));
+            if (s.Gen2Bytes > 0) genSegs.Add(("Gen2", (double)s.Gen2Bytes));
+            if (s.LohBytes  > 0) genSegs.Add(("LOH",  (double)s.LohBytes));
+            if (s.PohBytes  > 0) genSegs.Add(("POH",  (double)s.PohBytes));
+            if (genSegs.Count > 1)
+                sink.StackedBar(genSegs, null, "Heap committed bytes by generation", valueMode: "size");
+
             double gen2Pct = s.Gen2Bytes * 100.0 / s.TotalHeapBytes;
             double lohPct  = s.LohBytes  * 100.0 / s.TotalHeapBytes;
             if (gen2Pct > 50)
@@ -302,11 +386,24 @@ public static class AnalyzeReport
                     advice: "Run 'heap-fragmentation <dump>' and 'pinned-objects <dump>' to identify pinned handles causing fragmentation.");
         }
         if (s.TopTypes.Count > 0)
+        {
+            // Top 8 types by size — donut above the table
+            var typeSegs = s.TopTypes.Take(8)
+                .Select(t => {
+                    string lbl = t.Name.Contains('.') ? t.Name[(t.Name.LastIndexOf('.') + 1)..] : t.Name;
+                    if (lbl.Length > 30) lbl = lbl[..30] + "\u2026";
+                    return (Label: lbl, Value: (double)t.TotalBytes);
+                })
+                .ToList();
+            sink.DonutChart(typeSegs, "Top 8 types by heap size",
+                s.TotalHeapBytes > 0 ? $"{FormatSize(s.TotalHeapBytes)}\ntotal" : null);
+
             sink.Table(
                 ["Type", "Count", "Total Size"],
                 s.TopTypes.Take(25).Select(t =>
                     new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
                 "Top types by size — types with very high counts or large footprints are the primary leak investigation targets");
+        }
 
         // ── Threads & Thread Pool ─────────────────────────────────────────────
         sink.Section("Threads & Thread Pool");
@@ -334,6 +431,17 @@ public static class AnalyzeReport
             ("TP active",      $"{s.TpActiveWorkers} / {s.TpMaxWorkers} max"),
             ("TP idle",        s.TpIdleWorkers.ToString()),
         ]);
+        // Thread pool utilisation gauges
+        if (s.TpMaxWorkers > 0)
+        {
+            double activePct = s.TpActiveWorkers * 100.0 / s.TpMaxWorkers;
+            double blockedPct = s.ThreadCount > 0 ? s.BlockedThreadCount * 100.0 / s.ThreadCount : 0;
+            sink.Gauges(
+            [
+                ("TP active workers", activePct, "%"),
+                ("Blocked threads",   blockedPct, "%"),
+            ], barMax: 100.0);
+        }
         if (s.BlockedThreadCount > 5)
             sink.Alert(AlertLevel.Warning,
                 $"{s.BlockedThreadCount} blocked threads detected",
@@ -388,9 +496,22 @@ public static class AnalyzeReport
                         "Active exceptions on thread stacks indicate the application was in a failed state at capture time.");
 
             if (s.ExceptionCounts.Count > 0)
+            {
+                // Exception type donut above the table
+                var exSegs = s.ExceptionCounts.Take(8)
+                    .Select(e => {
+                        string lbl = e.Name.Contains('.') ? e.Name[(e.Name.LastIndexOf('.') + 1)..] : e.Name;
+                        return (Label: lbl, Value: (double)e.Count);
+                    })
+                    .ToList();
+                if (exSegs.Count > 0)
+                    sink.DonutChart(exSegs, "Exception count by type (top 8)",
+                        $"{s.ExceptionCounts.Sum(e => e.Count):N0}\ntotal");
+
                 sink.Table(
                     ["Exception Type", "Count"],
                     s.ExceptionCounts.Take(15).Select(e => new[] { e.Name, e.Count.ToString("N0") }).ToList());
+            }
 
             if (ctx is not null)
             {
@@ -468,6 +589,20 @@ public static class AnalyzeReport
             ("WCF objects",     $"{s.WcfObjectCount:N0}  (faulted: {s.WcfFaultedCount:N0})"),
             ("DB connections",  s.ConnectionCount.ToString("N0")),
         ]);
+        // Handle kind distribution donut
+        {
+            var handleSegs = new List<(string Label, double Value)>();
+            if (s.StrongHandleCount > 0) handleSegs.Add(("Strong",  (double)s.StrongHandleCount));
+            if (s.PinnedHandleCount > 0) handleSegs.Add(("Pinned",  (double)s.PinnedHandleCount));
+            if (s.WeakHandleCount   > 0) handleSegs.Add(("Weak",    (double)s.WeakHandleCount));
+            if (handleSegs.Count > 1)
+                sink.DonutChart(handleSegs, "GC handles by kind",
+                    $"{s.StrongHandleCount + s.PinnedHandleCount + s.WeakHandleCount:N0}\nhandles");
+        }
+        // Finalizer queue depth gauge (threshold: 500 = critical)
+        if (s.FinalizerQueueDepth > 0)
+            sink.Gauges([("Finalizer queue depth", (double)s.FinalizerQueueDepth, " objects")],
+                barMax: 500.0);
         if (s.FinalizerQueueDepth >= 500)
             sink.Alert(AlertLevel.Critical,
                 $"Finalizer queue: {s.FinalizerQueueDepth:N0} objects pending cleanup",
@@ -553,9 +688,15 @@ public static class AnalyzeReport
                 ("Wasted bytes",       FormatSize(s.StringWastedBytes)),
                 ("Total string bytes", FormatSize(s.StringTotalBytes)),
             ]);
+            // Wasted vs total string bytes gauge
+            if (s.StringTotalBytes > 0)
+            {
+                double wastePct = s.StringWastedBytes * 100.0 / s.StringTotalBytes;
+                sink.Gauges([("String memory wasted", wastePct, "%")], barMax: 100.0);
+            }
         }
 
-        // ── Modules ───────────────────────────────────────────────────────────
+        // ── Modules ────────────────────────────────────────────────────────────────────────────
         sink.Section("Modules");
         sink.KeyValues(
         [
@@ -599,7 +740,18 @@ public static class AnalyzeReport
                                        ? $"{strType.Count:N0}  ({FormatSize(strType.TotalBytes)})"
                                        : "—"),
             ]);
-
+            // Generation breakdown stacked bar in leak context
+            if (s.TotalHeapBytes > 0)
+            {
+                var leakGenSegs = new List<(string Label, double Value)>();
+                if (s.Gen0Bytes > 0) leakGenSegs.Add(("Gen0", (double)s.Gen0Bytes));
+                if (s.Gen1Bytes > 0) leakGenSegs.Add(("Gen1", (double)s.Gen1Bytes));
+                if (s.Gen2Bytes > 0) leakGenSegs.Add(("Gen2", (double)s.Gen2Bytes));
+                if (s.LohBytes  > 0) leakGenSegs.Add(("LOH",  (double)s.LohBytes));
+                if (s.PohBytes  > 0) leakGenSegs.Add(("POH",  (double)s.PohBytes));
+                if (leakGenSegs.Count > 1)
+                    sink.StackedBar(leakGenSegs, null, "Generation distribution — Gen2 growth is the primary leak signal", valueMode: "size");
+            }
             if (gen2Pct > 50)
                 sink.Alert(AlertLevel.Critical,
                     $"Gen2 holds {gen2Pct:F1}% of managed heap",

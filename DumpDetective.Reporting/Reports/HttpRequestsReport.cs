@@ -39,6 +39,16 @@ public sealed class HttpRequestsReport
         else if (clientCount > 1)
             sink.Alert(AlertLevel.Warning, $"{clientCount} HttpClient/Handler instances found.");
 
+        // ── HTTP object type distribution ────────────────────────────────────
+        var typeSegs = data.Objects
+            .GroupBy(o => o.Type.Split('.').Last())
+            .OrderByDescending(g => g.Count())
+            .Take(8)
+            .Select(g => (g.Key, (double)g.Count()))
+            .ToList();
+        if (typeSegs.Count > 1)
+            sink.DonutChart(typeSegs, "HTTP objects by type", $"{data.Objects.Count:N0}\ntotal");
+
         RenderRequestDetails(sink, data.Objects);
         RenderResponseCodes(sink, data.Objects);
         if (showAddr) RenderAddresses(sink, data.Objects);
@@ -73,6 +83,14 @@ public sealed class HttpRequestsReport
             .Select(g => new[] { g.Key.ToString(), g.Count().ToString("N0"), StatusCategory(g.Key) })
             .ToList();
         sink.Table(["Status Code", "Count", "Category"], rows);
+
+        var catSegs = responses
+            .GroupBy(o => StatusCategory(o.StatusCode))
+            .OrderByDescending(g => g.Count())
+            .Select(g => (g.Key, (double)g.Count()))
+            .ToList();
+        if (catSegs.Count > 1)
+            sink.DonutChart(catSegs, "Responses by status category", $"{responses.Count:N0}\nresps");
     }
 
     private static void RenderAddresses(IRenderSink sink, IReadOnlyList<HttpObjectEntry> objects)

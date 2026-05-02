@@ -32,6 +32,16 @@ public sealed class HandleTableReport
                 kv.Value.Count.ToString("N0"),
                 DumpHelpers.FormatSize(kv.Value.TotalSize),
             }).ToList();
+
+        // GC handle count by kind — donut above the table
+        var handleSegs = data.ByKind
+            .OrderByDescending(kv => kv.Value.Count)
+            .Select(kv => (Label: kv.Key, Value: (double)kv.Value.Count))
+            .ToList();
+        if (handleSegs.Count > 0)
+            sink.DonutChart(handleSegs, "GC handles by kind",
+                $"{data.Total:N0}\nhandles");
+
         sink.Table(["Handle Kind", "Count", "Referenced Size"], rows,
             $"{data.Total:N0} total handles");
         sink.KeyValues([("Total handles", data.Total.ToString("N0"))]);

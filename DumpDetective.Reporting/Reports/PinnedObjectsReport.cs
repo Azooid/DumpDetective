@@ -60,6 +60,17 @@ public sealed class PinnedObjectsReport
                 $"{Fmt(byteArraySize)} in pinned byte[] arrays.",
                 "Byte[] is the most common pinned type from socket/file I/O.",
                 "Use ArrayPool<byte>.Shared or PipeReader/PipeWriter to avoid pinning.");
+
+        // Type distribution donut (top 8 by size)
+        var typeSegs = data.Items
+            .GroupBy(i => i.TypeName.Contains('.') ? i.TypeName[(i.TypeName.LastIndexOf('.')+1)..] : i.TypeName)
+            .OrderByDescending(g => g.Sum(i => i.Size))
+            .Take(8)
+            .Select(g => (g.Key, (double)g.Sum(i => i.Size)))
+            .ToList();
+        if (typeSegs.Count > 1)
+            sink.DonutChart(typeSegs, "Pinned types by total size (top 8)",
+                $"{Fmt(data.Items.Sum(i => i.Size))}\ntotal");
     }
 
     private static void RenderTypeBreakdown(PinnedObjectsData data, IRenderSink sink)
@@ -80,7 +91,16 @@ public sealed class PinnedObjectsReport
     }
 
     private static void RenderGenDistribution(PinnedObjectsData data, IRenderSink sink)
-    {
+    {        // Generation breakdown donut above the table
+        var genSegs = data.Items
+            .GroupBy(i => i.Gen)
+            .OrderBy(g => GenSortKey(g.Key))
+            .Where(g => g.Count() > 0)
+            .Select(g => (Label: g.Key, Value: (double)g.Count()))
+            .ToList();
+        if (genSegs.Count > 1)
+            sink.DonutChart(genSegs, "Pinned handles by generation",
+                $"{data.Items.Count:N0}\npinned");
         var rows = data.Items
             .GroupBy(i => i.Gen)
             .OrderBy(g => GenSortKey(g.Key))

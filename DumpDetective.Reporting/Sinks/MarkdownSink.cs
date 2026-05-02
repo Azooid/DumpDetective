@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 
 namespace DumpDetective.Reporting.Sinks;
 
@@ -64,6 +64,30 @@ public sealed class MarkdownSink : IRenderSink
     public void BeginDetails(string title, bool open = false)
         { _w.WriteLine($"### {title}"); _w.WriteLine(); }
     public void EndDetails() => _w.WriteLine();
+
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
+                         string? caption = null, int topN = 20)
+    {
+        if (caption is not null) _w.WriteLine($"**{caption}**\n");
+        _w.WriteLine("| Method | Module | Incl% | Excl% | Incl |");
+        _w.WriteLine("|--------|--------|------:|------:|-----:|");
+        int shown = 0;
+        WriteNodes(roots, 0, topN, ref shown);
+        _w.WriteLine();
+    }
+
+    void WriteNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string('·', depth * 2);
+            _w.WriteLine($"| {indent}{E(n.Method)} | {E(n.Module)} | {n.InclusivePct:F1}% | {n.ExclusivePct:F1}% | {n.InclusiveSamples:N0} |");
+            if (n.Children is { Count: > 0 })
+                WriteNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
 
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)

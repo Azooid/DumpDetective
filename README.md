@@ -1,8 +1,48 @@
 # DumpDetective
 
-A command-line tool for analysing .NET memory dumps (`.dmp` / `.mdmp`). Built on **ClrMD 3.x** and **.NET 10 Native AOT**, it produces scored health reports, trend reports across multiple dumps, and targeted diagnostics — all exportable to **HTML, Markdown, plain text, JSON, or compressed binary**.
+A command-line tool for understanding .NET production incidents from dumps and traces.
 
-Every command writes an HTML report alongside the dump file by default. Use `--output report.json` (or `.bin`) to save a structured report, then `DumpDetective render report.json` (or `render report.bin`) to convert it to any format at any time without re-opening the dump.
+DumpDetective analyzes `.dmp` / `.mdmp` memory dumps and `.nettrace` / `.etl` traces, then generates human-readable reports that help you answer practical questions quickly:
+
+- Why is memory growing?
+- What is retaining objects?
+- Are we seeing thread pool pressure, deadlocks, or heavy contention?
+- Are exception rates, allocations, or GC pauses abnormal?
+
+Every command writes an HTML report alongside the dump file by default. Use `--output report.bin` to save a compact structured report, then `DumpDetective render report.bin` to convert it to any format at any time without re-opening the dump.
+
+## Features
+
+- One-command health report (`analyze`) with a score and prioritized findings.
+- Deep memory diagnostics (`memory-leak`, `high-refs`, `gc-roots`, `object-inspect`).
+- Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`).
+- Multi-dump trend analysis for comparing behavior over time.
+- Interactive HTML reports with grouped navigation, charts, dark mode, and paged tables.
+- Export and replay support across HTML, Markdown, text, JSON, and compressed binary.
+- Optional BFS cache (`.bfs.idx`) for faster repeated retained-size analysis on large heaps.
+
+## Start Here
+
+If you are new, use this path:
+
+1. Run one full report on your dump: `DumpDetective analyze app.dmp --full`.
+2. Open the generated HTML and check top findings, memory-leak, and high-refs sections first.
+3. If needed, zoom in with targeted commands like `object-inspect`, `gc-roots`, or trace commands on `.nettrace` / `.etl` files.
+
+## Contents
+
+- [Start Here](#start-here)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Build](#build)
+- [Quick Start](#quick-start)
+- [Environment Variables](#environment-variables)
+- [Commands](#commands)
+- [Output Formats](#output-formats)
+- [Project Structure](#project-structure)
+- [Health Score](#health-score)
+- [Performance & Resource Expectations](#performance--resource-expectations)
+- [Thresholds](#thresholds)
 
 ---
 
@@ -32,11 +72,11 @@ Hardware requirements scale with the dump you are analysing. The numbers below a
 
 | Component | Recommended | Why |
 |---|---|---|
-| RAM | 16 GB free (for a 25 GB dump) | Peak working set ≈ 0.5–0.6× dump size; OS also needs headroom |
+| RAM | 16 GB free minimum, 24 GB preferred for `analyze --full` on very large dumps | Heap walk, BFS cache load, and the heaviest sub-reports can temporarily push peak working set into the 15-17 GB range on 100M+ object dumps; newer BFS caching intentionally trades more RAM for less repeated retained-size work |
 | Storage | **NVMe SSD** | Random I/O across entire dump file; faster SSD = faster heap walk |
 | CPU | **8 physical cores (16 logical)** | Heap walk uses 8 workers; a second concurrent walk (event-analysis or heap-fragmentation) can spin up another 8 — 16 logical cores prevents contention |
 
-> **Rule of thumb:** free RAM ≥ 0.6 × dump file size. For a 25 GB dump keep at least 16 GB free. If you are tight on RAM, close other applications before running — the OS will use any free memory as file-system cache for the dump, which speeds up the walk significantly.
+> **Rule of thumb:** free RAM should scale with both dump size and analysis mode. Lightweight or single-command runs are usually much cheaper than `analyze --full`. For very large dumps, keep at least 16 GB free; 24 GB+ is safer if you want all sub-reports, BFS-heavy retention analysis, and fragmentation metrics in one run.
 
 > **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. An NVMe SSD completes a 25 GB / 110 M object dump in ~6–8 minutes. A spinning disk will typically take 20–40 minutes for the same dump and may cause the OS to thrash swap.
 
@@ -88,52 +128,54 @@ The output is a single native binary: `DumpDetective.Cli.exe`.
 
 ## Quick Start
 
+Choose the path that matches your input type.
+
+### Memory Dump Quick Start (`.dmp`, `.mdmp`)
+
+1. Run one full report: `DumpDetective analyze app.dmp --full`
+2. Open the generated HTML report.
+3. Use targeted dump commands only where needed.
+
 ```bash
-# Set a default dump path so you don't have to type it every time
+# Optional: set a default dump path
 $env:DD_DUMP = "C:\dumps\w3wp.dmp"
 
-# Default: writes report as app.html alongside the dump file
-DumpDetective analyze app.dmp
-
-# Full report (all sub-analyses) exported to HTML
+# Fast first run
 DumpDetective analyze app.dmp --full
 
-# Full report with peak memory diagnostics printed at the end
+# Include peak memory diagnostics
 DumpDetective analyze app.dmp --full --debug
 
-# Choose format without specifying a filename
-DumpDetective heap-stats app.dmp --format md      # -> app.md
-DumpDetective heap-stats app.dmp --format bin     # -> app.bin (Brotli-compressed)
-DumpDetective heap-stats app.dmp --format console # -> terminal output
-
-# Save full report as JSON, convert to HTML later -- no dump file needed
-DumpDetective analyze app.dmp --full --output report.json
-DumpDetective render report.json
-
-# Save as compressed binary (Brotli), convert later
+# Save as .bin for replay later (recommended)
 DumpDetective analyze app.dmp --full --output report.bin
 DumpDetective render report.bin
 
-# Write both HTML and bin in one pass
+# Write both HTML and .bin in one pass
 DumpDetective analyze app.dmp --full -o report.html -o report.bin
-DumpDetective analyze app.dmp --full --format html --format bin
 
-# Trend report across a series of dumps
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp
+# Run a focused dump command
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
 
-# Save raw trend data as JSON (includes all per-dump sub-reports when --full)
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output snapshots.json
-
-# Re-render the raw JSON at a different baseline or format -- no dump files needed
-DumpDetective render snapshots.json --baseline 2 --output report.html
-
-# Or point at a folder -- picks up all .dmp files sorted by timestamp
-DumpDetective trend-analysis C:\dumps\
-
-# Compare two saved trend files (no dump files needed)
+# Trend across multiple dumps
 DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --full --output week1.bin
 DumpDetective trend-analysis d4.dmp d5.dmp d6.dmp --full --output week2.bin
 DumpDetective diff week1.bin week2.bin -o delta.html
+```
+
+### .NET Trace Quick Start (`.nettrace`, `.etl`)
+
+1. Start with a combined trace report: `DumpDetective trace-analyze app.nettrace`
+2. Open the HTML report to identify hotspots.
+3. Run a single trace command for deeper drill-down.
+
+```bash
+# Combined trace analysis (CPU + alloc + GC + exceptions + contention + starvation)
+DumpDetective trace-analyze app.nettrace
+
+# Focused trace commands
+DumpDetective cpu-trace app.nettrace --output cpu-report.html
+DumpDetective gc-trace perf.etl --process w3wp --top 50 --output gc-report.html
+DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
 ```
 
 ---
@@ -148,6 +190,22 @@ DumpDetective diff week1.bin week2.bin -o delta.html
 
 ## Commands
 
+Detailed command references:
+
+- [Memory Guide](Docs/Memory-Guide.md)
+- [Trace Guide](Docs/Trace-Guide.md)
+
+### Command Families
+
+| Family | Commands | Input |
+|---|---|---|
+| Health / orchestration | `analyze`, `trend-analysis` | dump files |
+| Report replay / comparison | `render`, `diff` | saved `.json` / `.bin` |
+| Memory dump analysis | `heap-stats`, `gen-summary`, `memory-leak`, `gc-roots`, `object-inspect`, `build-bfs`, and related dump commands | `.dmp`, `.mdmp` |
+| Trace analysis | `trace-analyze`, `cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation` | `.nettrace`, `.etl` |
+
+The sections below follow that same split: high-level workflows first, then dump-only commands, then trace-only commands.
+
 ### `analyze`
 
 Scored health report for a single dump.
@@ -160,10 +218,9 @@ Options:
   --debug              Print peak working set / managed heap / private bytes at exit
   -o, --output <file>  Write report to file (.html / .md / .txt / .json / .bin)
                        Repeatable: -o report.html -o report.bin  writes both files
-  --format <fmt>       Output format shorthand: html|md|json|bin|console
+  --format <fmt>       Output format shorthand: html|md|json|bin
                        Repeatable: --format html --format bin  writes both files
                        Combined: -o report.html --format bin  auto-adds report.bin
-  --output console     Print to terminal instead of writing a file
   Default: writes <dump-name>.html alongside the dump
 ```
 
@@ -181,9 +238,9 @@ Options:
 DumpDetective analyze app.dmp
 DumpDetective analyze app.dmp --full
 DumpDetective analyze app.dmp --full --output full-report.html
+DumpDetective analyze app.dmp --full --output full-report.html --format bin
 DumpDetective analyze app.dmp --full --output full-report.html --debug
 DumpDetective analyze app.dmp --format bin     # Brotli-compressed output
-DumpDetective analyze app.dmp --output console # terminal only
 ```
 
 ---
@@ -208,7 +265,7 @@ Options:
                            .json  -- saves raw snapshot data (re-render any time with 'render')
                            .bin   -- saves Brotli-compressed raw snapshot data
                            Repeatable: -o trends.html -o trends.bin  writes both files
-  --format <fmt>           Format shorthand: html|md|json|bin|console
+  --format <fmt>           Format shorthand: html|md|json|bin
                            Repeatable: --format html --format bin  writes both files
                            Combined: -o trends.html --format bin  auto-adds trends.bin
   Default: writes <command>.html in the current directory
@@ -294,9 +351,9 @@ DumpDetective diff week1.bin week2.bin --command memory-leak --command heap-stat
 
 ---
 
-### `render` / `trend-render`
+### `render`
 
-Converts any DumpDetective JSON or compressed binary file to HTML, Markdown, plain text, or console output -- **no dump file required**.
+Converts any DumpDetective JSON or compressed binary file to HTML, Markdown, or plain text -- **no dump file required**. (Previously also available as `trend-render`; that alias has been removed — use `render` for all file conversions.)
 
 ```
 DumpDetective render <file.json|file.bin> [options]
@@ -317,9 +374,8 @@ Options:
                          Repeatable: --command memory-leak --command heap-stats
                          Valid names: any command that runs in analyze --full
   -o, --output <file>    Output file (.html / .md / .txt / .json / .bin)
-                         Use '--output console' to print to terminal
                          Repeatable: -o report.html -o report.bin  writes both files
-  --format <fmt>         Format shorthand: html|md|json|bin|console
+  --format <fmt>         Format shorthand: html|md|json|bin
                          Repeatable: --format html --format bin  writes both files
                          Combined: -o report.html --format bin  auto-adds report.bin
   Default: writes <input-name>.html
@@ -328,48 +384,48 @@ Options:
 **Examples:**
 ```bash
 # Default: renders to report.html
-DumpDetective render snapshots.json
 DumpDetective render report.bin
+DumpDetective render snapshots.json
 
 # Explicit output format
-DumpDetective render snapshots.json --output report.html
-DumpDetective render snapshots.json --format md
-
-# Print to terminal
-DumpDetective render snapshots.json --output console
+DumpDetective render snapshots.bin --output report.html
+DumpDetective render snapshots.bin --format md
 
 # Trend summary only (no per-dump sub-reports)
-DumpDetective render snapshots.json --mini --output trend-only.html
+DumpDetective render snapshots.bin --mini --output trend-only.html
 
 # Re-render at a different baseline
-DumpDetective render snapshots.json --baseline 2 --output report-d2base.html
+DumpDetective render snapshots.bin --baseline 2 --output report-d2base.html
 
 # Extract dump #4's full sub-report as a standalone file
-DumpDetective render snapshots.json --from 4 --output d4-full.html
+DumpDetective render snapshots.bin --from 4 --output d4-full.html
 
 # Extract just the memory-leak chapter from dump #4
-DumpDetective render snapshots.json --from 4 --command memory-leak --output d4-memleak.html
+DumpDetective render snapshots.bin --from 4 --command memory-leak --output d4-memleak.html
 
 # Extract memory-leak from every dump, stacked in one file
-DumpDetective render snapshots.json --command memory-leak --output all-memleak.html
+DumpDetective render snapshots.bin --command memory-leak --output all-memleak.html
 
 # Multiple commands from dump #2
-DumpDetective render snapshots.json --from 2 --command memory-leak --command heap-stats --output d2-subset.html
+DumpDetective render snapshots.bin --from 2 --command memory-leak --command heap-stats --output d2-subset.html
 
-# Convert a single-dump report JSON / bin to HTML
-DumpDetective render heap-stats.json
+# JSON is still supported when needed
+DumpDetective render snapshots.json --output report.html
+
+# Convert a single-dump report BIN / JSON to HTML
 DumpDetective render heap-stats.bin
+DumpDetective render heap-stats.json
 ```
 
-> **Note:** `--from` and `--command` require `trend-raw` JSON saved with `--full`.
-> If the JSON was saved without `--full`, sub-reports are not present and extraction will fail with a clear error message.
+> **Note:** `--from` and `--command` require `trend-raw` data saved with `--full` (from `.json` or `.bin`).
+> If the source was saved without `--full`, sub-reports are not present and extraction will fail with a clear error message.
 
 ---
 
-### Targeted Commands
+### Memory Dump Commands
 
 Each command accepts `<dump-file>` and `--help`.
-By default every command writes `<dump-name>.html` alongside the dump file. Use `--output <file>`, `--format <fmt>`, or `--output console` to change this.
+By default every command writes `<dump-name>.html` alongside the dump file. Use `--output <file>` or `--format <fmt>` to change this.
 Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `--format html --format bin` writes both files simultaneously. You can also mix them: `-o report.html --format bin` auto-adds `report.bin`.
 
 | Command | Incl. in `--full` | Description |
@@ -398,9 +454,198 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `timer-leaks` | Yes | Timer objects and their callback targets |
 | `module-list` | Yes | Loaded assemblies with path and size |
 | `gc-roots` | No | GC roots and referrers for a given type (too slow for `--full`) |
-| `thread-pool-starvation` | No | ThreadPool starvation heuristic analysis |
 | `type-instances` | No | All instances of a given type (`--type <name>` required) |
-| `object-inspect` | No | All field values of an object (`--address <hex>` required) |
+| `object-inspect` | No | All field values of an object with optional retained-size BFS (`--address <hex>` required) |
+| `build-bfs` | No | Pre-build the BFS retained-size index cache (`.bfs.idx`) for a dump file or every dump in a directory |
+
+---
+
+### `object-inspect`
+
+Inspects all fields of a single managed object. With `--retained` it computes the exclusive retained size of every reference field using BFS.
+
+```
+DumpDetective object-inspect <dump-file> --address <hex> [options]
+
+Options:
+  -x, --address <hex>        Object address (hex, e.g. 0x00000276DB084170)  [required]
+  -d, --depth <N>            Recursion depth into references (default: 1)
+  --max-array <N>            Max array elements to show (default: 10)
+  --retained, -r             Compute retained size per reference field
+  --retained-cap <N>         Max BFS nodes per field (0 = unlimited, default: 0)
+  --no-cache                 Ignore existing .bfs.idx cache; use in-request BFS
+  --no-save                  Do not save a new .bfs.idx cache after building
+  -h, --help                 Show this help
+```
+
+**Examples:**
+```bash
+# Inspect a single object (no retained sizes)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170
+
+# Inspect with retained-size BFS per field (builds cache on first run)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+
+# Inspect with cache loaded (fast — no BFS rebuild)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+
+# Recurse 3 levels deep, all fields use cache
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained -d 3
+
+# Cap BFS per field to 1M nodes (fast estimate for very deep graphs)
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained --retained-cap 1000000
+```
+
+> **Tip:** Run `build-bfs` once before `object-inspect --retained` so the first retained-size run is instant.
+
+---
+
+### Trace Commands
+
+These commands accept a trace file, not a memory dump. Supported trace inputs are `.nettrace` and `.etl`.
+
+| Command | Description |
+|---|---|
+| `trace-analyze` | Combined trace report that opens the trace once and runs the supported trace analyzers in sequence |
+| `cpu-trace` | CPU hot path, top methods, and call tree analysis |
+| `alloc-trace` | Allocation hotspot analysis based on `GCAllocationTick` events |
+| `gc-trace` | GC pause analysis, trigger reasons, and per-collection heap metrics |
+| `exceptions-trace` | First-chance exception volume, type breakdown, and flood detection |
+| `contention-trace` | Lock contention hotspot and wait-time analysis |
+| `threadpool-starvation` | ThreadPool starvation detection from wait and adjustment events |
+
+### `trace-analyze`
+
+Opens a trace file once and runs the trace analyzers as a single combined report. This is the trace equivalent of a combined dump analysis run.
+
+```
+DumpDetective trace-analyze <trace-file> [options]
+
+Supported input formats:
+  .nettrace    EventPipe trace collected with a suitable profile
+  .etl         Windows ETW trace
+
+Options:
+  -n, --top <N>            Top N items per section (default: 20)
+  --process <name>         Filter to a specific process name
+  --show-system            Include system/kernel frames in CPU tree (default: hidden)
+  -o, --output <file>      Write report to file (.html / .md / .txt / .json / .bin)
+  --format <fmt>           Output format shorthand: html|md|json|bin
+  -h, --help               Show this help
+```
+
+**Included sub-reports:**
+
+- `cpu-trace` for CPU hot paths and call trees.
+- `alloc-trace` for allocation hotspots.
+- `gc-trace` for GC pause timing and trigger reasons.
+- `exceptions-trace` for exception flood detection.
+- `contention-trace` for lock hotspots and wait times.
+- `threadpool-starvation` for ThreadPool starvation signals.
+
+**Examples:**
+```bash
+DumpDetective trace-analyze app.nettrace
+DumpDetective trace-analyze perf.etl --process w3wp --output trace-report.html
+DumpDetective trace-analyze app.nettrace --top 30 --show-system
+```
+
+### Individual trace analyzers
+
+Use these when you want a single signal instead of the combined `trace-analyze` report:
+
+```bash
+DumpDetective cpu-trace app.nettrace --top 40 --output cpu.html
+DumpDetective alloc-trace app.nettrace --process w3wp --output alloc.html
+DumpDetective gc-trace perf.etl --process w3wp --top 50 --output gc.html
+DumpDetective exceptions-trace app.nettrace --output exceptions.html
+DumpDetective contention-trace perf.etl --process w3wp --output contention.html
+DumpDetective threadpool-starvation perf.nettrace --top 50 --output starvation.html
+```
+
+Common trace use cases:
+
+- Use `cpu-trace` when you need hot methods, hot paths, and a call tree.
+- Use `alloc-trace` when the problem is allocation churn or GC pressure.
+- Use `gc-trace` when you need pause distributions, trigger reasons, or explicit `GC.Collect()` detection.
+- Use `exceptions-trace` when a service is throwing at high volume or hiding error floods.
+- Use `contention-trace` when threads are blocked on locks and you need hotspot call sites.
+- Use `threadpool-starvation` when the runtime is under worker-thread pressure or sync-over-async blocking is suspected.
+
+---
+
+### `build-bfs`
+
+Pre-builds and saves a BFS forward-reference index (`.bfs.idx`) alongside each dump file. Once built, `object-inspect --retained` loads it in seconds instead of re-walking the entire heap.
+
+Accepts either a **single dump file** or a **directory** containing multiple dumps. When a directory is given, each `.dmp`/`.mdmp` file is processed sequentially — one at a time so peak memory stays bounded.
+
+```
+DumpDetective build-bfs <dump-file-or-directory> [options]
+
+Options:
+  --force, -f    Rebuild even if a valid cache already exists
+  --recurse, -r  When input is a directory, also search subdirectories
+  -h, --help     Show this help
+```
+
+**How it works:**
+
+The builder runs a parallel 3-pass algorithm over the managed heap:
+
+| Pass | What it does |
+|---|---|
+| 1 — enumerate | Assigns a stable integer index to every live object; records shallow size |
+| 2 — count edges | Counts outbound references per node (determines CSR array sizes) |
+| 3 — fill edges | Fills the CSR edge arrays with child node indices |
+
+The resulting graph is a **Compressed Sparse Row (CSR)** structure stored as a Brotli-compressed binary file next to the dump (`<dump>.bfs.idx`). The cache is validated against the dump's file size and last-write timestamp — a stale or mismatched cache is automatically ignored and rebuilt.
+
+Once loaded, `ComputeRetained` runs a pure in-memory BFS with zero ClrMD I/O, completing in milliseconds per field regardless of heap size.
+
+This cache is now intentionally optimized for report speed rather than minimum memory footprint. A small change in the retained-size caching path improved estimate precision and made repeated retained-size work much cheaper, but the loaded cache can consume noticeably more RAM on very large heaps.
+
+**Observed tradeoff on a large heap:**
+
+| Metric | Example value |
+|---|---:|
+| Managed objects | ~100 M |
+| `.bfs.idx` file size | ~725 MB |
+| Additional RAM after cache load | ~3 GB |
+| Repeated retained-size work avoided | ~3-7 min |
+| Typical full-report improvement | ~600-800s -> ~200-400s |
+
+If you have enough memory headroom, this is usually a net win: faster reports, less repeated BFS work, and better retained-size estimate accuracy. If RAM is tight, use targeted commands or skip cache loading with `--no-cache`.
+
+**Typical timings (22 GB / 63 M node heap):**
+
+| Phase | Time |
+|---|---:|
+| Pass 1 — enumerate (8 parallel segments) | ~35 s |
+| Pass 2 — count edges (8 parallel segments) | ~40 s |
+| Pass 3 — fill edges (8 parallel segments) | ~38 s |
+| Save (Brotli Optimal, chunked) | ~30 s |
+| **Total build** | **~2.5 min** |
+| Load (subsequent runs) | **~6 s** |
+| Retained BFS per field (post-load) | **< 2 s** |
+
+**Examples:**
+```bash
+# Build and save for a single dump (one-time setup)
+DumpDetective build-bfs app.dmp
+
+# Force rebuild (e.g. after a code update)
+DumpDetective build-bfs app.dmp --force
+
+# Build caches for all dumps in a directory (skips already-valid caches)
+DumpDetective build-bfs D:\dumps
+
+# Build recursively, rebuild all even if caches exist
+DumpDetective build-bfs D:\dumps --recurse --force
+
+# Then use instantly in object-inspect
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+```
 
 ---
 
@@ -410,16 +655,15 @@ Specify an output file with `-o` / `--output`, or use `--format` without a filen
 
 | Extension / keyword | `--format` value | Format |
 |---|---|---|
-| `.html` | `html` | Interactive HTML — sticky sidebar nav, collapsible sections, sortable/filterable tables, **dark mode toggle**, styled alert cards |
+| `.html` | `html` | Interactive HTML — sticky sidebar nav, grouped/collapsible sub-report navigation, built-in charts, sortable/filterable paged tables, **dark mode toggle**, styled alert cards |
 | `.md` | `md` | Markdown — suitable for wiki pages or GitHub |
 | `.json` | `json` | Structured JSON — full report data, re-renderable to any other format with `render` |
 | `.bin` | `bin` | Brotli-compressed JSON — same structure as `.json`, ~50–70% smaller, non-human-readable |
 | `.txt` | `txt` | Plain text |
-| `console` | `console` | Terminal output (Spectre.Console with colour) |
 
 ### Default output
 
-When `-o` / `--output` and `--format` are both omitted, every command writes `<dump-name>.html` alongside the dump file. Use `--output console` to print to the terminal instead.
+When `-o` / `--output` and `--format` are both omitted, every command writes `<dump-name>.html` alongside the dump file.
 
 ### Multi-output and `--format`
 
@@ -453,6 +697,17 @@ DumpDetective render snapshots.json --format md   # -> snapshots.md
 ### Dark mode (HTML output)
 
 The HTML report includes a **🌙 Dark mode** toggle button in the sidebar. Your preference is saved in `localStorage` and respected on subsequent opens. The initial theme follows your OS `prefers-color-scheme` setting.
+
+### HTML report UX
+
+The HTML renderer is designed for large real-world dumps and full combined reports. Current capabilities include:
+
+- Grouped sub-report navigation in the sidebar for `analyze --full` and trend-style combined outputs.
+- Collapsible nav groups with stable active-section highlighting while scrolling through large reports.
+- Self-contained charts and summary visuals embedded directly into the generated HTML.
+- Sortable, filterable tables with paging.
+- Global rows-per-page control plus per-table override for especially large sections.
+- A single output file with embedded CSS and JavaScript, so reports remain portable and easy to share.
 
 ### JSON / binary output and re-rendering
 
@@ -499,20 +754,24 @@ DumpDetective.Core/               Models, interfaces, shared utilities
     HeapSnapshot.cs               TypeStats, InboundCounts, StringGroups, gen counters
   Utilities/
     CliArgs.cs                    Shared argument parser (--help, --output, DD_DUMP, flags)
-    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus, SuppressVerbose
+    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus
+    ExecutionContext.cs           Thread-local verbose suppression and parameter overrides
+    OperationTrace.cs             Per-thread operation timing for full-analyze progress display
     DumpHelpers.cs                FormatSize, IsSystemType, OpenDump, SegmentKindLabel
     HealthScorer.cs               Score(DumpSnapshot, ScoringThresholds) -> (Findings, score)
     ProgressLogger.cs             Live spinner + [SCAN] completion lines via Spectre.Console
+    SinkFactory.cs                Creates single or multi-output IRenderSink from path lists
     ThresholdLoader.cs            Lazy-loads dd-thresholds.json; silent fallback to defaults
 
-DumpDetective.Analysis/           ClrMD data collection and heap walking
+DumpDetective.Analysis.Memory/    ClrMD data collection and heap walking
   DumpCollector.cs                CollectFull / CollectLightweight orchestration
   HeapWalker.cs                   Single EnumerateObjects() call feeding all consumers
   HeapObjectCollector.cs          Manages consumer registration and walk execution
-  SharedReferrerCache.cs          Reverse-reference graph; shared between MemoryLeak + HighRefs
   RuntimeSubCollectors.cs         Thread, handle, module, finalizer-queue sub-collectors
   SnapshotPopulator.cs            Writes consumer results back into DumpSnapshot
   TrendRawSerializer.cs           DumpSnapshot JSON storage for trend analysis
+  BfsIndexBuilder.cs              3-pass parallel CSR graph builder for .bfs.idx cache
+  BfsIndexCache.cs                Load / validate / save the .bfs.idx cache
   Consumers/                      IHeapObjectConsumer implementations (one concern each)
     TypeStatsConsumer.cs
     InboundRefConsumer.cs
@@ -524,15 +783,17 @@ DumpDetective.Analysis/           ClrMD data collection and heap walking
     ThreadNameConsumer.cs
     ThreadPoolConsumer.cs
     LightweightStatsConsumer.cs
+    ReferrerConsumer.cs
+    FragmentationConsumer.cs
+    EventDetailConsumer.cs
     ConditionalWeakTableConsumer.cs
   Analyzers/                      Per-command analysis logic (pure POCO in / POCO out)
-    HeapStatsAnalyzer.cs
-    MemoryLeakAnalyzer.cs
-    HighRefsAnalyzer.cs
-    HeapFragmentationAnalyzer.cs
-    StaticRefsAnalyzer.cs
-    EventAnalysisAnalyzer.cs
-    ... (one file per command)
+    HeapStatsAnalyzer.cs          ... (one file per memory-dump command)
+    SharedReferrerCache.cs        Reverse-reference graph shared by MemoryLeak + HighRefs
+
+DumpDetective.Analysis.Trace/     .nettrace / ETL data collection
+  Analyzers/
+    CpuTraceAnalyzer.cs           ... (one file per trace command)
 
 DumpDetective.Reporting/          Output format implementations
   Sinks/
@@ -541,22 +802,36 @@ DumpDetective.Reporting/          Output format implementations
     TextSink.cs
     ConsoleSink.cs
     JsonSink.cs
+    BinSink.cs                    Brotli-compressed JSON
     CaptureSink.cs
+  Reports/                        Per-command report builders (one file per command)
+    AnalyzeReport.cs
+    TrendAnalysisReport.cs
+    HeapStatsReport.cs            ... (one file per command)
   ReportDocReplay.cs              Replays a ReportDoc through any IRenderSink
+  ReportDiffer.cs                 Produces diff ReportDoc from two ReportDoc inputs
+  ReportDocSlicer.cs              Extracts sub-chapters by command name or dump index
+  ObjectInspectRenderer.cs        Field-level retained-size table builder
   ToolMemoryDiagnostic.cs         Peak working-set / managed-heap / private-bytes poller
 
-DumpDetective.Commands/           ICommand implementations (one file per command; 31 total)
-  AnalyzeCommand.cs               Orchestrator; runs FullAnalyzeCommands in parallel
-  HeapStatsCommand.cs
-  MemoryLeakCommand.cs
-  ... (one file per command)
+DumpDetective.Commands/           ICommand implementations
+  Memory/                         Memory-dump commands (namespace DumpDetective.Commands.Memory)
+    AnalyzeCommand.cs             Orchestrator; runs FullAnalyzeCommands in parallel
+    TrendAnalysisCommand.cs       Cross-dump trend report
+    HeapStatsCommand.cs
+    MemoryLeakCommand.cs          ... (one file per memory command; 28 total)
+  Trace/                          Trace commands (namespace DumpDetective.Commands.Trace)
+    TraceAnalyzeCommand.cs        Orchestrator; runs all six trace sub-analyzers
+    CpuTraceCommand.cs
+    AllocTraceCommand.cs          ... (one file per trace command; 7 total)
+  RenderCommand.cs                Convert any JSON/BIN report to any output format
+  DiffCommand.cs                  Compare two saved report files
+  BuildBfsCommand.cs              Pre-build BFS retained-size index cache
 
 DumpDetective.Cli/                Entry point -- the AOT executable
   Program.cs                      Top-level statements; --debug flag; default HTML output injection
-  Configuration/
-    CommandRegistry.cs            Single source of truth for all ICommand instances
-  Helpers/
-    HelpPrinter.cs                Formats --help output
+  CommandRegistry.cs              Single source of truth for all ICommand instances
+  HelpPrinter.cs                  Formats --help output
 
 DumpDetective.Tests/              xUnit test project (no AOT)
 
@@ -566,12 +841,13 @@ dd-thresholds.json                Override default scoring/trend thresholds (pla
 ### Dependency graph
 
 ```
-Cli ─────────────────────► Commands
- |                              |
- |                              v
- |                          Analysis ─────────┐
- |                                            |
- └──────────────► Reporting ────► Core ◄──────┘
+Cli ──────────────────────────────────────► Commands
+ │                                              │
+ │                                              ▼
+ │                               Analysis.Memory ──────┐
+ │                               Analysis.Trace  ──────┤
+ │                                                     │
+ └──────────────────► Reporting ──────────► Core ◄─────┘
 ```
 
 ---
@@ -613,16 +889,72 @@ Thresholds are fully configurable via `dd-thresholds.json` placed alongside the 
 
 DumpDetective processes dumps by walking every managed object on the heap. Run time and memory scale with **object count**, not dump file size. Dump file size is only a rough guide — a largely native-memory process can produce a multi-GB dump file with very few managed objects.
 
+### Measured Full-Analyze Benchmark
+
+The numbers below come from a real `DumpDetective analyze --full` run on a production-style IIS worker dump of **~25 GB** with **110,472,530 managed objects**.
+
+**End-to-end timings**
+
+| Stage | Time |
+|---|---:|
+| Dump load | ~1s |
+| Collection total | 112.9s |
+| BFS index load | 12.3s |
+| All 23 sub-reports (parallel) | 281.5s |
+| Total execution time | 409.0s |
+
+**Collection breakdown**
+
+| Step | Objects | Time | Throughput |
+|---|---:|---:|---:|
+| Thread scan | 155 | 419ms | ~369/s |
+| Handle scan | 19,418 | 2.5s | ~7,782/s |
+| Heap walk | 110,472,530 | 77.0s | ~1,434,559/s |
+| Finalizer queue scan | 4,273,410 | 32.9s | ~129,839/s |
+
+**Peak tool memory usage**
+
+| Metric | Start | Peak | Growth |
+|---|---:|---:|---:|
+| Working set | 10.6 MB | 15.53 GB | +15.52 GB |
+| Managed heap | 245.6 KB | 15.65 GB | +15.65 GB |
+| Private bytes | 5.9 MB | 16.68 GB | +16.68 GB |
+
+**Memory growth by stage**
+
+| Stage | Working Set Delta | Working Set After | Managed Delta |
+|---|---:|---:|---:|
+| Load dump | +733.8 MB | 746.4 MB | +719.5 MB |
+| Heap walk + scoring (full) | +8.25 GB | 8.97 GB | +4.94 GB |
+| BFS cache load | +4.18 GB | 13.15 GB | +5.71 GB |
+| Sub-reports (all) | +1.82 GB | 14.97 GB | -2.55 GB |
+
+**Slowest analyzers in this run**
+
+| Analyzer | Time |
+|---|---:|
+| memory-leak | 281.5s |
+| high-refs | 280.6s |
+| event-analysis | 265.4s |
+| heap-fragmentation | 264.4s |
+| large-objects | 204.0s |
+| finalizer-queue | 200.1s |
+
+**What this means in practice**
+
+- On a ~25 GB dump, the single heap walk is fast enough to process ~110.5M objects in about 77 seconds on a healthy machine.
+- `analyze --full` is dominated by the retention-heavy analyzers (`memory-leak`, `high-refs`, `event-analysis`, `heap-fragmentation`, `large-objects`, `finalizer-queue`), not by dump load time.
+- BFS cache load is a major but predictable memory spike. If you are short on RAM, prefer targeted commands before running the full combined report.
+- The current BFS cache path is intentionally more aggressive about caching forward-graph data up front. In exchange for a larger in-memory cache, retained-size work is faster and size-estimate precision is better.
+- On very large heaps, this tradeoff is material: a roughly 100M-object dump can produce a `.bfs.idx` file around 725 MB, add about 3 GB of RAM while loaded, and remove roughly 3-7 minutes of repeated retained-size work from the overall report.
+- In practice, that change can pull a large full-report run from roughly 600-800 seconds down into the 200-400 second range, while also improving retained-size estimate accuracy.
+- For a dump of this scale (~25 GB), **NVMe storage and at least 16 GB free RAM are strongly recommended**. If you regularly run full analysis on similar dumps, plan for 24 GB+ free RAM.
+
 ### Heap walk throughput
 
 The single-pass heap walk (which feeds all analysis consumers simultaneously) typically runs at roughly **1,000,000–2,000,000 objects/second** on production machines, with the lower end more representative for very large heaps.
 
-Measured example from a recent IIS `w3wp` production dump:
-
-| Phase | Objects | Time | Throughput |
-|---|---:|---:|---:|
-| Heap walk | 110,472,530 | 81.1 s | ~1,362,210 objs/s |
-| Finalizer queue scan | 4,273,410 | 34.2 s | ~125,015 objs/s |
+See the measured benchmark above for a concrete large-dump example.
 
 ### Combined estimates per dump
 
@@ -631,22 +963,11 @@ Measured example from a recent IIS `w3wp` production dump:
 | < 500 MB | < 1 M | < 5 s | < 300 MB |
 | 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
 | 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
-| 15 – 30 GB | ~50 – 120 M | 6–9 min | 10–14 GB |
+| 15 – 30 GB | ~50 – 120 M | 5–8 min | 12–17 GB |
 
 > Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
 >
 > `analyze --full` includes all 23 sub-reports. `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
-
-Measured full run for a large production dump:
-
-| Metric | Value |
-|---|---|
-| Managed objects | 110,472,530 |
-| Collection time | 118.1 s |
-| Total `analyze --full` time | 469.1 s (~7.8 min) |
-| Peak working set | 11.30 GB |
-| Peak managed heap | 14.52 GB |
-| Peak private bytes | 15.57 GB |
 
 ### What drives `--full` time
 
@@ -683,19 +1004,12 @@ Verified against real dumps:
 | Dump size | Object count | Peak working set | Ratio |
 |---|---|---|---|
 | 3.65 GB | 10.7 M | 2.09 GB | 0.57× |
-| ~25 GB | 110.5 M | 11.30 GB | 0.45× |
+| ~25 GB | 110.5 M | 15.53 GB | 0.62× |
 
 The ratio stays well below 1× because:
 - ClrMD memory-maps the dump rather than loading it — only touched pages are resident.
 - The BFS map stores only 1 parent address per object (16 B/entry) rather than the full object graph.
 - Large structures (`InboundCounts`, `StringGroups`, `BfsMap`) are released as soon as their last consumer finishes, not held for the full run.
-
-| Dump file size | Typical object count | `analyze --full` (wall clock) | Peak working set |
-|---|---|---|---|
-| < 500 MB | < 1 M | < 5 s | < 300 MB |
-| 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
-| 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
-| 15 – 30 GB | ~50 – 120 M | 5–8 min | 8–14 GB |
 
 ### `trend-analysis --full` across multiple dumps
 
@@ -706,13 +1020,26 @@ Example runtimes from real runs:
 | Scenario | Dump size | Object count | Total time | Peak RAM |
 |---|---|---|---|---|
 | Load-test w3wp | 3.65 GB | 10.7 M | 12.5 s | 2.09 GB |
-| Production w3wp | ~25 GB | 110.5 M | 469 s (~7.8 min) | 11.30 GB |
+| Production w3wp | ~25 GB | 110.5 M | 409 s (~6.8 min) | 15.53 GB |
 
-For large production dumps with roughly **100 M+ managed objects**, budget roughly **7–8 minutes** and **11–16 GB RAM** at peak.
+For large production dumps with roughly **100 M+ managed objects**, budget roughly **5–8 minutes** and **15–17 GB RAM** at peak.
 
 ### Offline `render`
 
 `render` on a pre-saved `.json` completes in **under a second** for any output format. No dump file or ClrMD overhead is involved.
+
+### BFS retained-size cache (`.bfs.idx`)
+
+`object-inspect --retained` computes exclusive retained sizes per reference field using BFS. Without a cache this re-walks the full 168 M-edge graph for every field — on a 22 GB heap that takes several minutes.
+
+Run `build-bfs` once to build and save a Brotli-compressed CSR graph index alongside the dump. On subsequent `object-inspect --retained` runs the index loads in ~6 s and each per-field BFS completes in under 2 s regardless of heap depth or object count.
+
+| Scenario | Time |
+|---|---:|
+| First run (no cache) — 22 GB heap, 63 M objects | ~5–15 min |
+| `build-bfs` (one-time, 8 parallel workers) | ~2.5 min |
+| Load existing cache | ~6 s |
+| Per-field retained BFS (post-load) | < 2 s |
 
 ---
 

@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Utilities;
 
@@ -117,6 +117,28 @@ public sealed class CaptureSink : IRenderSink
         if (_detailsStack.Count > 0) _detailsStack.Pop();
     }
 
+    public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
+                         string? caption = null, int topN = 20)
+    {
+        // CaptureSink stores structured elements; fall back to a Text entry for now.
+        if (caption is not null) CurrentElements().Add(new ReportText { Content = caption });
+        int shown = 0;
+        FlattenNodes(roots, 0, topN, ref shown);
+    }
+
+    void FlattenNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string(' ', depth * 2);
+            CurrentElements().Add(new ReportText { Content = $"{indent}{n.InclusivePct:F1}%  {n.Method}  [{n.Module}]" });
+            if (n.Children is { Count: > 0 })
+                FlattenNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
+
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
         => CurrentElements().Add(new ReportExplain
@@ -126,6 +148,42 @@ public sealed class CaptureSink : IRenderSink
             Impact  = impact,
             Bullets = bullets,
             Action  = action,
+        });
+
+    public void Gauges(IReadOnlyList<(string Label, double Value, string Unit)> items, double barMax = 100.0)
+        => CurrentElements().Add(new ReportGauges
+        {
+            Items  = [.. items.Select(i => new ReportGaugeItem(i.Label, i.Value, i.Unit))],
+            BarMax = barMax,
+        });
+
+    public void DonutChart(IReadOnlyList<(string Label, double Value)> segments,
+        string? caption = null, string? centerText = null)
+        => CurrentElements().Add(new ReportDonutChart
+        {
+            Segments   = [.. segments.Select(s => new ReportChartSeg(s.Label, s.Value))],
+            Caption    = caption,
+            CenterText = centerText,
+        });
+
+    public void StackedBar(IReadOnlyList<(string Label, double Value)> segments,
+        string? unit = null, string? caption = null, string? valueMode = null)
+        => CurrentElements().Add(new ReportStackedBar
+        {
+            Segments  = [.. segments.Select(s => new ReportChartSeg(s.Label, s.Value))],
+            Unit      = unit,
+            Caption   = caption,
+            ValueMode = valueMode,
+        });
+
+    public void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
+        string? valueMode = null)
+        => CurrentElements().Add(new ReportSparkline
+        {
+            Values    = [.. values],
+            Caption   = caption,
+            Unit      = unit,
+            ValueMode = valueMode,
         });
 
     public void Dispose() { }

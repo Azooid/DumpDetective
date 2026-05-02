@@ -28,6 +28,10 @@ public sealed class TypeInstancesReport
             ("Total size",       DumpHelpers.FormatSize(data.TotalSize)),
             ("Distinct types",   data.ByType.Count.ToString("N0")),
         ]);
+        if (data.HasRetained)
+            sink.Alert(AlertLevel.Info,
+                "Retained sizes computed via BFS index cache (.bfs.idx).",
+                "Each instance's retained size is the exclusive bytes that would be freed if that object were collected.");
 
         RenderTypeSummary(sink, data);
         RenderGenBreakdown(sink, data);
@@ -38,29 +42,52 @@ public sealed class TypeInstancesReport
     {
         var rows = data.ByType
             .OrderByDescending(kv => kv.Value.TotalSize)
-            .Select(kv => new[]
+            .Select(kv =>
             {
-                kv.Key,
-                kv.Value.Count.ToString("N0"),
-                DumpHelpers.FormatSize(kv.Value.TotalSize),
-                DumpHelpers.FormatSize(kv.Value.MaxSingle),
+                var row = new List<string>
+                {
+                    kv.Key,
+                    kv.Value.Count.ToString("N0"),
+                    DumpHelpers.FormatSize(kv.Value.TotalSize),
+                    DumpHelpers.FormatSize(kv.Value.MaxSingle),
+                };
+                if (data.HasRetained)
+                    row.Add(DumpHelpers.FormatSize(kv.Value.TotalRetainedSize));
+                return row.ToArray();
             }).ToList();
-        sink.Table(["Exact Type", "Count", "Total Size", "Largest Instance"], rows);
+
+        var headers = data.HasRetained
+            ? new[] { "Exact Type", "Count", "Total Size", "Largest Instance", "Retained (samples)" }
+            : new[] { "Exact Type", "Count", "Total Size", "Largest Instance" };
+        sink.Table(headers, rows);
     }
 
     private static void RenderGenBreakdown(IRenderSink sink, TypeInstancesData data)
     {
         sink.Section("Generation Distribution");
-        long g0 = data.ByType.Values.Sum(v => v.Gen0);
-        long g1 = data.ByType.Values.Sum(v => v.Gen1);
-        long g2 = data.ByType.Values.Sum(v => v.Gen2);
+        long g0  = data.ByType.Values.Sum(v => v.Gen0);
+        long g1  = data.ByType.Values.Sum(v => v.Gen1);
+        long g2  = data.ByType.Values.Sum(v => v.Gen2);
         long loh = data.ByType.Values.Sum(v => v.Loh);
-        sink.Table(["Gen", "Count", "% of Total"], [
-            ["Gen0", g0.ToString("N0"), $"{g0 * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-            ["Gen1", g1.ToString("N0"), $"{g1 * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-            ["Gen2", g2.ToString("N0"), $"{g2 * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-            ["LOH",  loh.ToString("N0"), $"{loh * 100.0 / Math.Max(1, data.TotalCount):F1}%"],
-        ]);
+        long poh = data.ByType.Values.Sum(v => v.Poh);
+        long tot = Math.Max(1, data.TotalCount);
+        var genRows = new List<string[]>();
+        genRows.Add(["Gen0", g0.ToString("N0"),  $"{g0  * 100.0 / tot:F1}%"]);
+        genRows.Add(["Gen1", g1.ToString("N0"),  $"{g1  * 100.0 / tot:F1}%"]);
+        genRows.Add(["Gen2", g2.ToString("N0"),  $"{g2  * 100.0 / tot:F1}%"]);
+        genRows.Add(["LOH",  loh.ToString("N0"), $"{loh * 100.0 / tot:F1}%"]);
+        if (poh > 0)
+            genRows.Add(["POH", poh.ToString("N0"), $"{poh * 100.0 / tot:F1}%"]);
+        sink.Table(["Gen", "Count", "% of Total"], genRows);
+
+        var genSegs = new List<(string, double)>();
+        if (g0  > 0) genSegs.Add(("Gen0", g0));
+        if (g1  > 0) genSegs.Add(("Gen1", g1));
+        if (g2  > 0) genSegs.Add(("Gen2", g2));
+        if (loh > 0) genSegs.Add(("LOH",  loh));
+        if (poh > 0) genSegs.Add(("POH",  poh));
+        if (genSegs.Count > 1)
+            sink.DonutChart(genSegs, "Instance count by generation", $"{data.TotalCount:N0}\ntotal");
     }
 
     private static void RenderLargestInstances(IRenderSink sink, TypeInstancesData data, bool showAddr)
@@ -73,11 +100,14 @@ public sealed class TypeInstancesReport
             .ToList();
 
         var headers = showAddr
-            ? new[] { "Size", "Gen", "Address" }
-            : new[] { "Size", "Gen" };
+            ? data.HasRetained ? new[] { "Retained", "Size", "Gen", "Address" } : new[] { "Size", "Gen", "Address" }
+            : data.HasRetained ? new[] { "Retained", "Size", "Gen" }            : new[] { "Size", "Gen" };
         var rows = allLargest.Select(e =>
         {
-            var row = new List<string> { DumpHelpers.FormatSize(e.Size), e.Gen };
+            var row = new List<string>();
+            if (data.HasRetained) row.Add(DumpHelpers.FormatSize(e.RetainedSize));
+            row.Add(DumpHelpers.FormatSize(e.Size));
+            row.Add(e.Gen);
             if (showAddr) row.Add($"0x{e.Addr:X16}");
             return row.ToArray();
         }).ToList();

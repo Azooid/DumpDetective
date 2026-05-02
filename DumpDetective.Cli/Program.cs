@@ -12,7 +12,6 @@ DumpDetective.Core.Utilities.AppInfo.Version =
     ver is not null ? $"v{ver.Major}.{ver.Minor}.{ver.Build}.{ver.Revision}" : "dev";
 
 ReportingBootstrap.Register();
-DumpDetective.Core.Utilities.CommandBase.FullAnalyzeCommandsProvider = () => CommandRegistry.FullAnalyzeCommands;
 
 if (args.Length == 0 || args[0] is "--help" or "-h")
 {

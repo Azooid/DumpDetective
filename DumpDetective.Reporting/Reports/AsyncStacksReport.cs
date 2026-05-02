@@ -47,6 +47,18 @@ public sealed class AsyncStacksReport
         if (total == 0) { sink.Text("No async state machines found."); return; }
 
         int suspended = counts.Where(kv => kv.Key.State == "Awaiting").Sum(kv => kv.Value);
+        int running   = counts.Where(kv => kv.Key.State == "Running").Sum(kv => kv.Value);
+        int completed = counts.Where(kv => kv.Key.State == "Completed").Sum(kv => kv.Value);
+
+        // State distribution donut
+        var stateSegs = new List<(string Label, double Value)>();
+        if (suspended > 0) stateSegs.Add(("Awaiting", suspended));
+        if (running   > 0) stateSegs.Add(("Running",  running));
+        if (completed > 0) stateSegs.Add(("Completed", completed));
+        if (stateSegs.Count > 1)
+            sink.DonutChart(stateSegs, "Async state machine state distribution",
+                $"{total:N0}\nstate machines");
+
         if (suspended > 1000)
             sink.Alert(AlertLevel.Critical, $"{suspended:N0} async state machines suspended (awaiting).",
                 "Investigate task backlog — check thread-pool saturation with thread-pool command.");

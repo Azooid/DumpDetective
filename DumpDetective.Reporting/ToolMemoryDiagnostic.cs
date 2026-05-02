@@ -1,5 +1,4 @@
 using Spectre.Console;
-
 using System.Diagnostics;
 
 namespace DumpDetective.Reporting;
@@ -44,6 +43,26 @@ public static class ToolMemoryDiagnostic
 
     static readonly List<DumpScope> _dumpScopes = [];
 
+    // ── Per-analyzer step tracking ────────────────────────────────────────────
+    private sealed record AnalyzerStepRecord(
+        string Name,
+        long   WsDelta,
+        long   WsAfter,
+        long   ManagedDelta);
+
+    // ── Per-analyzer step tracking (sequential, insertion order preserved) ────────
+    // Written only from the main command thread — plain List<> is sufficient.
+    static List<AnalyzerStepRecord> _pipelineSteps = [];
+    static readonly object _pipelineLock = new();
+
+    // Analyzer steps are written from parallel BuildReport workers and grouped by
+    // an optional dump label (null = single-dump commands like 'analyze').
+    private sealed record AnalyzerGroupedRecord(string? Group, AnalyzerStepRecord Step);
+    static List<AnalyzerGroupedRecord> _analyzerSteps = [];
+    static readonly object _analyzerLock = new();
+    // volatile: set on the orchestrator thread before Parallel.ForEach; read by workers.
+    static volatile string? _currentAnalyzerGroup;
+
     /// <summary>When <c>true</c> (set by <c>--memory</c> flag), memory tables are printed.</summary>
     internal static bool ShowMemory { get; set; }
 
@@ -63,6 +82,10 @@ public static class ToolMemoryDiagnostic
         _peakWorkingSet = _startWorkingSet;
         _peakManaged    = _startManaged;
         _peakPrivate    = _startPrivate;
+
+        _currentAnalyzerGroup = null;
+        lock (_analyzerLock)  _analyzerSteps  = [];
+        lock (_pipelineLock)  _pipelineSteps  = [];
 
         // Poll every 500 ms so peaks inside sub-commands are captured automatically.
         _pollTick = 0;
@@ -95,6 +118,64 @@ public static class ToolMemoryDiagnostic
             if (mgd > _scopePeakManaged) { _scopePeakManaged = mgd; _scopePeakManagedAt = label; }
         }
     }
+
+    /// <summary>
+    /// Captures a memory reading to be used as the "before" baseline for a named step.
+    /// Pass the returned token to <see cref="RecordAnalyzerStep"/> after the step completes.
+    /// Thread-safe; safe to call from parallel workers.
+    /// </summary>
+    public static (long Ws, long Managed) SampleForStep()
+    {
+        var proc = Process.GetCurrentProcess();
+        proc.Refresh();
+        return (proc.WorkingSet64, GC.GetTotalMemory(false));
+    }
+
+    /// <summary>
+    /// Records the WS and managed-heap deltas for a named analyzer step.
+    /// Call <see cref="SampleForStep"/> before the step, then this method after.
+    /// Thread-safe; safe to call from parallel workers.
+    /// </summary>
+    public static void RecordAnalyzerStep(string name, long wsBefore, long managedBefore)
+    {
+        var proc = Process.GetCurrentProcess();
+        proc.Refresh();
+        long wsAfter  = proc.WorkingSet64;
+        long mgdAfter = GC.GetTotalMemory(false);
+        var rec = new AnalyzerStepRecord(name, wsAfter - wsBefore, wsAfter, mgdAfter - managedBefore);
+        lock (_analyzerLock)
+            _analyzerSteps.Add(new AnalyzerGroupedRecord(_currentAnalyzerGroup, rec));
+    }
+
+    /// <summary>
+    /// Records a sequential pipeline stage (e.g. "Load dump", "Heap walk").
+    /// Call <see cref="SampleForStep"/> immediately before the stage, pass the result here
+    /// immediately after. Stages are printed in the order they are recorded.
+    /// </summary>
+    public static void RecordPipelineStep(string name, long wsBefore, long managedBefore)
+    {
+        var proc = Process.GetCurrentProcess();
+        proc.Refresh();
+        long wsAfter  = proc.WorkingSet64;
+        long mgdAfter = GC.GetTotalMemory(false);
+        lock (_pipelineLock)
+            _pipelineSteps.Add(new AnalyzerStepRecord(
+                name,
+                wsAfter  - wsBefore,
+                wsAfter,
+                mgdAfter - managedBefore));
+    }
+
+    /// <summary>
+    /// Sets the group label applied to all subsequent <see cref="RecordAnalyzerStep"/> calls.
+    /// Call this immediately before launching per-dump sub-report workers in trend-analysis.
+    /// Thread-safe via volatile write; must be called from the orchestrator thread before
+    /// any parallel workers start.
+    /// </summary>
+    public static void BeginAnalyzerGroup(string label) => _currentAnalyzerGroup = label;
+
+    /// <summary>Clears the current analyzer group; call after all workers have finished.</summary>
+    public static void EndAnalyzerGroup() => _currentAnalyzerGroup = null;
 
     /// <summary>
     /// Marks the start of a per-dump processing scope (call before opening each dump).
@@ -183,6 +264,111 @@ public static class ToolMemoryDiagnostic
     }
 
     /// <summary>
+    /// Prints the per-analyzer memory delta table. Called from <see cref="PrintSummary"/>.
+    /// Only has output when analyzer steps were recorded via <see cref="RecordAnalyzerStep"/>.
+    /// </summary>
+    internal static void PrintPipelineSteps()
+    {
+        List<AnalyzerStepRecord> steps;
+        lock (_pipelineLock) steps = [.._pipelineSteps];
+        if (steps.Count == 0) return;
+
+        AnsiConsole.WriteLine();
+
+        var table = new Table()
+            .Title("[bold]Memory Usage Per Pipeline Stage[/]")
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("[bold]Stage[/]"))
+            .AddColumn(new TableColumn("[bold]WS \u03b4[/]").RightAligned())
+            .AddColumn(new TableColumn("[bold]WS After[/]").RightAligned())
+            .AddColumn(new TableColumn("[bold]Managed \u03b4[/]").RightAligned());
+
+        foreach (var s in steps)
+        {
+            string wsColor  = Math.Abs(s.WsDelta)      > 500_000_000L ? "red"
+                            : Math.Abs(s.WsDelta)      > 100_000_000L ? "yellow" : "green";
+            string mgdColor = Math.Abs(s.ManagedDelta) > 200_000_000L ? "red"
+                            : Math.Abs(s.ManagedDelta) > 50_000_000L  ? "yellow" : "green";
+
+            table.AddRow(
+                $"[bold]{Markup.Escape(s.Name)}[/]",
+                $"[{wsColor}]{Markup.Escape(FormatDelta(s.WsDelta))}[/]",
+                $"[dim]{Markup.Escape(FormatSize(s.WsAfter))}[/]",
+                $"[{mgdColor}]{Markup.Escape(FormatDelta(s.ManagedDelta))}[/]");
+        }
+
+        AnsiConsole.Write(table);
+    }
+
+    /// <summary>
+    /// Prints the per-analyzer memory delta table. Called from <see cref="PrintSummary"/>.
+    /// Only has output when analyzer steps were recorded via <see cref="RecordAnalyzerStep"/>.
+    /// When steps belong to multiple groups (trend-analysis), one table is printed per group.
+    /// </summary>
+    internal static void PrintAnalyzerSteps()
+    {
+        List<AnalyzerGroupedRecord> all;
+        lock (_analyzerLock) all = [.._analyzerSteps];
+        if (all.Count == 0) return;
+
+        // Collect distinct groups in first-appearance order.
+        // The dictionary uses a non-null sentinel for the ungrouped (null) case because
+        // Dictionary<string?,V> does not accept null keys at runtime even though the type
+        // annotation permits it.
+        const string NullGroupSentinel = "\0";
+        var groups      = new List<string?>();
+        var groupedSets = new Dictionary<string, List<AnalyzerStepRecord>>(StringComparer.Ordinal);
+        foreach (var r in all)
+        {
+            var key = r.Group ?? NullGroupSentinel;
+            if (!groupedSets.ContainsKey(key))
+            {
+                groups.Add(r.Group);
+                groupedSets[key] = [];
+            }
+            groupedSets[key].Add(r.Step);
+        }
+
+        foreach (var group in groups)
+            PrintSingleAnalyzerTable(group, groupedSets[group ?? NullGroupSentinel]);
+    }
+
+    private static void PrintSingleAnalyzerTable(string? group, List<AnalyzerStepRecord> steps)
+    {
+        var sorted = steps.OrderByDescending(static s => Math.Abs(s.WsDelta)).ToArray();
+
+        AnsiConsole.WriteLine();
+
+        string title = group is null
+            ? "[bold]Memory Usage Per Analyzer[/]"
+            : $"[bold]Memory Usage Per Analyzer — {Markup.Escape(group)}[/]";
+
+        var table = new Table()
+            .Title(title)
+            .BorderColor(Color.Grey)
+            .AddColumn(new TableColumn("[bold]Analyzer[/]"))
+            .AddColumn(new TableColumn("[bold]WS \u03b4[/]").RightAligned())
+            .AddColumn(new TableColumn("[bold]WS After[/]").RightAligned())
+            .AddColumn(new TableColumn("[bold]Managed \u03b4[/]").RightAligned());
+
+        foreach (var s in sorted)
+        {
+            string wsColor  = Math.Abs(s.WsDelta)      > 500_000_000L ? "red"
+                            : Math.Abs(s.WsDelta)      > 100_000_000L ? "yellow" : "green";
+            string mgdColor = Math.Abs(s.ManagedDelta) > 200_000_000L ? "red"
+                            : Math.Abs(s.ManagedDelta) > 50_000_000L  ? "yellow" : "green";
+
+            table.AddRow(
+                $"[bold]{Markup.Escape(s.Name)}[/]",
+                $"[{wsColor}]{Markup.Escape(FormatDelta(s.WsDelta))}[/]",
+                $"[dim]{Markup.Escape(FormatSize(s.WsAfter))}[/]",
+                $"[{mgdColor}]{Markup.Escape(FormatDelta(s.ManagedDelta))}[/]");
+        }
+
+        AnsiConsole.Write(table);
+    }
+
+    /// <summary>
     /// Stops the background poller and prints the peak memory summary to the console.
     /// </summary>
     public static void PrintSummary()
@@ -233,6 +419,14 @@ public static class ToolMemoryDiagnostic
             $"[dim]{Markup.Escape(_peakPrivateAt)}[/]");
 
         AnsiConsole.Write(table);
+        PrintPipelineSteps();
+        PrintAnalyzerSteps();
+    }
+
+    static string FormatDelta(long bytes)
+    {
+        if (bytes < 0) return $"-{FormatSize(-bytes)}";
+        return $"+{FormatSize(bytes)}";
     }
 
     static string FormatSize(long bytes)

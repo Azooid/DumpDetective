@@ -1,29 +1,30 @@
 using System.Text;
+using System.Reflection;
 using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Models;
+using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Sinks;
 
 /// <summary>
-/// Self-contained HTML report output — fully offline, no external dependencies.
-/// Optimised for large combined reports (full analyze / trend-full):
-///   • Auto-built sticky sidebar navigation from chapter headers
-///   • Collapsible card sections (click h2 heading to toggle)
-///   • Client-side table sort (click any column header)
-///   • Live table search / filter input per section
-///   • Virtual scroll for tables with > 200 rows (only renders visible rows)
-///   • Back-to-top button
-///   • Print-friendly styles
-///   • Score badges, alert colour coding, responsive layout
+/// Modern redesign of the HTML sink — fully offline, no external dependencies.
+/// Same features as <see cref="HtmlSink"/> but with a refreshed visual theme:
+///   • Indigo-accent color palette with clean slate sidebar
+///   • Pill-badge labels on Explain blocks
+///   • Tighter card shadows, improved typography
+///   • All layout and interaction features preserved
 /// </summary>
 public sealed class HtmlSink : IRenderSink
 {
     readonly StreamWriter _w;
     bool _inSection;
-    bool _chapterBodyOpen;  // true when a <div class="chapter-body"> is open
-    int  _sectionSeq;      // unique id per section card
-    int  _tableSeq;        // unique id per table (for sort/search)
-    int  _chapterSeq;      // unique id per hero (chapter)
+    bool _chapterBodyOpen;
+    int  _sectionSeq;
+    int  _tableSeq;
+    int  _chapterSeq;
+    int  _treeSeq;
+    int  _chartSeq;
 
     public bool    IsFile   => true;
     public string? FilePath => (_w.BaseStream as FileStream)?.Name;
@@ -48,7 +49,6 @@ public sealed class HtmlSink : IRenderSink
                 .Split('|', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
                 .Select(p =>
                 {
-                    // Score chips get colour-coded badge
                     string cls = "chip";
                     if (p.StartsWith("Score:", StringComparison.OrdinalIgnoreCase))
                     {
@@ -64,15 +64,9 @@ public sealed class HtmlSink : IRenderSink
             meta = $"<div class=\"hero-meta\">{string.Join(string.Empty, parts)}</div>";
         }
 
-        // Close the previous chapter-body before opening a new hero.
-        // Without this every chapter-body nests inside the first, breaking the nav.
         if (_chapterBodyOpen)
             _w.WriteLine("</div> <!-- /chapter-body -->");
 
-        // Determine nav level: caller may override via navLevel param (e.g. ReportDocReplay).
-        // Fallback: SuppressVerbose==true → level 2, otherwise level 1.
-        // "Per-Dump Report:" chapters are level 1 (top-level, same as Trend Analysis);
-        // sub-command chapters inside per-dump replays are level 2.
         int resolvedLevel;
         if (navLevelOverride > 0)
             resolvedLevel = navLevelOverride;
@@ -81,13 +75,15 @@ public sealed class HtmlSink : IRenderSink
         else
             resolvedLevel = 1;
 
-        // Strip repetitive prefix for level 2/3 headers
         string displayTitle = resolvedLevel >= 2
             ? System.Text.RegularExpressions.Regex.Replace(title, @"^Dump Detective\s*[—\-]\s*", string.Empty, System.Text.RegularExpressions.RegexOptions.IgnoreCase)
             : title;
 
-        _w.WriteLine($"""
-            <div class="hero" id="ch{id}" data-nav-level="{resolvedLevel}">
+        // Mark as a nav group divider (collapsible section header) when no commandName and level 2
+        string navGroupAttr = (commandName == null && resolvedLevel == 2) ? " data-nav-group=\"1\"" : string.Empty;
+
+                _w.WriteLine($"""
+                        <div class="hero nav-track" id="ch{id}" data-nav-level="{resolvedLevel}" data-track-kind="hero"{navGroupAttr}>
               <h1 class="hero-title">{H(displayTitle)}</h1>
               {meta}
             </div>
@@ -100,11 +96,10 @@ public sealed class HtmlSink : IRenderSink
     {
         CloseSection();
         int id = ++_sectionSeq;
-        // Use sectionKey for tooltip lookup first (stable), fallback to title-matching
         string tip = sectionKey is not null ? TipHtmlByKey(sectionKey) ?? TipHtml(title) : TipHtml(title);
-        _w.WriteLine($"""
-            <div class="card" id="s{id}">
-              <h2 class="card-title" onclick="toggleCard('s{id}')" title="Click to collapse/expand">
+                _w.WriteLine($"""
+                        <div class="card nav-track" id="s{id}" data-track-kind="section">
+              <h2 class="card-title" onclick="toggleCard('s{id}')">
                 <span class="card-arrow">▾</span>{H(title)}{tip}
               </h2>
               <div class="card-body">
@@ -118,7 +113,7 @@ public sealed class HtmlSink : IRenderSink
             if (k.Equals(key, StringComparison.OrdinalIgnoreCase))
             {
                 string lines = string.Join("<br>", text.Split('\n'));
-                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+                return $""" <span class="tip-wrap" data-tip="{lines}" onmouseenter="showTip(this)" onmouseleave="hideTip()" onclick="event.stopPropagation()"><span class="tip-icon">?</span></span>""";
             }
         return null;
     }
@@ -129,7 +124,7 @@ public sealed class HtmlSink : IRenderSink
             if (title.Contains(key, StringComparison.OrdinalIgnoreCase))
             {
                 string lines = string.Join("<br>", text.Split('\n'));
-                return $""" <span class="tip-wrap" onclick="event.stopPropagation()"><span class="tip-icon">?</span><span class="tip-box">{lines}</span></span>""";
+                return $""" <span class="tip-wrap" data-tip="{lines}" onmouseenter="showTip(this)" onmouseleave="hideTip()" onclick="event.stopPropagation()"><span class="tip-icon">?</span></span>""";
             }
         return string.Empty;
     }
@@ -170,7 +165,6 @@ public sealed class HtmlSink : IRenderSink
         ("Module List",             "Loaded .NET assemblies and native modules.\nUnexpected modules may indicate dynamic injection or leaks."),
     ];
 
-    // Stable key → tooltip text; used when sectionKey is provided (avoids title-matching fragility)
     static readonly (string Key, string Text)[] s_tooltipsByKey =
     [
         ("findings",              "Scored health signals detected in this dump.\nCritical findings require immediate investigation."),
@@ -194,7 +188,6 @@ public sealed class HtmlSink : IRenderSink
         _w.WriteLine("<div class=\"kv-grid\">");
         foreach (var (k, v) in pairs)
         {
-            // Try to detect score lines for colour badge
             string valHtml = H(v);
             if (k.Contains("score", StringComparison.OrdinalIgnoreCase) ||
               k.Contains("health", StringComparison.OrdinalIgnoreCase))
@@ -233,9 +226,7 @@ public sealed class HtmlSink : IRenderSink
 
               int diffSepIdx = v.IndexOf(" ⟹ ", StringComparison.Ordinal);
               if (diffSepIdx < 0)
-              {
                 diffSepIdx = v.IndexOf("⟹", StringComparison.Ordinal);
-              }
 
               if (diffSepIdx >= 0)
               {
@@ -253,18 +244,184 @@ public sealed class HtmlSink : IRenderSink
         _w.WriteLine("</div>");
     }
 
+    public void Gauges(IReadOnlyList<(string Label, double Value, string Unit)> items, double barMax = 100.0)
+    {
+        _w.WriteLine("<div class=\"gauge-grid\">");
+        foreach (var (label, value, unit) in items)
+        {
+            double pct       = barMax > 0 ? value / barMax * 100.0 : 0;
+            double barWidth  = Math.Min(pct, 100.0);
+            string levelCls  = pct >= 100 ? "g-crit" : pct >= 80 ? "g-high" : pct >= 50 ? "g-med" : "g-ok";
+
+            _w.Write($"<div class=\"gauge-row {levelCls}\">");
+            _w.Write($"<span class=\"gauge-label\">{H(label)}</span>");
+            _w.Write($"<div class=\"gauge-track\"><div class=\"gauge-fill\" style=\"width:{barWidth:F1}%\"></div></div>");
+
+            string valStr = value == Math.Floor(value)
+                ? $"{value:N0}{H(unit)}"
+                : $"{value:F1}{H(unit)}";
+            if (pct > 100 && barMax > 0)
+            {
+                double mult = value / barMax;
+                string multStr = mult >= 10 ? $"{mult:N1}" : $"{mult:F2}";
+                _w.Write($"<span class=\"gauge-val\">{valStr}<span class=\"gauge-mult\">×{multStr}</span></span>");
+            }
+            else
+            {
+                _w.Write($"<span class=\"gauge-val\">{valStr}</span>");
+            }
+            _w.WriteLine("</div>");
+        }
+        _w.WriteLine("</div>");
+    }
+
+    // ── Chart types ───────────────────────────────────────────────────────────
+
+    private static readonly string[] ChartPalette =
+    [
+        "#6366f1","#22c55e","#f59e0b","#ef4444","#06b6d4",
+        "#8b5cf6","#ec4899","#84cc16","#f97316","#14b8a6",
+        "#0ea5e9","#a855f7","#10b981","#f43f5e","#eab308",
+    ];
+
+    public void DonutChart(IReadOnlyList<(string Label, double Value)> segments,
+                           string? caption = null, string? centerText = null)
+    {
+        double total = segments.Sum(s => s.Value);
+        if (total <= 0) return;
+
+        const double cx = 50, cy = 50, ro = 42, ri = 24;
+        double angle = -Math.PI / 2;   // start at 12 o'clock
+        var paths  = new System.Text.StringBuilder();
+        var legend = new System.Text.StringBuilder();
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var (lbl, val) = segments[i];
+            double frac = val / total;
+            double sweep = frac >= 0.9999 ? Math.PI * 2 * 0.9999 : frac * Math.PI * 2;
+            double endAngle = angle + sweep;
+            int large = sweep > Math.PI ? 1 : 0;
+            string color = ChartPalette[i % ChartPalette.Length];
+            string pct = $"{frac * 100:F1}%";
+
+            double x1 = cx + ro * Math.Cos(angle),  y1 = cy + ro * Math.Sin(angle);
+            double x2 = cx + ro * Math.Cos(endAngle), y2 = cy + ro * Math.Sin(endAngle);
+            double x3 = cx + ri * Math.Cos(endAngle), y3 = cy + ri * Math.Sin(endAngle);
+            double x4 = cx + ri * Math.Cos(angle),  y4 = cy + ri * Math.Sin(angle);
+
+            paths.Append($"""<path d="M{x1:F2},{y1:F2} A{ro},{ro} 0 {large},1 {x2:F2},{y2:F2} L{x3:F2},{y3:F2} A{ri},{ri} 0 {large},0 {x4:F2},{y4:F2} Z" fill="{color}" class="donut-seg"><title>{H(lbl)}: {pct}</title></path>""");
+            legend.Append($"<li class=\"donut-li\"><span class=\"donut-dot\" style=\"background:{color}\"></span><span class=\"donut-lbl\">{H(lbl)}</span><span class=\"donut-pct\">{pct}</span></li>");
+            angle = endAngle;
+        }
+
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"chart-card\"><div class=\"donut-layout\">");
+        _w.WriteLine("<svg class=\"donut-svg\" viewBox=\"0 0 100 100\">");
+        _w.Write(paths);
+        if (centerText is not null)
+        {
+            var parts = centerText.Split('\n');
+            _w.WriteLine($"<text x=\"50\" y=\"{(parts.Length > 1 ? "46" : "52")}\" class=\"donut-ctr-top\">{H(parts[0])}</text>");
+            if (parts.Length > 1)
+                _w.WriteLine($"<text x=\"50\" y=\"58\" class=\"donut-ctr-bot\">{H(parts[1])}</text>");
+        }
+        _w.WriteLine("</svg>");
+        _w.WriteLine($"<ul class=\"donut-legend\">{legend}</ul>");
+        _w.WriteLine("</div></div>");
+    }
+
+    public void StackedBar(IReadOnlyList<(string Label, double Value)> segments,
+                           string? unit = null, string? caption = null,
+                           string? valueMode = null)
+    {
+        double total = segments.Sum(s => s.Value);
+        if (total <= 0) return;
+
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+
+        var track  = new System.Text.StringBuilder();
+        var legend = new System.Text.StringBuilder();
+
+        for (int i = 0; i < segments.Count; i++)
+        {
+            var (lbl, val) = segments[i];
+            double pct = val / total * 100;
+            string color = ChartPalette[i % ChartPalette.Length];
+            string displayVal = sizeMode
+                ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)val)
+                : $"{val:F1}{H(unit ?? "")}";
+            string tip = $"{H(lbl)}: {displayVal} ({pct:F1}%)";
+            track.Append($"<div class=\"sbar-seg\" style=\"width:{pct:F2}%;background:{color}\" title=\"{tip}\"></div>");
+            legend.Append($"<li class=\"sbar-li\"><span class=\"sbar-dot\" style=\"background:{color}\"></span><span class=\"sbar-lbl\">{H(lbl)}</span><span class=\"sbar-val\">{displayVal}</span><span class=\"sbar-pct\">({pct:F1}%)</span></li>");
+        }
+
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"chart-card\"><div class=\"sbar-wrap\">");
+        _w.WriteLine($"<div class=\"sbar-track\">{track}</div>");
+        _w.WriteLine($"<ul class=\"sbar-legend\">{legend}</ul>");
+        _w.WriteLine("</div></div>");
+    }
+
+    public void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
+                          string? valueMode = null)
+    {
+        if (values.Count == 0) return;
+
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string FormatVal(double v) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{H(unit ?? "")}";
+
+        double min = values.Min(), max = values.Max();
+        double range = max - min;
+        if (range == 0) range = 1;
+
+        const int W = 220, H2 = 52;
+        var pts = new System.Text.StringBuilder();
+        for (int i = 0; i < values.Count; i++)
+        {
+            double x = (double)i / Math.Max(values.Count - 1, 1) * W;
+            double y = H2 - (values[i] - min) / range * (H2 - 8) - 4;
+            pts.Append($"{x:F1},{y:F1} ");
+        }
+
+        // Filled area under the line
+        double x0 = 0, xN = W;
+        var area = new System.Text.StringBuilder();
+        area.Append($"M{x0:F1},{H2} ");
+        for (int i = 0; i < values.Count; i++)
+        {
+            double x = (double)i / Math.Max(values.Count - 1, 1) * W;
+            double y = H2 - (values[i] - min) / range * (H2 - 8) - 4;
+            area.Append($"L{x:F1},{y:F1} ");
+        }
+        area.Append($"L{xN:F1},{H2} Z");
+
+        int id = ++_chartSeq;
+        _w.WriteLine($"<div class=\"chart-card spark-wrap\">");
+        if (caption is not null) _w.WriteLine($"<span class=\"spark-label\">{H(caption)}</span>");
+        _w.WriteLine($"<svg class=\"spark-svg\" viewBox=\"0 0 {W} {H2}\">");
+        _w.WriteLine($"<defs><linearGradient id=\"sg{id}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0%\" stop-color=\"#6366f1\" stop-opacity=\".18\"/><stop offset=\"100%\" stop-color=\"#6366f1\" stop-opacity=\"0\"/></linearGradient></defs>");
+        _w.WriteLine($"<path d=\"{area}\" fill=\"url(#sg{id})\"/>");
+        _w.WriteLine($"<polyline points=\"{pts}\" class=\"spark-line\"/>");
+        _w.WriteLine("</svg>");
+        _w.WriteLine($"<span class=\"spark-stats\">min <b>{FormatVal(min)}</b> &nbsp; avg <b>{FormatVal(values.Average())}</b> &nbsp; max <b>{FormatVal(max)}</b></span>");
+        _w.WriteLine("</div>");
+    }
+
     public void Table(string[] headers, IReadOnlyList<string[]> rows, string? caption = null)
     {
         int tid = ++_tableSeq;
-        bool large = rows.Count > 200;
+        bool large = rows.Count > 50;
 
         if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
 
-        // Search input
         _w.WriteLine($"""
             <div class="table-toolbar">
               <input class="tbl-search" id="ts{tid}" placeholder="Filter rows…" oninput="filterTable({tid})" autocomplete="off">
               <span class="row-count" id="rc{tid}">{rows.Count:N0} rows</span>
+              <button class="tbl-csv-btn" onclick="exportCsv({tid})" title="Export visible rows as CSV">⬇ CSV</button>
             </div>
             """);
 
@@ -276,35 +433,28 @@ public sealed class HtmlSink : IRenderSink
         _w.WriteLine("</tr></thead>");
         _w.WriteLine("<tbody>");
 
-        // For large tables write all rows but mark overflow rows as lazy (display:none initially)
-        // JS virtual scroll engine will show/hide based on scroll position
         for (int r = 0; r < rows.Count; r++)
         {
             var row = rows[r];
-            string rowClass = large && r >= 200 ? " class=\"vr\"" : "";
-            _w.Write($"<tr{rowClass}>");
+            _w.Write("<tr>");
             for (int i = 0; i < headers.Length; i++)
             {
                 string cell = i < row.Length ? row[i] : string.Empty;
-                // Color-code cells containing ↑↑ / ↑ / ↓ trend arrows
                 string cellCls = "";
+                string cellContent = H(cell);
                 if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
                 else if (cell is "↑" or "↑ ↑")  cellCls = " class=\"trend-up\"";
                 else if (cell.StartsWith("↓"))    cellCls = " class=\"trend-dn\"";
                 else if (cell.Length > 80)        cellCls = " class=\"long-text\"";
-                // Colour-code alert-level cells
-                else if (cell is "Critical")      cellCls = " class=\"sev-crit\"";
-                else if (cell is "Warning")       cellCls = " class=\"sev-warn\"";
-                else if (cell is "Info")          cellCls = " class=\"sev-info\"";
-                _w.Write($"<td{cellCls}>{H(cell)}</td>");
+                else if (cell is "Critical")      { cellCls = " class=\"sev-crit\""; cellContent = "<span class=\"sev-badge sev-badge-crit\">✗ Critical</span>"; }
+                else if (cell is "Warning")       { cellCls = " class=\"sev-warn\""; cellContent = "<span class=\"sev-badge sev-badge-warn\">⚠ Warning</span>"; }
+                else if (cell is "Info")          { cellCls = " class=\"sev-info\""; cellContent = "<span class=\"sev-badge sev-badge-info\">ℹ Info</span>"; }
+                _w.Write($"<td{cellCls}>{cellContent}</td>");
             }
             _w.WriteLine("</tr>");
         }
 
         _w.WriteLine("</tbody></table></div>");
-
-        if (large)
-            _w.WriteLine($"<p class=\"caption\">⚡ {rows.Count:N0} rows — showing first 200; type in the filter box to search all rows.</p>");
     }
 
     public void Alert(AlertLevel level, string title, string? detail = null, string? advice = null)
@@ -333,7 +483,10 @@ public sealed class HtmlSink : IRenderSink
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
     {
-        _w.WriteLine("<div class=\"explain-block\">");
+        // Rendered as a collapsed accordion in V2 — keeps reports clean;
+        // click "About this section" to expand inline help.
+        _w.WriteLine("<details class=\"explain-accordion\"><summary class=\"explain-summary\"><span class=\"explain-summary-icon\">ℹ</span>About this section</summary>");
+        _w.WriteLine("<div class=\"explain-body\">");
         if (what is not null)
         {
             _w.WriteLine("<div class=\"explain-item\">");
@@ -371,15 +524,102 @@ public sealed class HtmlSink : IRenderSink
             _w.WriteLine($"<p class=\"explain-text\">{H(action)}</p>");
             _w.WriteLine("</div>");
         }
-        _w.WriteLine("</div>");
+        _w.WriteLine("</div></details>");
     }
+
+    public void CallTree(IReadOnlyList<CallTreeNode> roots, string? caption = null, int topN = 20)
+    {
+        if (roots is null || roots.Count == 0) return;
+
+        // Unique ID so multiple trees on the same page don't clash.
+        var treeId = $"ctree{System.Threading.Interlocked.Increment(ref _treeSeq)}";
+
+        if (caption is not null)
+            _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+
+        // Expand / Collapse All toolbar for this tree
+        _w.WriteLine($"<div class=\"ctree-toolbar\">");
+        _w.WriteLine($"  <button class=\"ct-expbtn\" onclick=\"ctExpandAll('{treeId}')\">⊞ Expand All</button>");
+        _w.WriteLine($"  <button class=\"ct-expbtn\" onclick=\"ctCollapseAll('{treeId}')\">⊟ Collapse All</button>");
+        _w.WriteLine("</div>");
+
+        _w.WriteLine($"<div class=\"ctree-wrap\" id=\"{treeId}\">");
+        _w.WriteLine("<table class=\"ctree-table\"><thead><tr>");
+        _w.WriteLine("<th class=\"ctw-name\">Method / Module</th>");
+        _w.WriteLine("<th class=\"ctw-bar\">Incl %</th>");
+        _w.WriteLine("<th class=\"ctw-pct\">Incl %</th>");
+        _w.WriteLine("<th class=\"ctw-pct\">Excl %</th>");
+        _w.WriteLine("<th class=\"ctw-cnt\">Incl</th>");
+        _w.WriteLine("<th class=\"ctw-cnt\">Excl</th>");
+        _w.WriteLine("</tr></thead><tbody>");
+
+        // topN limits the number of ROOT nodes shown; children are always fully rendered
+        // (they start collapsed, so depth doesn't inflate visible rows).
+        int rootsShown = 0;
+        foreach (var node in roots)
+        {
+            if (rootsShown >= topN) break;
+            rootsShown++;
+            RenderTreeRow(node, 0);
+        }
+        _w.WriteLine("</tbody></table></div>");
+    }
+
+    private void RenderTreeRow(CallTreeNode node, int depth)
+    {
+        bool hasChildren = node.Children is { Count: > 0 };
+        string toggleId  = hasChildren ? $"ct{System.Threading.Interlocked.Increment(ref _treeSeq)}" : string.Empty;
+        string indent     = depth > 0 ? $"style=\"padding-left:{8 + depth * 18}px\"" : string.Empty;
+
+        // Heat colour: 0–5% → neutral, 5–20% → orange, >20% → red (light/dark aware via CSS vars)
+        string heatClass  = node.InclusivePct >= 20 ? "ct-hot2"
+                          : node.InclusivePct >= 5  ? "ct-hot1"
+                          : "ct-cool";
+
+        // Bar width capped at 100 px (100% = full bar)
+        int barPx = (int)Math.Min(node.InclusivePct, 100);
+
+        _w.Write($"<tr class=\"ctrow {heatClass}\">");
+
+        // Name cell — contains indent spacer, optional toggle chevron, method+module
+        _w.Write("<td class=\"ctw-name\" " + indent + ">");
+        if (hasChildren)
+            _w.Write($"<span class=\"ct-toggle\" onclick=\"ctToggle('{toggleId}',this)\">▶</span> ");
+        else
+            _w.Write("<span class=\"ct-leaf\">·</span> ");
+        _w.Write($"<span class=\"ct-method\" title=\"{H(node.Method)}\">{H(TruncateName(node.Method, 55))}</span>");
+        if (node.Module.Length > 0)
+            _w.Write($" <span class=\"ct-mod\">{H(TruncateName(node.Module, 30))}</span>");
+        _w.WriteLine("</td>");
+
+        // Bar cell
+        _w.WriteLine($"<td class=\"ctw-bar\"><div class=\"ct-bar-bg\"><div class=\"ct-bar\" style=\"width:{barPx}%\"></div></div></td>");
+
+        _w.WriteLine($"<td class=\"ctw-pct\">{node.InclusivePct:F1}%</td>");
+        _w.WriteLine($"<td class=\"ctw-pct\">{node.ExclusivePct:F1}%</td>");
+        _w.WriteLine($"<td class=\"ctw-cnt\">{node.InclusiveSamples:N0}</td>");
+        _w.WriteLine($"<td class=\"ctw-cnt\">{node.ExclusiveSamples:N0}</td>");
+        _w.WriteLine("</tr>");
+
+        if (hasChildren)
+        {
+            _w.WriteLine($"<tr id=\"{toggleId}\" class=\"ct-children\" style=\"display:none\"><td colspan=\"6\" style=\"padding:0\">");
+            _w.WriteLine("<table class=\"ctree-table ctree-nested\"><tbody>");
+            foreach (var child in node.Children)
+                RenderTreeRow(child, depth + 1);
+            _w.WriteLine("</tbody></table></td></tr>");
+        }
+    }
+
+    static string TruncateName(string s, int max) =>
+        s.Length <= max ? s : s[..(max - 1)] + "…";
 
     public void Dispose()
     {
         CloseSection();
         if (_chapterBodyOpen)
             _w.WriteLine("</div> <!-- /chapter-body -->");
-        _w.WriteLine(Footer);
+        _w.WriteLine(s_footer);
         _w.Dispose();
     }
 
@@ -389,7 +629,7 @@ public sealed class HtmlSink : IRenderSink
     {
         if (_inSection)
         {
-            _w.WriteLine("</div></div>"); // .card-body + .card
+            _w.WriteLine("</div></div>");
             _inSection = false;
         }
     }
@@ -400,393 +640,40 @@ public sealed class HtmlSink : IRenderSink
          .Replace(">", "&gt;")
          .Replace("\"", "&quot;");
 
-    // ── Document head + CSS + skeleton ───────────────────────────────────────
+    void WriteDocHeader()
+    {
+        var now = DateTime.Now;
+        _w.Write(s_docHeader
+            .Replace("{APP_VERSION}", DumpDetective.Core.Utilities.AppInfo.Version)
+            .Replace("{GEN_DATE}", now.ToString("yyyy-MM-dd"))
+            .Replace("{GEN_TIME}", now.ToString("HH:mm:ss"))
+            .Replace("{GEN_DATETIME}", now.ToString("yyyy-MM-dd HH:mm:ss")));
+    }
 
-    void WriteDocHeader() => _w.Write(DocHeader);
+    // ── Template strings (loaded from embedded resources at startup) ─────────
 
-    const string DocHeader = """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-        <meta charset="utf-8">
-        <meta name="viewport" content="width=device-width,initial-scale=1">
-        <title>Dump Detective Report</title>
-        <style>
-        /* ── Reset / Base ─────────────────────────────────────────────── */
-        *{box-sizing:border-box;margin:0;padding:0}
-        html{scroll-behavior:smooth}
-        body{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;background:#f0f4f8;color:#1a202c;font-size:14px;line-height:1.55;display:flex;min-height:100vh}
+    static readonly string s_docHeader;
+    static readonly string s_footer;
 
-        /* ── Sidebar nav ──────────────────────────────────────────────── */
-        #sidebar{position:sticky;top:0;height:100vh;width:200px;min-width:180px;overflow-y:auto;background:#1e293b;color:#cbd5e1;padding:.75rem .6rem;flex-shrink:0;font-size:12px}
-        #sidebar h3{color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;font-size:10px;margin-bottom:.5rem;padding-bottom:.3rem;border-bottom:1px solid #334155}
-        #sidebar a{display:block;padding:.25rem .45rem;color:#94a3b8;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .12s,color .12s;font-size:11.5px}
-        #sidebar a:hover,#sidebar a.active{background:#334155;color:#e2e8f0}
-        .nav-chapter{margin-top:.55rem}
-        .nav-chapter>.nav-title{display:block;padding:.25rem .45rem;color:#e2e8f0;font-weight:600;font-size:11.5px;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .nav-chapter>.nav-title:hover{background:#334155}
-        .nav-card{padding-left:1rem!important;font-size:11px!important;color:#7e93b5!important}
-        .nav-subreports{display:block;padding:.2rem .45rem .2rem 1rem;font-size:11px;color:#475569;cursor:pointer;border-radius:4px;text-decoration:none;user-select:none}
-        .nav-subreports:hover{background:#334155;color:#94a3b8}
-        .nav-sub-chapters{display:none;border-left:1px solid #334155;margin:.1rem 0 .1rem .55rem}
-        .nav-sub-chapters.open{display:block}
-        .nav-sub-chapters a{padding-left:.6rem!important;font-size:11px!important;color:#64748b!important}
-        .nav-sub-chapters a:hover,.nav-sub-chapters a.active{color:#e2e8f0!important}
-        /* Level-2 (per-dump) entries inside the Per-Dump group */
-        .nav-chapter-l2{margin-top:.25rem;margin-left:.3rem}
-        .nav-chapter-l2>.nav-title-l2{display:block;padding:.2rem .4rem;color:#94a3b8;font-weight:600;font-size:11px;text-decoration:none;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-        .nav-chapter-l2>.nav-title-l2:hover{background:#334155;color:#e2e8f0}
-        /* Level-3 sub-reports inside each per-dump */
-        .nav-subreports-l3{padding:.15rem .4rem .15rem 1.2rem!important;font-size:10.5px!important}
-        .nav-sub-l3{margin-left:.8rem}
-        .nav-sub-l3 a{padding-left:.5rem!important;font-size:10.5px!important;color:#475569!important}
-        .nav-sub-l3 a:hover,.nav-sub-l3 a.active{color:#e2e8f0!important}
-        #search-box{width:100%;padding:.3rem .45rem;border-radius:4px;border:1px solid #475569;background:#0f172a;color:#e2e8f0;font-size:11.5px;margin-bottom:.6rem;outline:none}
-        #search-box::placeholder{color:#64748b}
+    static HtmlSink()
+    {
+        var asm    = typeof(HtmlSink).Assembly;
+        var layout = ReadResource(asm, "HtmlSink.layout.html");
+        var css    = ReadResource(asm, "HtmlSink.css");
+        var js     = ReadResource(asm, "HtmlSink.js");
 
-        /* ── Main content ─────────────────────────────────────────────── */
-        #content{flex:1;min-width:0;overflow:auto}
-        main{max-width:1280px;margin:0 auto;padding:.75rem 1.25rem 3rem}
+        var full  = layout.Replace("{STYLES}", css).Replace("{SCRIPTS}", js);
+        const string split = "{DOC_SPLIT}";
+        int idx   = full.IndexOf(split, StringComparison.Ordinal);
+        s_docHeader = full[..idx];
+        s_footer    = full[(idx + split.Length)..];
+    }
 
-        /* ── Hero / Chapter header ────────────────────────────────────── */
-        /* Level-1 hero: main chapter header (blue gradient) */
-        .hero{background:linear-gradient(135deg,#1e293b 0%,#1e3a5f 100%);color:#fff;padding:1.5rem 1.5rem .9rem;margin-top:.75rem;border-bottom:3px solid #3b82f6}
-        .hero-title{font-size:1.35rem;font-weight:700;margin-bottom:.45rem;line-height:1.25}
-        .hero-meta{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.3rem}
-        .chip{display:inline-flex;align-items:center;padding:.2rem .55rem;border-radius:999px;background:rgba(148,163,184,.18);border:1px solid rgba(148,163,184,.3);color:#cbd5e1;font-size:.73rem}
-        .chip-ok  {background:rgba(34,197,94,.18);border-color:rgba(34,197,94,.4);color:#bbf7d0}
-        .chip-warn{background:rgba(251,191,36,.18);border-color:rgba(251,191,36,.4);color:#fef08a}
-        .chip-crit{background:rgba(239,68,68,.18);border-color:rgba(239,68,68,.4);color:#fecaca}
-        /* Level-2 hero: sub-command header (compact, no gradient) */
-        .hero[data-nav-level="2"]{background:#eef2f7;color:#1e293b;padding:.6rem 1.5rem;margin-top:.5rem;border-bottom:1px solid #cbd5e1;border-left:4px solid #3b82f6}
-        .hero[data-nav-level="2"] .hero-title{font-size:1rem;color:#1e3a5f;margin-bottom:.2rem}
-        .hero[data-nav-level="2"] .chip{background:rgba(59,130,246,.1);border-color:rgba(59,130,246,.25);color:#334155}
-        .hero[data-nav-level="2"] .chip-ok  {background:rgba(34,197,94,.12);color:#166534}
-        .hero[data-nav-level="2"] .chip-warn{background:rgba(245,158,11,.12);color:#92400e}
-        .hero[data-nav-level="2"] .chip-crit{background:rgba(239,68,68,.12);color:#991b1b}
-        .chapter-body{margin-bottom:.5rem}
-
-        /* ── Card / Section ───────────────────────────────────────────── */
-        .card{background:#fff;border-radius:8px;margin:.65rem 0;box-shadow:0 1px 3px rgba(0,0,0,.07),0 1px 2px rgba(0,0,0,.05);overflow:visible}
-        .card-title{font-size:1rem;font-weight:700;color:#1e3a5f;padding:.75rem 1rem;cursor:pointer;user-select:none;display:flex;align-items:center;gap:.4rem;border-bottom:1px solid #e2e8f0;border-radius:8px 8px 0 0;position:relative}
-        .card.collapsed .card-title{border-radius:8px}
-        .card-title:hover{background:#f8fafc}
-        .card-arrow{font-size:.7rem;transition:transform .18s;color:#64748b;flex-shrink:0}
-        .card.collapsed .card-arrow{transform:rotate(-90deg)}
-        .card.collapsed .card-body{display:none}
-        .card-body{padding:.75rem 1rem 1rem}
-        h3{font-size:.9rem;font-weight:600;color:#374151;margin:.65rem 0 .35rem}
-
-        /* ── Key-Value grid ───────────────────────────────────────────── */
-        .kv-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:.35rem .75rem;margin:.4rem 0 .65rem}
-        .kv-row{display:flex;gap:.5rem;align-items:baseline;padding:.2rem .4rem;border-radius:4px;background:#fafafa;border:1px solid #f0f0f0}
-        .kv-key{color:#64748b;font-size:12.5px;white-space:nowrap;flex-shrink:0;min-width:160px}
-        .kv-val{font-weight:600;color:#111827;font-size:13px;overflow-wrap:anywhere;display:flex;flex-wrap:wrap;align-items:center;gap:.3rem}
-        .kv-arrow{color:#94a3b8;font-size:12px}
-        .kv-delta{color:#64748b;font-size:12px;font-weight:400}
-        .score-badge{display:inline-block;padding:.15rem .55rem;border-radius:4px;font-weight:700;font-size:13px}
-        .badge-ok  {background:#dcfce7;color:#15803d}
-        .badge-warn{background:#fef9c3;color:#854d0e}
-        .badge-crit{background:#fee2e2;color:#b91c1c}
-
-        /* ── Tables ───────────────────────────────────────────────────── */
-        .table-toolbar{display:flex;align-items:center;gap:.75rem;margin:.35rem 0 .25rem}
-        .tbl-search{flex:1;max-width:340px;padding:.3rem .6rem;border:1px solid #d1d5db;border-radius:4px;font-size:12.5px;outline:none}
-        .tbl-search:focus{border-color:#3b82f6;box-shadow:0 0 0 2px rgba(59,130,246,.15)}
-        .row-count{font-size:11.5px;color:#9ca3af;white-space:nowrap}
-        .table-wrap{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
-        .tbl-large{max-height:520px;overflow-y:auto}
-        table.data-table{width:100%;border-collapse:collapse;font-size:12.5px}
-        table.data-table thead{position:sticky;top:0;z-index:2}
-        th{background:#f1f5f9;padding:.4rem .65rem;text-align:left;font-weight:600;font-size:12px;color:#475569;border-bottom:2px solid #cbd5e1;white-space:nowrap;cursor:pointer;user-select:none;position:relative}
-        th:hover{background:#e2e8f0}
-        .sort-icon{margin-left:.25rem;opacity:.4;font-size:.7rem}
-        th.sort-asc .sort-icon::after{content:"↑";opacity:1}
-        th.sort-desc .sort-icon::after{content:"↓";opacity:1}
-        th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1}
-        td{padding:.32rem .65rem;border-bottom:1px solid #f1f5f9;vertical-align:top;white-space:nowrap}
-        tr:hover td{background:#f8fafc}
-        tr.vr{display:none}
-        td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:420px;line-height:1.35}
-        p.caption{font-size:11.5px;color:#94a3b8;margin:.15rem 0 .35rem;font-style:italic}
-        td.trend-up2{color:#dc2626;font-weight:700}
-        td.trend-up {color:#f97316;font-weight:600}
-        td.trend-dn {color:#16a34a}
-        td.sev-crit {color:#dc2626;font-weight:700}
-        td.sev-warn {color:#d97706;font-weight:600}
-        td.sev-info {color:#2563eb}
-
-        /* ── Alerts ───────────────────────────────────────────────────── */
-        .alert{padding:.55rem .85rem;border-radius:6px;margin:.35rem 0;font-size:13px;border:1px solid transparent}
-        .alert-crit{background:#fef2f2;border-color:#fecaca;border-left:4px solid #ef4444}
-        .alert-warn{background:#fffbeb;border-color:#fde68a;border-left:4px solid #f59e0b}
-        .alert-info{background:#eff6ff;border-color:#bfdbfe;border-left:4px solid #3b82f6}
-        .alert-title{font-weight:600;margin-bottom:.2rem}
-        .alert-icon{margin-right:.35rem}
-        .alert-detail{color:#4b5563;font-size:12px;margin-top:.2rem;font-style:italic}
-        .alert-advice{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #16a34a;border-radius:4px;padding:.35rem .6rem;margin-top:.45rem;font-size:12.5px;color:#14532d;line-height:1.5}
-        .advice-label{display:block;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#15803d;margin-bottom:.15rem}
-
-        /* ── Details accordion ────────────────────────────────────────── */
-        details{border:1px solid #e2e8f0;border-radius:6px;margin:.4rem 0;overflow:hidden}
-        details+details{margin-top:.3rem}
-        summary.det-sum{padding:.5rem .8rem;cursor:pointer;font-weight:600;font-size:.855rem;color:#1e3a6e;list-style:none;background:#f8fafc;display:flex;align-items:center;gap:.4rem}
-        summary.det-sum::-webkit-details-marker{display:none}
-        summary.det-sum::before{content:"▶";font-size:.6rem;transition:transform .15s;color:#7e93b5;flex-shrink:0}
-        details[open] summary.det-sum::before{transform:rotate(90deg)}
-        details[open] summary.det-sum{border-bottom:1px solid #e2e8f0}
-        .details-body{padding:.5rem .8rem}
-        /* ── Explain block ─────────────────────────────────────────────────────────────────── */
-        .explain-block{background:#f0f7ff;border:1px solid #bfdbfe;border-radius:6px;padding:.65rem .9rem;margin:.45rem 0 .75rem;display:flex;flex-direction:column;gap:.45rem}
-        .explain-item{display:flex;flex-direction:column;gap:.1rem}
-        .explain-label{font-size:10.5px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;color:#2563eb}
-        .explain-text{font-size:12.5px;color:#1e3a5f;line-height:1.6;margin:0}
-        .explain-bullets{margin:.15rem 0 0 1.1rem;padding:0;list-style:disc;color:#1e3a5f;font-size:12.5px;line-height:1.65}
-        .explain-action{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #16a34a;border-radius:4px;padding:.35rem .6rem}
-        .explain-action .explain-label{color:#15803d}
-        /* ── Misc ─────────────────────────────────────────────────────── */
-        .body-text{color:#374151;margin:.3rem 0;font-size:13px}
-        .ref-link{color:#6b7280;font-size:12px;margin:.4rem 0 .2rem;font-style:italic}.ref-link a{color:#2563eb;text-decoration:none}.ref-link a:hover{text-decoration:underline}
-        .spacer{height:.5rem}
-        #back-top{position:fixed;bottom:1.5rem;right:1.5rem;background:#1e3a5f;color:#fff;border:none;border-radius:50%;width:40px;height:40px;font-size:1.1rem;cursor:pointer;opacity:0;transition:opacity .2s;z-index:100;display:flex;align-items:center;justify-content:center}
-        #back-top.vis{opacity:.85}
-        #back-top:hover{opacity:1}
-
-        /* ── Metric Tooltips ──────────────────────────────────────────── */
-        .tip-wrap{position:relative;display:inline-flex;align-items:center;margin-left:.4rem;flex-shrink:0;cursor:default}
-        .tip-icon{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;background:#94a3b8;color:#fff;font-size:9px;font-weight:700;line-height:1;user-select:none;flex-shrink:0}
-        .tip-wrap:hover .tip-icon{background:#3b82f6}
-        .tip-box{visibility:hidden;opacity:0;position:absolute;bottom:calc(100% + 6px);left:50%;transform:translateX(-50%);background:#1e293b;color:#e2e8f0;font-size:12px;font-weight:400;line-height:1.55;padding:.55rem .75rem;border-radius:6px;white-space:normal;width:360px;box-shadow:0 4px 12px rgba(0,0,0,.3);pointer-events:none;transition:opacity .15s,visibility .15s;z-index:50;text-align:left}
-        .tip-box::after{content:'';position:absolute;top:100%;left:50%;transform:translateX(-50%);border:5px solid transparent;border-top-color:#1e293b}
-        .tip-wrap:hover .tip-box{visibility:visible;opacity:1}
-
-        /* ── Print ────────────────────────────────────────────────────── */
-        @media print{
-          #sidebar,#back-top{display:none}
-          body{background:#fff;font-size:11px}
-          .card{box-shadow:none;border:1px solid #ccc;break-inside:avoid}
-          .tbl-large{max-height:none;overflow-y:visible}
-          tr.vr{display:table-row!important}
-          .hero{background:#000!important;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-        }
-        </style>
-        </head>
-        <body>
-        <nav id="sidebar">
-          <input id="search-box" placeholder="Search nav…" oninput="filterNav(this.value)">
-          <h3>Contents</h3>
-          <div id="nav-list"></div>
-        </nav>
-        <div id="content"><main id="report-root">
-        """;
-
-    const string Footer = """
-        </main></div>
-        <button id="back-top" title="Back to top" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
-        <script>
-        /* ── Navigation builder ───────────────────────────────────────── */
-        (function(){
-          const nav  = document.getElementById('nav-list');
-          const root = document.getElementById('report-root');
-          function shortTitle(t){ return t.replace(/^Dump Detective\s*[—\-]\s*/i,'').replace(/^Per-Dump\s+/i,''); }
-
-          // Three-tier hierarchy:
-          //   Level 1 → top-level chapter (Trend Analysis Report, Per-Dump Report: Dn)
-          //     └ section cards (for Trend Analysis: Diagnosis Summary, 0. Dump Timeline, …)
-          //     └ Sub-reports collapsible (for Per-Dump Report entries)
-          //   Level 2 → sub-command chapters inside per-dump (Heap Statistics, Thread Analysis, …)
-          //   Level 3 → currently unused
-
-          let curL1Div = null;  // current level-1 nav-chapter div
-          let subList  = null;  // collapsible "Sub-reports" list under level-1
-          let subToggle= null;  // the ▸/▾ toggle
-          let subCount = 0;
-
-          root.querySelectorAll('.hero').forEach(function(h){
-            const id    = h.id;
-            const num   = id.slice(2);
-            const raw   = h.querySelector('.hero-title')?.textContent?.trim() ?? '';
-            const level = parseInt(h.dataset.navLevel ?? '1');
-
-            if(level === 1){
-              // ── Level 1: top-level chapter ────────────────────────────────
-              curL1Div = document.createElement('div');
-              curL1Div.className = 'nav-chapter';
-              subList = null; subToggle = null; subCount = 0;
-
-              const titleA = document.createElement('a');
-              titleA.href = '#' + id;
-              titleA.className = 'nav-title';
-              titleA.textContent = shortTitle(raw);
-              titleA.title = raw;
-              curL1Div.appendChild(titleA);
-
-              // Section cards directly inside this chapter body (e.g. Trend Analysis sections)
-              const chBody = document.getElementById('chb' + num);
-              if(chBody){
-                chBody.querySelectorAll(':scope > .card').forEach(function(c){
-                  const ca = document.createElement('a');
-                  ca.href = '#' + c.id;
-                  ca.className = 'nav-card';
-                  const hdr = c.querySelector('.card-title');
-                  if(hdr){ const cl = hdr.cloneNode(true); cl.querySelectorAll('.tip-wrap').forEach(function(e){e.remove();}); ca.textContent = cl.textContent.replace('▾','').trim(); }
-                  else { ca.textContent = c.id; }
-                  ca.title = ca.textContent;
-                  curL1Div.appendChild(ca);
-                });
-              }
-              nav.appendChild(curL1Div);
-
-            } else if(level === 2){
-              // ── Level 2: sub-command inside per-dump ─────────────────────
-              if(!curL1Div) return;
-
-              // Create the "Sub-reports" collapsible on first encounter under this level-1
-              if(!subList){
-                subList = document.createElement('div');
-                subList.className = 'nav-sub-chapters';
-
-                subToggle = document.createElement('a');
-                subToggle.className = 'nav-subreports';
-                subToggle.textContent = '▸ Sub-reports';
-
-                const sl = subList, st = subToggle;
-                subToggle.onclick = function(e){
-                  e.preventDefault();
-                  const open = sl.classList.toggle('open');
-                  st.textContent = (open ? '▾ ' : '▸ ') + 'Sub-reports (' + subCount + ')';
-                };
-                curL1Div.appendChild(subToggle);
-                curL1Div.appendChild(subList);
-              }
-
-              const a = document.createElement('a');
-              a.href = '#' + id;
-              a.textContent = shortTitle(raw);
-              a.title = raw;
-              subList.appendChild(a);
-              subCount++;
-              subToggle.textContent = '▸ Sub-reports (' + subCount + ')';
-            }
-          });
-        })();
-
-        /* ── Nav filter ───────────────────────────────────────────────── */
-        function filterNav(q){
-          q = q.toLowerCase();
-          const allLinks = document.querySelectorAll('#nav-list a');
-          if(!q){
-            // Clear all inline overrides — CSS class controls visibility again
-            allLinks.forEach(function(a){ a.style.display = ''; });
-            document.querySelectorAll('.nav-sub-chapters').forEach(function(sc){ sc.style.display = ''; });
-            document.querySelectorAll('.nav-subreports').forEach(function(t){ t.style.display = ''; });
-            return;
-          }
-          allLinks.forEach(function(a){
-            a.style.display = a.textContent.toLowerCase().includes(q) ? '' : 'none';
-          });
-          // Auto-expand sub-chapter containers whose children match; hide toggle if none match
-          document.querySelectorAll('.nav-sub-chapters').forEach(function(sc){
-            const anyVis = Array.from(sc.querySelectorAll('a')).some(function(a){ return a.style.display !== 'none'; });
-            sc.style.display = anyVis ? 'block' : 'none';
-            const toggle = sc.previousElementSibling;
-            if(toggle && toggle.classList.contains('nav-subreports'))
-              toggle.style.display = anyVis ? '' : 'none';
-          });
-        }
-
-        /* ── Active nav highlight on scroll ──────────────────────────── */
-        (function(){
-          const targets = Array.from(document.querySelectorAll('.hero,.card'));
-          const navLinks = document.querySelectorAll('#nav-list a');
-          function update(){
-            const mid = window.scrollY + window.innerHeight * 0.35;
-            let best = null;
-            for(const t of targets){
-              if(t.offsetTop <= mid) best = t;
-              else break;
-            }
-            if(best){
-              const id = best.id;
-              navLinks.forEach(function(a){
-                a.classList.toggle('active', a.getAttribute('href') === '#' + id);
-              });
-            }
-          }
-          window.addEventListener('scroll', update, {passive:true});
-        })();
-
-        /* ── Back-to-top button ───────────────────────────────────────── */
-        (function(){
-          const btn = document.getElementById('back-top');
-          window.addEventListener('scroll', function(){
-            btn.classList.toggle('vis', window.scrollY > 400);
-          }, {passive:true});
-        })();
-
-
-
-
-        /* ── Card collapse ────────────────────────────────────────────── */
-        function toggleCard(id){
-          const el = document.getElementById(id);
-          if(el) el.classList.toggle('collapsed');
-        }
-
-        /* ── Table sort ───────────────────────────────────────────────── */
-        var _sortState = {};
-        function sortTable(tid, col){
-          const tbl = document.getElementById('t' + tid);
-          if(!tbl) return;
-          const key = tid + '_' + col;
-          const asc = _sortState[key] !== true;
-          _sortState[key] = asc;
-          // Update sort icons
-          tbl.querySelectorAll('th').forEach(function(th,i){
-            th.classList.remove('sort-asc','sort-desc');
-            if(i === col) th.classList.add(asc ? 'sort-asc' : 'sort-desc');
-          });
-          const tbody = tbl.tBodies[0];
-          const rows = Array.from(tbody.rows);
-          rows.sort(function(a, b){
-            const av = (a.cells[col]?.textContent ?? '').trim();
-            const bv = (b.cells[col]?.textContent ?? '').trim();
-            // Size strings first (KB/MB/GB/TB) — must run before parseFloat
-            // because parseFloat("1.04 MB") === 1.04 which loses the unit
-            const toBytes = function(s){
-              const m = s.match(/^([\d,.]+)\s*(B|KB|MB|GB|TB)$/i);
-              if(!m) return NaN;
-              const mul = {B:1,KB:1024,MB:1048576,GB:1073741824,TB:1099511627776};
-              return parseFloat(m[1].replace(/,/g,'')) * (mul[m[2].toUpperCase()]||1);
-            };
-            const ab = toBytes(av), bb = toBytes(bv);
-            if(!isNaN(ab) && !isNaN(bb)) return asc ? ab-bb : bb-ab;
-            // Plain numbers (strip commas/spaces before parse)
-            const an = parseFloat(av.replace(/[, ]/g,''));
-            const bn = parseFloat(bv.replace(/[, ]/g,''));
-            if(!isNaN(an) && !isNaN(bn)) return asc ? an-bn : bn-an;
-            return asc ? av.localeCompare(bv) : bv.localeCompare(av);
-          });
-          rows.forEach(function(r){ tbody.appendChild(r); });
-        }
-
-        /* ── Table filter / search ────────────────────────────────────── */
-        function filterTable(tid){
-          const q = (document.getElementById('ts' + tid)?.value ?? '').toLowerCase();
-          const tbl = document.getElementById('t' + tid);
-          if(!tbl) return;
-          let vis = 0;
-          Array.from(tbl.tBodies[0].rows).forEach(function(r){
-            const match = !q || r.textContent.toLowerCase().includes(q);
-            r.style.display = match ? '' : 'none';
-            // When filtering, show all rows (override virtual-scroll hidden class)
-            if(match){ r.classList.remove('vr'); vis++; }
-          });
-          const rc = document.getElementById('rc' + tid);
-          if(rc) rc.textContent = (q ? vis + ' match' + (vis !== 1 ? 'es' : '') : tbl.tBodies[0].rows.length + ' rows');
-        }
-        </script>
-        </body></html>
-        """;
+    static string ReadResource(Assembly asm, string name)
+    {
+        using var stream = asm.GetManifestResourceStream(name)
+            ?? throw new InvalidOperationException($"Missing embedded resource: {name}");
+        using var reader = new System.IO.StreamReader(stream);
+        return reader.ReadToEnd();
+    }
 }
-

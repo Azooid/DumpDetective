@@ -5,7 +5,8 @@ public sealed record HighRefsData(
     long TotalObjs,
     long TotalRefs,
     int  UniqueReferencedAddrs,
-    IReadOnlyList<(string Label, int Count)> RefHistogram);
+    IReadOnlyList<(string Label, int Count)> RefHistogram,
+    bool RetainedIsExact = false);
 
 public sealed record HighRefEntry(
     string                          Type,
