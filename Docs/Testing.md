@@ -22,14 +22,14 @@ dotnet test DumpDetective.Tests
 # Run with verbose output (shows Report_Summary output for all 24 commands)
 dotnet test DumpDetective.Tests --logger "console;verbosity=detailed"
 
-# Force regeneration of all scenario dumps (e.g. after changing ScenarioHost)
+# Force regeneration of all scenario dumps (e.g. after changing DiagnosticScenarios)
 $env:DD_REFRESH_DUMPS = "1"; dotnet test DumpDetective.Tests
 
 # Run a single command's tests
 dotnet test DumpDetective.Tests --filter "FullyQualifiedName~HeapStats"
 ```
 
-**First run**: ~30 seconds — generates 24 isolated heap dumps via `DumpDetective.ScenarioHost`.  
+**First run**: ~30 seconds — generates 24 isolated heap dumps via `DumpDetective.DiagnosticScenarios`.  
 **Subsequent runs**: ~700 ms — reuses cached dumps from `%TEMP%\DumpDetective\Scenarios\`.
 
 ---
@@ -48,13 +48,13 @@ For example: `heap-stats.dmp`, `finalizer-queue.dmp`, `thread-analysis.dmp`, etc
 
 Dump resolution order in `CommandContext<TScenario>`:
 
-1. **Cached dump** — `%TEMP%\DumpDetective\Scenarios\<command-name>.dmp` exists **and** is newer than the `DumpDetective.ScenarioHost.exe` binary → reuse immediately.
-2. **ScenarioHost generation** — runs `DumpDetective.ScenarioHost.exe <command-name>` as a subprocess. The host sets up the scenario state, captures a heap dump of itself, writes it to the per-scenario path, and exits. Stdout contains the dump path.
-3. **Shared dump fallback** — if ScenarioHost is unavailable, falls back to the single combined dump captured by `ScenarioFixture` at test startup (all scenarios set up in the test-runner process, one shared dump).
+1. **Cached dump** — `%TEMP%\DumpDetective\Scenarios\<command-name>.dmp` exists **and** is newer than the `DumpDetective.DiagnosticScenarios.exe` binary → reuse immediately.
+2. **DiagnosticScenarios generation** — runs `DumpDetective.DiagnosticScenarios.exe <command-name>` as a subprocess. The host sets up the scenario state, captures a heap dump of itself, writes it to the per-scenario path, and exits. Stdout contains the dump path.
+3. **Shared dump fallback** — if DiagnosticScenarios is unavailable, falls back to the single combined dump captured by `ScenarioFixture` at test startup (all scenarios set up in the test-runner process, one shared dump).
 
 ### Automatic freshness
 
-`CommandContext` compares the `ScenarioHost.exe` write time against the cached dump write time. If the binary is newer the dump is regenerated automatically — no manual `DD_REFRESH_DUMPS=1` needed after a `dotnet build`.
+`CommandContext` compares the `DiagnosticScenarios.exe` write time against the cached dump write time. If the binary is newer the dump is regenerated automatically — no manual `DD_REFRESH_DUMPS=1` needed after a `dotnet build`.
 
 ### Forcing regeneration
 
@@ -134,7 +134,7 @@ DumpDetective.Tests/
     ...                           } + Scenario_Validates fact
     WeakRefsTest.cs               }
 
-DumpDetective.ScenarioHost/
+DumpDetective.DiagnosticScenarios/
   Program.cs                      Entry: runs scenario by name, dumps self, prints path, exits 0
   Scenarios.cs                    24 IScenario implementations (same type names as test assertions)
 ```
@@ -148,13 +148,13 @@ xUnit discovers HeapStatsTest
   └─ IClassFixture<CommandContext<HeapStatsScenario>> constructed
        └─ CommandContext.ResolveScenarioDump("heap-stats")
             ├─ [1] %TEMP%\DumpDetective\Scenarios\heap-stats.dmp exists && fresh? → return path
-            ├─ [2] FindScenarioHostExe() found → spawn ScenarioHost.exe heap-stats
-            │         ScenarioHost: HeapStatsScenario.Setup()       → allocate 2 500 objects
-            │         ScenarioHost: await Task.Delay(300)           → let state settle
-            │         ScenarioHost: DiagnosticsClient.WriteDump()   → heap-stats.dmp
-            │         ScenarioHost: HeapStatsScenario.Teardown()
-            │         ScenarioHost: Console.WriteLine(dumpPath)     → read by test process
-            │         ScenarioHost: exit 0
+            ├─ [2] FindScenarioHostExe() found → spawn DiagnosticScenarios.exe heap-stats
+            │         DiagnosticScenarios: HeapStatsScenario.Setup()       → allocate 2 500 objects
+            │         DiagnosticScenarios: await Task.Delay(300)           → let state settle
+            │         DiagnosticScenarios: DiagnosticsClient.WriteDump()   → heap-stats.dmp
+            │         DiagnosticScenarios: HeapStatsScenario.Teardown()
+            │         DiagnosticScenarios: Console.WriteLine(dumpPath)     → read by test process
+            │         DiagnosticScenarios: exit 0
             │         Test process reads stdout → returns dump path
             └─ [3] fallback: ScenarioFixture.SharedDumpPath
        └─ DumpContext.Open(dumpPath)
@@ -209,9 +209,9 @@ public interface IScenario
 
 ---
 
-## `ScenarioHost` — Isolated Dump Generation
+## `DiagnosticScenarios` — Isolated Dump Generation
 
-`DumpDetective.ScenarioHost` is a standalone .NET 10 console app. It has no reference to the test project — it only imports `Microsoft.Diagnostics.NETCore.Client`.
+`DumpDetective.DiagnosticScenarios` is a standalone .NET 10 console app. It has no reference to the test project — it only imports `Microsoft.Diagnostics.NETCore.Client`.
 
 **Why a separate process?**
 
@@ -223,7 +223,7 @@ Running all 24 scenarios in the xUnit test-runner process (the old `ScenarioFixt
 **How it works:**
 
 ```
-DumpDetective.ScenarioHost.exe <command-name>
+DumpDetective.DiagnosticScenarios.exe <command-name>
 ```
 
 1. Looks up `<command-name>` in a static `ScenarioRegistry` dictionary.
@@ -237,7 +237,7 @@ DumpDetective.ScenarioHost.exe <command-name>
 The test process spawns this as a child process, reads stdout for the dump path, and returns it to `CommandContext`.
 
 **Type naming:**  
-All scenario types in `ScenarioHost/Scenarios.cs` are `public` and live in the `DumpDetective.ScenarioHost` namespace. ClrMD reports them as `DumpDetective.ScenarioHost.DdFinalizableItem` etc. Test assertions use substring matching (`AnyTableContainsText(doc, "DdFinalizableItem")`) so the namespace prefix is irrelevant.
+All scenario types in `DiagnosticScenarios/Scenarios.cs` are `public` and live in the `DumpDetective.DiagnosticScenarios` namespace. ClrMD reports them as `DumpDetective.DiagnosticScenarios.DdFinalizableItem` etc. Test assertions use substring matching (`AnyTableContainsText(doc, "DdFinalizableItem")`) so the namespace prefix is irrelevant.
 
 ---
 
@@ -272,9 +272,9 @@ public sealed class MyNewCommandScenario : IScenario
 }
 ```
 
-### 2. Add a ScenarioHost implementation
+### 2. Add a DiagnosticScenarios implementation
 
-Add a scenario entry in `DumpDetective.ScenarioHost/Scenarios.cs`:
+Add a scenario entry in `DumpDetective.DiagnosticScenarios/Scenarios.cs`:
 
 ```csharp
 // ── my-new-command ────────────────────────────────────────────────────────────
@@ -333,7 +333,7 @@ dotnet build DumpDetective.Tests
 dotnet test DumpDetective.Tests --filter "FullyQualifiedName~MyNewCommand"
 ```
 
-The ScenarioHost exe is rebuilt automatically (it's a build dependency of the test project) and the freshness check will generate a new `my-new-command.dmp` on the first run.
+The DiagnosticScenarios exe is rebuilt automatically (it's a build dependency of the test project) and the freshness check will generate a new `my-new-command.dmp` on the first run.
 
 ---
 
@@ -370,7 +370,7 @@ The ScenarioHost exe is rebuilt automatically (it's a build dependency of the te
 
 ## Known Limitations
 
-### `static-refs` — zero tables in ScenarioHost dumps
+### `static-refs` — zero tables in DiagnosticScenarios dumps
 
 **Status:** Accepted limitation.
 
@@ -392,4 +392,4 @@ The ScenarioHost exe is rebuilt automatically (it's a build dependency of the te
 
 **Status:** By design.
 
-`ConnectionPool` requires live `SqlConnection` objects with internal state fields. `WcfChannels` requires `System.ServiceModel` channel objects. Neither is available in the ScenarioHost process (no SqlClient/ServiceModel dependency). Tests assert only that the command completes cleanly with the expected section structure.
+`ConnectionPool` requires live `SqlConnection` objects with internal state fields. `WcfChannels` requires `System.ServiceModel` channel objects. Neither is available in the DiagnosticScenarios process (no SqlClient/ServiceModel dependency). Tests assert only that the command completes cleanly with the expected section structure.

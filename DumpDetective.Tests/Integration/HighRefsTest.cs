@@ -1,5 +1,6 @@
 using DumpDetective.Tests.Fixtures;
-using DumpDetective.Tests.Scenarios.Heap;
+using DumpDetective.DiagnosticScenarios;
+using DumpDetective.DiagnosticScenarios.Scenarios.Heap;
 
 namespace DumpDetective.Tests.Integration;
 

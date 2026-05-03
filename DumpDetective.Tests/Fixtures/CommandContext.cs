@@ -1,6 +1,7 @@
 using DumpDetective.Cli;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Runtime;
+using DumpDetective.DiagnosticScenarios;
 using DumpDetective.Reporting;
 using DumpDetective.Reporting.Sinks;
 using System.Diagnostics;
@@ -157,7 +158,7 @@ public sealed class CommandContext<TScenario> : IDisposable
     /// </summary>
     private static string? FindScenarioHostExe()
     {
-        const string exeName = "DumpDetective.ScenarioHost.exe";
+        const string exeName = "DumpDetective.DiagnosticScenarios.exe";
 
         string testDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location)!;
 
@@ -173,13 +174,13 @@ public sealed class CommandContext<TScenario> : IDisposable
         {
             var sibling = Path.GetFullPath(
                 Path.Combine(testDir, "..", "..", "..", "..",
-                    "DumpDetective.ScenarioHost", "bin", build, config, exeName));
+                    "DumpDetective.DiagnosticScenarios", "bin", build, config, exeName));
             if (File.Exists(sibling)) return sibling;
 
             // Also try Release build
             var siblingRelease = Path.GetFullPath(
                 Path.Combine(testDir, "..", "..", "..", "..",
-                    "DumpDetective.ScenarioHost", "bin", "Release", config, exeName));
+                    "DumpDetective.DiagnosticScenarios", "bin", "Release", config, exeName));
             if (File.Exists(siblingRelease)) return siblingRelease;
         }
 

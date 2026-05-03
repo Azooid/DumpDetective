@@ -26,16 +26,14 @@
     <ProjectReference Include="..\DumpDetective.Reporting\DumpDetective.Reporting.csproj" />
     <ProjectReference Include="..\DumpDetective.Commands\DumpDetective.Commands.csproj" />
     <ProjectReference Include="..\DumpDetective.Cli\DumpDetective.Cli.csproj" />
-    <!-- Build ScenarioHost alongside tests; copy the exe to the test output directory -->
-    <ProjectReference Include="..\DumpDetective.ScenarioHost\DumpDetective.ScenarioHost.csproj"
-                      ReferenceOutputAssembly="false"
-                      Private="false" />
+    <!-- DiagnosticScenarios: referenced normally (for IScenario, DocAssert, scenario classes) and built as exe -->
+    <ProjectReference Include="..\DumpDetective.DiagnosticScenarios\DumpDetective.DiagnosticScenarios.csproj" />
   </ItemGroup>
 
   <!-- Copy ScenarioHost exe + all its deps to the test output directory so CommandContext can find it -->
   <Target Name="CopyScenarioHostToTestOutput" AfterTargets="Build">
     <ItemGroup>
-      <ScenarioHostFiles Include="$(MSBuildThisFileDirectory)..\DumpDetective.ScenarioHost\bin\$(Configuration)\net10.0\**\*.*" />
+      <ScenarioHostFiles Include="$(MSBuildThisFileDirectory)..\DumpDetective.DiagnosticScenarios\bin\$(Configuration)\net10.0\**\*.*" />
     </ItemGroup>
     <Copy SourceFiles="@(ScenarioHostFiles)"
           DestinationFolder="$(OutputPath)%(RecursiveDir)"

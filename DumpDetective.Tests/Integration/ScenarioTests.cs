@@ -1,5 +1,6 @@
 using DumpDetective.Cli;
 using DumpDetective.Core.Models;
+using DumpDetective.DiagnosticScenarios;
 using DumpDetective.Tests.Fixtures;
 
 namespace DumpDetective.Tests.Integration;

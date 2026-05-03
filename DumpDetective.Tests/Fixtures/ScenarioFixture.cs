@@ -1,5 +1,5 @@
+using DumpDetective.DiagnosticScenarios;
 using DumpDetective.Reporting;
-using DumpDetective.Tests.Scenarios;
 
 namespace DumpDetective.Tests.Fixtures;
 
@@ -51,7 +51,7 @@ public sealed class ScenarioFixture : IAsyncLifetime
         }
 
         // Run every safe scenario's Setup() before we capture
-        foreach (var scenario in AllScenarios.Safe)
+        foreach (var scenario in ScenarioList.Safe)
             scenario.Setup();
 
         // Small yield so finalizers and async state machines settle
@@ -70,7 +70,7 @@ public sealed class ScenarioFixture : IAsyncLifetime
         // Only call Teardown when we set up the scenarios ourselves
         if (_dumpOwnedByFixture)
         {
-            foreach (var scenario in AllScenarios.Safe)
+            foreach (var scenario in ScenarioList.Safe)
             {
                 try { scenario.Teardown(); }
                 catch { /* best-effort — never fail Dispose */ }

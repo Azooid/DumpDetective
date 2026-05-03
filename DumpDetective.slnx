@@ -9,7 +9,7 @@
   <Project Path="DumpDetective.Commands/DumpDetective.Commands.csproj" />
   <Project Path="DumpDetective.Core/DumpDetective.Core.csproj" />
   <Project Path="DumpDetective.Reporting/DumpDetective.Reporting.csproj" />
-  <Project Path="DumpDetective.ScenarioHost/DumpDetective.ScenarioHost.csproj" />
+  <Project Path="DumpDetective.DiagnosticScenarios/DumpDetective.DiagnosticScenarios.csproj" />
   <Project Path="DumpDetective.Tests/DumpDetective.Tests.csproj" />
   <Project Path="DumpDetective/DumpDetective.csproj">
     <Build Solution="Debug|*" Project="false" />
