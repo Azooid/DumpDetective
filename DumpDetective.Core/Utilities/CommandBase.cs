@@ -107,7 +107,7 @@ public static class CommandBase
             foreach (var p in effectivePaths)
             {
                 if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {Markup.Escape(Path.GetFullPath(p))}");
+                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {ProgressLogger.FileLink(p)}");
             }
             return 0;
         }

@@ -3,6 +3,7 @@ using System.Text;
 using System.Text.Json;
 using DumpDetective.Analysis.Memory;
 using DumpDetective.Core.Json;
+using DumpDetective.Core.Utilities;
 using DumpDetective.Reporting;
 
 namespace DumpDetective.Commands;
@@ -176,7 +177,7 @@ public sealed class RenderCommand : ICommand
             using var sink2 = SinkFactory.CreateMulti(outputPaths);
             ReportDocReplay.Replay(envelope.Doc, sink2);
             foreach (var p in outputPaths)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
             return 0;
         }
 
@@ -252,7 +253,7 @@ public sealed class RenderCommand : ICommand
 
             if (sink.IsFile)
                 foreach (var p in outputPaths)
-                    AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+                    AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
             return 0;
         }
 
@@ -291,7 +292,7 @@ public sealed class RenderCommand : ICommand
 
         if (trendSink.IsFile)
             foreach (var p in outputPaths)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }
 

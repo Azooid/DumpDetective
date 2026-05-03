@@ -71,7 +71,7 @@ public sealed class AnalyzeCommand : ICommand
         log.SectionHeader($"DumpDetective Analysis  {DumpDetective.Core.Utilities.AppInfo.Version}");
         log.Info($"Analyzing dump: {Path.GetFileName(dumpPath)}");
         foreach (var p in a.EffectiveOutputPaths)
-            log.Info($"Output: {Path.GetFullPath(p)}", indent: true);
+            log.InfoM($"Output: {ProgressLogger.FileLink(p)}", indent: true);
         log.Info("Loading dump file...", indent: true);
 
         try
@@ -171,7 +171,7 @@ public sealed class AnalyzeCommand : ICommand
                     : [sink.FilePath ?? outputPath ?? string.Empty];
                 foreach (var p in paths)
                     if (!string.IsNullOrEmpty(p) && !p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                        log.Success($"Written to: {Path.GetFullPath(p)}");
+                        log.SuccessFile(p);
             }
             return 0;
         }

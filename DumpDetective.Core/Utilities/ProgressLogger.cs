@@ -44,6 +44,7 @@ public sealed class ProgressLogger
 
     public void Info(string msg, bool indent = false)    => Print("ℹ",  "blue",        msg, indent);
     public void Success(string msg, bool indent = false) => Print("✅", "green",       msg, indent);
+    public void SuccessFile(string path)                 => SuccessM($"Written to: {FileLink(path)}");
     public void Check(string msg, bool indent = false)   => Print("✓",  "green",       msg, indent);
     public void Stage(string msg, bool indent = false)   => Print("▶",  "bold yellow", msg, indent);
     public void Warn(string msg, bool indent = false)    => Print("⚠",  "yellow",      msg, indent);
@@ -265,6 +266,15 @@ public sealed class ProgressLogger
     }
 
     private void WriteLive(string text) => WriteLiveLines([text]);
+
+    /// <summary>Returns Spectre.Console markup that renders <paramref name="path"/> as a clickable OSC 8 hyperlink.</summary>
+    public static string FileLink(string path)
+    {
+        var full = Path.GetFullPath(path);
+        var uri  = "file:///" + full.Replace('\\', '/');
+        return $"[underline link={uri}]{Markup.Escape(full)}[/]";
+    }
+
 
     private void WriteLiveLines(string[] lines)
     {

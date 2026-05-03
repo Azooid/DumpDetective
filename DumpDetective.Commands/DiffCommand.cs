@@ -170,7 +170,7 @@ public sealed class DiffCommand : ICommand
         using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(diffDoc, sink);
         foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }
 
@@ -212,7 +212,7 @@ public sealed class DiffCommand : ICommand
         using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(diffDoc, sink);
         foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }
 
@@ -356,7 +356,7 @@ public sealed class DiffCommand : ICommand
         using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(combinedDoc, sink);
         foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }
 

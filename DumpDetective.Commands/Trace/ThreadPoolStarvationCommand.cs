@@ -1,3 +1,5 @@
+using DumpDetective.Core.Utilities;
+
 namespace DumpDetective.Commands.Trace;
 
 public sealed class ThreadPoolStarvationCommand : ICommand
@@ -74,9 +76,9 @@ public sealed class ThreadPoolStarvationCommand : ICommand
             _report.Render(data, sink, top);
 
             foreach (var p in a.EffectiveOutputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
             if (a.EffectiveOutputPaths.Count == 0 && sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(sink.FilePath)}");
+                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
             return 0;
         }
         catch (Exception ex)

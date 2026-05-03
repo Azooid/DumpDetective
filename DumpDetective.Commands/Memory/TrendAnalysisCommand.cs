@@ -272,7 +272,7 @@ public sealed class TrendAnalysisCommand : ICommand
         {
             log.Blank();
             foreach (var p in rawPaths)
-                log.Success($"Written to: {p}");
+                log.SuccessFile(p);
             if (rawPaths.Count > 0)
                 log.Info("Use 'trend-render' to convert .bin snapshots to HTML/Markdown/text at any time.");
             return 0;
@@ -309,7 +309,7 @@ public sealed class TrendAnalysisCommand : ICommand
         {
             log.Blank();
             foreach (var p in allOutputs.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
-                log.Success($"Written to: {p}");
+                log.SuccessFile(p);
         }
         if (rawPaths.Count > 0)
             log.Info("Use 'trend-render' to convert .bin snapshots to HTML/Markdown/text at any time.");

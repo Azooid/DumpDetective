@@ -107,6 +107,6 @@ public sealed class GcTraceCommand : ICommand
     internal static void PrintOutputPath(CliArgs a)
     {
         foreach (var p in a.EffectiveOutputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
-            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {Markup.Escape(p)}");
+            AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
     }
 }
