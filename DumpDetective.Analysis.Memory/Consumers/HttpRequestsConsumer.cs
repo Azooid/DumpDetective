@@ -41,7 +41,12 @@ internal sealed class HttpRequestsConsumer : IHeapObjectConsumer
                     method = methodStr.IsValid ? (methodStr.AsString() ?? "") : "";
                 }
                 var uriObj = obj.ReadObjectField("_requestUri");
-                if (uriObj.IsValid) uri = uriObj.AsString() ?? "";
+                if (uriObj.IsValid && uriObj.Type is not null)
+                {
+                    // _requestUri is System.Uri — read the backing _string field
+                    var uriStrObj = uriObj.ReadObjectField("_string");
+                    if (uriStrObj.IsValid) uri = uriStrObj.AsString() ?? "";
+                }
             }
             else if (meta.Name == "System.Net.Http.HttpResponseMessage")
             {

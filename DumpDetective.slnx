@@ -1,11 +1,17 @@
 <Solution>
-  <Project Path="DumpDetective.Analysis.Memory/DumpDetective.Analysis.Memory.csproj" />
-  <Project Path="DumpDetective.Analysis.Trace/DumpDetective.Analysis.Trace.csproj" />
+  <Project Path="DumpDetective.Analysis.Memory/DumpDetective.Analysis.Memory.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
+  <Project Path="DumpDetective.Analysis.Trace/DumpDetective.Analysis.Trace.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
   <Project Path="DumpDetective.Cli/DumpDetective.Cli.csproj" />
   <Project Path="DumpDetective.Commands/DumpDetective.Commands.csproj" />
   <Project Path="DumpDetective.Core/DumpDetective.Core.csproj" />
-  <Project Path="DumpDetective.DiagnosticScenarios/DumpDetective.DiagnosticScenarios.csproj" Id="ef17e490-8ac6-416f-ac1c-71a4baf9726e" />
   <Project Path="DumpDetective.Reporting/DumpDetective.Reporting.csproj" />
+  <Project Path="DumpDetective.ScenarioHost/DumpDetective.ScenarioHost.csproj" />
   <Project Path="DumpDetective.Tests/DumpDetective.Tests.csproj" />
-  <Project Path="DumpDetective/DumpDetective.csproj" />
+  <Project Path="DumpDetective/DumpDetective.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
 </Solution>

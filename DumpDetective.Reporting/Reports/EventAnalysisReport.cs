@@ -45,6 +45,15 @@ public sealed class EventAnalysisReport
         if (topSubs.Count > 1 && totalSubs > 0)
             sink.DonutChart(topSubs, "Subscribers by event field (top 8)", $"{totalSubs:N0}\nsubs");
 
+        // Summary count right below the chart
+        if (leakGroups > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{totalSubs:N0} event subscription(s) found across {data.Groups.Count} event field(s) on {data.PublisherInstanceCount:N0} publisher instance(s).",
+                detail: $"{leakGroups} field(s) with > 5 subscribers — likely leak(s).");
+        else
+            sink.Alert(AlertLevel.Info,
+                $"{totalSubs:N0} event subscription(s) found across {data.Groups.Count} event field(s) on {data.PublisherInstanceCount:N0} publisher instance(s).");
+
         RenderSummaryTable(sink, data, top);
         RenderSubscriberBreakdown(sink, data, top);
         RenderTopMethods(sink, data, top);

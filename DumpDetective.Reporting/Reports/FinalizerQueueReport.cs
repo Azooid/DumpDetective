@@ -43,11 +43,15 @@ public sealed class FinalizerQueueReport
             ("In Gen2 / LOH (most costly)", gen2Loh.ToString("N0")),
         ]);
 
-        RenderFinalizerThread(sink, data);
+        // ── Show actionable alerts FIRST ──────────────────────────────────────────
         RenderAdvisories(sink, data, gen2Loh, critCount);
 
+        // ── Types in queue (main data) ─────────────────────────────────────────────
         var sorted = data.Stats.OrderByDescending(kv => kv.Value.Size).Take(top).ToList();
         RenderTypeTable(sink, sorted, top, data.Stats.Count);
+
+        // ── Finalizer thread details LAST (technical deep-dive) ───────────────────
+        RenderFinalizerThread(sink, data);
 
         if (showAddr)
             RenderAddresses(sink, sorted);
@@ -82,10 +86,6 @@ public sealed class FinalizerQueueReport
 
     private static void RenderAdvisories(IRenderSink sink, FinalizerQueueData data, int gen2Loh, int critCount)
     {
-        sink.Alert(AlertLevel.Info,
-            "All objects in the finalizer queue delay GC collection of their entire retained object graph.",
-            advice: "Call Dispose() / use 'using' statements to avoid finalizer pressure. Finalizers run on a single dedicated thread.");
-
         if (data.Total >= 500)
             sink.Alert(AlertLevel.Critical, $"{data.Total:N0} objects pending finalization.",
                 advice: "A large finalizer queue indicates heavy GC pressure. Wrap IDisposable objects in 'using'.");

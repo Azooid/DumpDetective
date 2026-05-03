@@ -61,14 +61,35 @@ public sealed class HttpRequestsReport
         if (requests.Count == 0) return;
 
         sink.Section("In-Flight Requests");
+
+        // Group by host, then list all full URIs under each host in a details block
         var byHost = requests
             .GroupBy(r => ExtractHost(r.Uri))
             .OrderByDescending(g => g.Count())
-            .Select(g => new[] { g.Key, g.Count().ToString("N0"),
-                string.Join(", ", g.Select(r => r.Method).Distinct().Take(5)) })
             .ToList();
-        if (byHost.Count > 0)
-            sink.Table(["Host", "Count", "Methods"], byHost);
+
+        // Host-level summary table
+        var hostRows = byHost.Select(g => new[]
+        {
+            g.Key,
+            g.Count().ToString("N0"),
+            string.Join(", ", g.Select(r => r.Method).Distinct().Take(5)),
+        }).ToList();
+        sink.Table(["Host", "Count", "Methods"], hostRows);
+
+        // Per-host URI breakdown (collapsed by default)
+        foreach (var hostGroup in byHost)
+        {
+            var uriRows = hostGroup
+                .GroupBy(r => (r.Method, Uri: string.IsNullOrEmpty(r.Uri) ? "(no URI)" : r.Uri))
+                .OrderByDescending(g => g.Count())
+                .Select(g => new[] { g.Key.Method, g.Key.Uri, g.Count().ToString("N0") })
+                .ToList();
+
+            sink.BeginDetails($"{hostGroup.Key}  ({hostGroup.Count()} request(s))", open: false);
+            sink.Table(["Method", "Full URI", "Count"], uriRows);
+            sink.EndDetails();
+        }
     }
 
     private static void RenderResponseCodes(IRenderSink sink, IReadOnlyList<HttpObjectEntry> objects)

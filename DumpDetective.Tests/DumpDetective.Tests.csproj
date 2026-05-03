@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.Diagnostics.NETCore.Client" Version="0.2.*" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
@@ -24,6 +25,21 @@
     <ProjectReference Include="..\DumpDetective.Analysis.Trace\DumpDetective.Analysis.Trace.csproj" />
     <ProjectReference Include="..\DumpDetective.Reporting\DumpDetective.Reporting.csproj" />
     <ProjectReference Include="..\DumpDetective.Commands\DumpDetective.Commands.csproj" />
+    <ProjectReference Include="..\DumpDetective.Cli\DumpDetective.Cli.csproj" />
+    <!-- Build ScenarioHost alongside tests; copy the exe to the test output directory -->
+    <ProjectReference Include="..\DumpDetective.ScenarioHost\DumpDetective.ScenarioHost.csproj"
+                      ReferenceOutputAssembly="false"
+                      Private="false" />
   </ItemGroup>
+
+  <!-- Copy ScenarioHost exe + all its deps to the test output directory so CommandContext can find it -->
+  <Target Name="CopyScenarioHostToTestOutput" AfterTargets="Build">
+    <ItemGroup>
+      <ScenarioHostFiles Include="$(MSBuildThisFileDirectory)..\DumpDetective.ScenarioHost\bin\$(Configuration)\net10.0\**\*.*" />
+    </ItemGroup>
+    <Copy SourceFiles="@(ScenarioHostFiles)"
+          DestinationFolder="$(OutputPath)%(RecursiveDir)"
+          SkipUnchangedFiles="true" />
+  </Target>
 
 </Project>

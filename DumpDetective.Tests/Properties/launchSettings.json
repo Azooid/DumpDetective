@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "DumpDetective.Tests": {
+      "commandName": "Project",
+      "environmentVariables": {
+        "DD_KEEP_DUMPS": "1"
+      }
+    }
+  }
+}

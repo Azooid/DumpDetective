@@ -70,6 +70,15 @@ public sealed class DeadlockReport
             sink.Alert(AlertLevel.Info,
                 $"{data.MonitorLocks.Count} inflated monitor lock(s) held — no waiters, no deadlock.");
         }
+        else if (data.IndependentWaiters.Count >= 5)
+        {
+            sink.Alert(AlertLevel.Warning,
+                $"{data.IndependentWaiters.Count} thread(s) blocked on Task.Wait / WaitOne / Thread.Join.",
+                "A high number of independently-waiting threads can indicate sync-over-async patterns " +
+                "or thread pool starvation. Check the \"Independent Waiting Threads\" section below.",
+                "Convert Thread.Join / Task.Wait / .Result to async/await. " +
+                "Run 'thread-pool-starvation <dump>' to check for saturation.");
+        }
         else if (data.IndependentWaiters.Count > 0)
         {
             sink.Alert(AlertLevel.Info,

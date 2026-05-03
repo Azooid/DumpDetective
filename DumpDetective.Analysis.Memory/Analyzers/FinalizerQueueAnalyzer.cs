@@ -53,10 +53,14 @@ public sealed class FinalizerQueueAnalyzer
             .ToList();
 
         // "WaitForWork" is the finalizer thread's idle state (no pending objects) — not a stall.
-        // Only flag blocked when the thread is on WaitOne (lock contention) or Sleep.
+        // Flag blocked when the thread stack shows any known blocking primitive.
         bool blocked = frames.Any(f =>
-            f.Contains("WaitOne", StringComparison.OrdinalIgnoreCase) ||
-            f.Contains("Sleep",   StringComparison.OrdinalIgnoreCase));
+            f.Contains("WaitOne",          StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("Sleep",            StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("ManualResetEvent", StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("Monitor.Wait",     StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("SemaphoreSlim",    StringComparison.OrdinalIgnoreCase) ||
+            f.Contains("SpinWait",         StringComparison.OrdinalIgnoreCase));
 
         return (t, frames, blocked);
     }

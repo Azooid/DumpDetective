@@ -43,6 +43,7 @@ If you are new, use this path:
 - [Health Score](#health-score)
 - [Performance & Resource Expectations](#performance--resource-expectations)
 - [Thresholds](#thresholds)
+- [Testing](Docs/Testing.md)
 
 ---
 
@@ -113,7 +114,7 @@ dotnet tool uninstall --global DumpDetective.Cli
 ## Build
 
 ```bash
-dotnet build
+dotnet build DumpDetective.Tests/DumpDetective.Tests.csproj
 ```
 
 For a self-contained, AOT-compiled single executable:
@@ -123,6 +124,16 @@ dotnet publish DumpDetective.Cli -r win-x64 -c Release
 ```
 
 The output is a single native binary: `DumpDetective.Cli.exe`.
+
+### Running Tests
+
+```bash
+dotnet test DumpDetective.Tests
+```
+
+72 integration tests cover every analysis command. Each test runs against its own isolated heap dump captured by `DumpDetective.ScenarioHost`. Subsequent runs reuse cached dumps from `%TEMP%\DumpDetective\Scenarios\` and complete in under a second.
+
+See [Docs/Testing.md](Docs/Testing.md) for the full test architecture and how to add new tests.
 
 ---
 
@@ -833,7 +844,11 @@ DumpDetective.Cli/                Entry point -- the AOT executable
   CommandRegistry.cs              Single source of truth for all ICommand instances
   HelpPrinter.cs                  Formats --help output
 
-DumpDetective.Tests/              xUnit test project (no AOT)
+DumpDetective.ScenarioHost/       Standalone console app — per-scenario dump generation for tests
+  Program.cs                      Entry point: runs a named scenario, captures a heap dump, exits
+  Scenarios.cs                    All 24 scenario setup/teardown implementations
+
+DumpDetective.Tests/              xUnit test project (no AOT) — see Docs/Testing.md
 
 dd-thresholds.json                Override default scoring/trend thresholds (place next to exe)
 ```
@@ -848,6 +863,10 @@ Cli ─────────────────────────�
  │                               Analysis.Trace  ──────┤
  │                                                     │
  └──────────────────► Reporting ──────────► Core ◄─────┘
+
+ScenarioHost ────────────────────────────► (standalone; no project refs)
+Tests ───────────────────────────────────► Core + Analysis + Reporting + Commands + Cli
+                                           ScenarioHost (build dependency; exe copied to test output)
 ```
 
 ---
