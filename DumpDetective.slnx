@@ -11,7 +11,4 @@
   <Project Path="DumpDetective.Reporting/DumpDetective.Reporting.csproj" />
   <Project Path="DumpDetective.DiagnosticScenarios/DumpDetective.DiagnosticScenarios.csproj" />
   <Project Path="DumpDetective.Tests/DumpDetective.Tests.csproj" />
-  <Project Path="DumpDetective/DumpDetective.csproj">
-    <Build Solution="Debug|*" Project="false" />
-  </Project>
 </Solution>
