@@ -271,7 +271,7 @@ public sealed class ProgressLogger
     public static string FileLink(string path)
     {
         var full = Path.GetFullPath(path);
-        var uri  = "file:///" + full.Replace('\\', '/');
+        var uri  = "file:///" + full.Replace('\\', '/').Replace(" ", "%20");
         return $"[underline link={uri}]{Markup.Escape(full)}[/]";
     }
 
