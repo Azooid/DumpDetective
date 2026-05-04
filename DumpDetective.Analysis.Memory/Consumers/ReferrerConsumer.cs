@@ -8,10 +8,13 @@ namespace DumpDetective.Analysis.Memory.Consumers;
 using DumpDetective.Analysis.Memory.Analyzers; // ParentSlots + ParentSlots.Max
 
 /// <summary>
-/// Builds the BfsMap (child to parent slots) and HotAddrTypes
+/// Builds the BfsMap (child to parent slots, written to a temp disk file) and HotAddrTypes
 /// (hot address to referencing type counts) for SharedReferrerCache.
 /// Uses 256-stripe locking on BfsMap — 1x memory instead of 8x clones
 /// (~10 GB -> ~1.3 GB peak during the referrer walk).
+/// After OnWalkComplete the stripes are flushed to a DiskBackedParentMap so the
+/// in-memory dict (~2.56 GB) is never built — only ~1.28 GB is written to disk and
+/// the OS pages only the BFS-hot subset (~72 KB) into RAM.
 /// </summary>
 internal sealed class ReferrerConsumer : IHeapObjectConsumer
 {
@@ -26,12 +29,15 @@ internal sealed class ReferrerConsumer : IHeapObjectConsumer
     private readonly Dictionary<ulong, Dictionary<string, int>> _hotTypes;
     private readonly object _hotTypesLock = new();
 
-    // Exposed after OnWalkComplete as plain Dictionaries.
-    public Dictionary<ulong, ParentSlots>             BfsMap   { get; private set; } = [];
-    public Dictionary<ulong, Dictionary<string, int>> HotTypes { get; private set; } = [];
+    // Exposed after OnWalkComplete as a disk-backed map and HotTypes dict.
+    public DiskBackedParentMap?                               ParentMap { get; private set; }
+    public Dictionary<ulong, Dictionary<string, int>> HotTypes  { get; private set; } = [];
 
-    public ReferrerConsumer(int bfsCapacity, HashSet<ulong> hotAddrs)
+    private readonly string _parentMapPath;
+
+    public ReferrerConsumer(int bfsCapacity, HashSet<ulong> hotAddrs, string parentMapPath)
     {
+        _parentMapPath = parentMapPath;
         int stripeCapacity = Math.Max(64, bfsCapacity / StripeCount);
         _locks   = new object[StripeCount];
         _stripes = new Dictionary<ulong, ParentSlots>[StripeCount];
@@ -87,20 +93,11 @@ internal sealed class ReferrerConsumer : IHeapObjectConsumer
 
     public void OnWalkComplete()
     {
-        // Pre-size the merged dict using the sum of all stripe sizes to avoid rehashing.
-        int total = 0;
-        for (int i = 0; i < StripeCount; i++) total += _stripes[i].Count;
-
-        var bfs = new Dictionary<ulong, ParentSlots>(total);
-        for (int i = 0; i < StripeCount; i++)
-        {
-            foreach (var (k, v) in _stripes[i]) bfs[k] = v;
-            _stripes[i].Clear();
-            _stripes[i] = null!; // release stripe backing array to GC
-        }
-        BfsMap   = bfs;
+        // Write all stripes to a sorted disk file instead of merging into a 2.56 GB dict.
+        // DiskBackedParentMap.Write consumes and clears each stripe in-place.
+        ParentMap = DiskBackedParentMap.Write(_stripes, _parentMapPath);
         // HotTypes dictionaries are already the final result — no merge needed.
-        HotTypes = _hotTypes;
+        HotTypes  = _hotTypes;
     }
 
     // Never called - IsThreadSafe = true

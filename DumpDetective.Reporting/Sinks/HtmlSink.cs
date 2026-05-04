@@ -579,12 +579,16 @@ public sealed class HtmlSink : IRenderSink
         // Bar width capped at 100 px (100% = full bar)
         int barPx = (int)Math.Min(node.InclusivePct, 100);
 
-        _w.Write($"<tr class=\"ctrow {heatClass}\">");
+        string trClick = hasChildren
+            ? $" onclick=\"ctToggle('{toggleId}',this.querySelector('.ct-toggle'))\""
+            : string.Empty;
+        string trClass = hasChildren ? $"ctrow {heatClass} ct-clickable" : $"ctrow {heatClass}";
+        _w.Write($"<tr class=\"{trClass}\"{trClick}>");
 
         // Name cell — contains indent spacer, optional toggle chevron, method+module
         _w.Write("<td class=\"ctw-name\" " + indent + ">");
         if (hasChildren)
-            _w.Write($"<span class=\"ct-toggle\" onclick=\"ctToggle('{toggleId}',this)\">▶</span> ");
+            _w.Write($"<span class=\"ct-toggle\">▶</span> ");
         else
             _w.Write("<span class=\"ct-leaf\">·</span> ");
         _w.Write($"<span class=\"ct-method\" title=\"{H(node.Method)}\">{H(TruncateName(node.Method, 55))}</span>");

@@ -22,24 +22,48 @@ public sealed class BfsIndexCache
     internal readonly long[]  Sizes;         // node i  → object size in bytes
     internal readonly int[]   Offsets;       // CSR row starts; length = NodeCount + 1
     internal readonly int[]   Children;      // CSR flat edges;  length = EdgeCount
-    private  readonly Dictionary<ulong, int> _addrToIndex;
+
+    // Sorted-index lookup — replaces Dictionary<ulong,int> (~2.56 GB for 80M entries).
+    // _sortedIdxMap[i] is the i-th CSR node index when addresses are in sorted order.
+    // Binary search compares IndexToAddr[_sortedIdxMap[mid]] rather than a copy of addresses.
+    // Memory: 4 bytes × N (vs 8+4=12 for a copy+map, or 32 for the dict) — saves ~1.92 GB at 80M objects.
+    private readonly int[] _sortedIdxMap;
 
     internal BfsIndexCache(
-        ulong[] indexToAddr, long[] sizes, int[] offsets, int[] children,
-        Dictionary<ulong, int> addrToIndex)
+        ulong[] indexToAddr, long[] sizes, int[] offsets, int[] children)
     {
-        IndexToAddr  = indexToAddr;
-        Sizes        = sizes;
-        Offsets      = offsets;
-        Children     = children;
-        _addrToIndex = addrToIndex;
+        IndexToAddr = indexToAddr;
+        Sizes       = sizes;
+        Offsets     = offsets;
+        Children    = children;
+
+        // Build sorted-index map.  GC.AllocateUninitializedArray skips zero-init since
+        // the array is fully overwritten below.
+        int n         = indexToAddr.Length;
+        _sortedIdxMap = GC.AllocateUninitializedArray<int>(n);
+        for (int i = 0; i < n; i++) _sortedIdxMap[i] = i;
+        // Sort _sortedIdxMap by the address each index points to — no copy of IndexToAddr needed.
+        Array.Sort(_sortedIdxMap, (a, b) => IndexToAddr[a].CompareTo(IndexToAddr[b]));
     }
 
     public int NodeCount => IndexToAddr.Length;
     public int EdgeCount => Children.Length;
 
-    public bool TryGetIndex(ulong addr, out int idx) =>
-        _addrToIndex.TryGetValue(addr, out idx);
+    public bool TryGetIndex(ulong addr, out int idx)
+    {
+        // Binary search over _sortedIdxMap using IndexToAddr as the key source.
+        int lo = 0, hi = _sortedIdxMap.Length - 1;
+        while (lo <= hi)
+        {
+            int mid    = (lo + hi) >>> 1;
+            ulong midKey = IndexToAddr[_sortedIdxMap[mid]];
+            if (midKey == addr) { idx = _sortedIdxMap[mid]; return true; }
+            if (midKey < addr) lo = mid + 1;
+            else               hi = mid - 1;
+        }
+        idx = -1;
+        return false;
+    }
 
     // ── Path / validation helpers ────────────────────────────────────────────
 
@@ -63,8 +87,8 @@ public sealed class BfsIndexCache
             using var fs = new FileStream(cachePath, FileMode.Open, FileAccess.Read, FileShare.Read);
 
             // Magic is stored uncompressed so we can peek without Brotli
-            var magic = new byte[8];
-            if (fs.Read(magic, 0, 8) != 8) return false;
+            Span<byte> magic = stackalloc byte[8];
+            if (fs.Read(magic) != 8) return false;
             for (int i = 0; i < 8; i++)
                 if (magic[i] != MagicBytes[i]) return false;
 
@@ -197,22 +221,21 @@ public sealed class BfsIndexCache
         totalRaw = 28L + (long)nodeCount * 16 + ((long)nodeCount + 1) * 4 + (long)edgeCount * 4;
         readRaw  = 28L;
 
-        var indexToAddr = new ulong[nodeCount];
+        // GC.AllocateUninitializedArray — all four arrays are fully overwritten by
+        // ReadArrayChunked, so the default CLR zero-init pass is pure waste.
+        var indexToAddr = GC.AllocateUninitializedArray<ulong>(nodeCount);
         ReadArrayChunked(brotli, indexToAddr, ref readRaw, () => MaybeTick("addresses"));
 
-        var sizes = new long[nodeCount];
+        var sizes = GC.AllocateUninitializedArray<long>(nodeCount);
         ReadArrayChunked(brotli, sizes, ref readRaw, () => MaybeTick("sizes"));
 
-        var offsets = new int[nodeCount + 1];
+        var offsets = GC.AllocateUninitializedArray<int>(nodeCount + 1);
         ReadArrayChunked(brotli, offsets, ref readRaw, () => MaybeTick("offsets"));
 
-        var children = new int[edgeCount];
+        var children = GC.AllocateUninitializedArray<int>(edgeCount);
         ReadArrayChunked(brotli, children, ref readRaw, () => MaybeTick("edges"));
 
-        var addrToIndex = new Dictionary<ulong, int>(nodeCount);
-        for (int i = 0; i < nodeCount; i++) addrToIndex[indexToAddr[i]] = i;
-
-        return new BfsIndexCache(indexToAddr, sizes, offsets, children, addrToIndex);
+        return new BfsIndexCache(indexToAddr, sizes, offsets, children);
     }
 
     // ── Bulk array I/O helpers ───────────────────────────────────────────────
@@ -281,7 +304,7 @@ public sealed class BfsIndexCache
     public (long Size, bool Estimated) ComputeRetained(
         ulong rootAddr, HashSet<int> visited, long nodeCap = 0)
     {
-        if (!_addrToIndex.TryGetValue(rootAddr, out int rootIdx)) return (0, false);
+        if (!TryGetIndex(rootAddr, out int rootIdx)) return (0, false);
         if (!visited.Add(rootIdx)) return (0, false);
 
         long retained = Sizes[rootIdx];

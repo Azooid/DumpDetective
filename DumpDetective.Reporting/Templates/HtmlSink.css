@@ -285,6 +285,7 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 .ct-hot1{background:#fffbf0}
 .ct-cool{background:#fff}
 .ct-toggle{cursor:pointer;font-size:.55rem;color:#4f46e5;user-select:none;transition:transform .1s;display:inline-block}
+.ct-clickable{cursor:pointer;user-select:none}
 .ct-toggle.open{transform:rotate(90deg)}
 .ct-leaf{color:#d1d5db;font-size:.7rem}
 .ct-method{font-weight:500;color:#1a1f2e;font-size:11.5px}

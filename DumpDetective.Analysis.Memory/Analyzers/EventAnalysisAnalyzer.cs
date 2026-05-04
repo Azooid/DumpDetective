@@ -29,12 +29,13 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     public void Consume(in ClrObject obj, HeapTypeMeta meta, ClrHeap heap)
     {
         if (meta.DelegateFields.Length == 0 || _totals is null) return;
-        // Skip system-type publishers and generic field names — matches EventDetailConsumer.
+        // Skip BCL/system types and compiler-generated noise (closures, DisplayClass, etc.).
         if (DumpHelpers.IsSystemType(meta.Name)) return;
+        if (EventFieldFilter.IsNoiseType(meta.Name)) return;
 
         foreach (var field in meta.DelegateFields)
         {
-            if (field.Name is "action" or "callback" or "handler" or "func" or "del" or "delegate") continue;
+            if (!EventFieldFilter.IsLikelyEventField(obj.Type, field.Name)) continue;
             try
             {
                 var delVal = field.Field.ReadObject(obj.Address, false);
@@ -64,6 +65,7 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
         groups.Sort(static (a, b) => b.Subscribers.CompareTo(a.Subscribers));
 
         _result = new EventAnalysisData(groups);
+        _totals = null; // release raw dict — groups list is all that's needed downstream
     }
 
     public IHeapObjectConsumer CreateClone()

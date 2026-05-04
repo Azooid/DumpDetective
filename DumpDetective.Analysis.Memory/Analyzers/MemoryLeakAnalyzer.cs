@@ -244,7 +244,7 @@ public sealed class MemoryLeakAnalyzer
             CommandBase.RunStatus("Building referrer map (heap walk)...", () =>
                 referrerCache = ctx.GetOrCreateAnalysis<SharedReferrerCache>(
                     () => SharedReferrerCache.Build(ctx)));
-            var allReferrers = referrerCache!.BfsMap;
+            var allReferrers = referrerCache!.ParentMap;
 
             // Step 4c: trace root chains for each suspect
             CommandBase.RunStatus($"Tracing root chains (Step 4c — {rootCandidates.Count} suspect types)...", () =>
@@ -354,7 +354,7 @@ public sealed class MemoryLeakAnalyzer
     // Type names are looked up from the heap on demand; at most maxDepth calls per chain = negligible cost.
     private static IReadOnlyList<ChainStep> BuildChainBFS(
         ulong startAddr,
-        Dictionary<ulong, ParentSlots> allReferrers,
+        DiskBackedParentMap allReferrers,
         Dictionary<ulong, (string Kind, string? ObjType)> rootMap,
         ClrHeap heap,
         int maxDepth)
@@ -379,11 +379,9 @@ public sealed class MemoryLeakAnalyzer
                     break;
                 }
                 if (depth >= maxDepth) continue;
-                if (!allReferrers.TryGetValue(curr, out var ps)) continue;
-                for (int pi = 0; pi < ps.Count; pi++)
+                if (!allReferrers.TryGetParent(curr, out ulong pAddr)) continue;
+                if (!prev.ContainsKey(pAddr))
                 {
-                    ulong pAddr = ps.Get(pi);
-                    if (prev.ContainsKey(pAddr)) continue;
                     string pType = heap.GetObject(pAddr).Type?.Name ?? "?";
                     prev[pAddr] = (curr, pType);
                     queue.Enqueue((pAddr, depth + 1));

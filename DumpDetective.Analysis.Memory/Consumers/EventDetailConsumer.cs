@@ -1,5 +1,6 @@
 ﻿using Microsoft.Diagnostics.Runtime;
 using System.Runtime.InteropServices;
+using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
@@ -45,18 +46,19 @@ internal sealed class EventDetailConsumer : IHeapObjectConsumer
         Interlocked.Increment(ref _objCount);
 
         // Skip objects with no delegate fields (pre-filtered by HeapWalker.BuildMeta)
-        // and skip BCL / system types which are unlikely to have user event leaks.
+        // and skip BCL/system types and compiler-generated noise (closures, DisplayClass, etc.).
         if (meta.DelegateFields.Length == 0) return;
         if (DumpHelpers.IsSystemType(meta.Name)) return;
+        if (EventFieldFilter.IsNoiseType(meta.Name)) return;
 
         string typeName = meta.Name;
 
         foreach (var df in meta.DelegateFields)
         {
             string fn = df.Name;
-            // Skip generic-sounding field names that are unlikely to be event backing fields.
-            // Real event fields are named after the event (e.g. "_onCompleted", "Changed").
-            if (fn is "action" or "callback" or "handler" or "func" or "del" or "delegate") continue;
+            // Only include fields that look like event backing fields — uses add_/remove_
+            // method-pair introspection per type, then falls back to name heuristics.
+            if (!EventFieldFilter.IsLikelyEventField(obj.Type, fn)) continue;
 
             try
             {

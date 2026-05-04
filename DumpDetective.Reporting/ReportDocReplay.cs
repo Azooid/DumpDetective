@@ -74,6 +74,16 @@ public static class ReportDocReplay
                 case ReportSparkline sp:
                     sink.Sparkline([.. sp.Values], sp.Caption, sp.Unit, sp.ValueMode);
                     break;
+                case ReportCallTree ct:
+                    static CallTreeNode ToNode(ReportCallTreeNode n) =>
+                        new(n.Method, n.Module, n.InclusiveSamples, n.ExclusiveSamples,
+                            n.InclusivePct, n.ExclusivePct,
+                            n.Children.Select(ToNode).ToArray());
+                    sink.CallTree([.. ct.Roots.Select(ToNode)], ct.Caption, ct.TopN);
+                    break;
+                case ReportReference rf:
+                    sink.Reference(rf.Label, rf.Url);
+                    break;
             }
         }
     }

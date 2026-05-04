@@ -119,14 +119,20 @@ public static class BfsIndexBuilder
                 perSeg[i] = (addrBuf.ToArray(), sizeBuf.ToArray());
             });
 
-        // Phase 1b: sequential merge — stable order = stable indices
+        // Phase 1b: sequential merge — stable order = stable indices.
+        // GC.AllocateUninitializedArray: both arrays are fully overwritten in the loop.
+        // Null each perSeg entry immediately after merging so the GC can reclaim those
+        // intermediate arrays progressively rather than keeping all of them alive until
+        // the entire loop completes (saves ~segCount × avg_seg_size × 16 bytes peak).
         int totalNodes  = (int)Interlocked.Read(ref totalObjsAtomic);
-        var indexToAddr = new ulong[totalNodes];
-        var sizes       = new long[totalNodes];
+        var indexToAddr = GC.AllocateUninitializedArray<ulong>(Math.Max(totalNodes, 1));
+        var sizes       = GC.AllocateUninitializedArray<long>(Math.Max(totalNodes, 1));
         var addrToIndex = new Dictionary<ulong, int>(totalNodes);
         int pos = 0;
-        foreach (var (addrs, szs) in perSeg)
+        for (int i = 0; i < perSeg.Length; i++)
         {
+            var (addrs, szs) = perSeg[i];
+            perSeg[i] = default; // release this segment's arrays — GC can collect them now
             for (int j = 0; j < addrs.Length; j++)
             {
                 addrToIndex[addrs[j]] = pos;
@@ -210,12 +216,16 @@ public static class BfsIndexBuilder
         var p1        = p2.Pass1;
         int nodeCount = p1.NodeCount;
 
-        var offsets = new int[nodeCount + 1];
+        // offsets[0] must be 0 to seed the prefix-sum loop; the rest are fully written.
+        var offsets = GC.AllocateUninitializedArray<int>(nodeCount + 1);
+        offsets[0] = 0;
         for (int i = 0; i < nodeCount; i++)
             offsets[i + 1] = offsets[i] + p2.ChildCounts[i];
 
-        var children    = new int[(int)p2.TotalEdges];
-        var writeCursor = new int[nodeCount];
+        // children: pure positional write — never read before being written.
+        // writeCursor: fully overwritten by Array.Copy below.
+        var children    = GC.AllocateUninitializedArray<int>((int)p2.TotalEdges);
+        var writeCursor = GC.AllocateUninitializedArray<int>(nodeCount);
         Array.Copy(offsets, writeCursor, nodeCount);
 
         long scanned       = 0;
@@ -259,7 +269,7 @@ public static class BfsIndexBuilder
                 Interlocked.Add(ref scanned, localScanned);
             });
 
-        return new BfsIndexCache(p1.IndexToAddr, p1.Sizes, offsets, children, p1.AddrToIndex);
+        return new BfsIndexCache(p1.IndexToAddr, p1.Sizes, offsets, children);
     }
 
     /// <summary>

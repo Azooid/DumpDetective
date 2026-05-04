@@ -50,6 +50,8 @@ public sealed class ReportSection
 [JsonDerivedType(typeof(ReportDonutChart), "donutChart")]
 [JsonDerivedType(typeof(ReportStackedBar), "stackedBar")]
 [JsonDerivedType(typeof(ReportSparkline),  "sparkline")]
+[JsonDerivedType(typeof(ReportCallTree),   "callTree")]
+[JsonDerivedType(typeof(ReportReference),  "reference")]
 public abstract class ReportElement { }
 
 public sealed class ReportKeyValues : ReportElement
@@ -155,6 +157,35 @@ public sealed class ReportSparkline : ReportElement
     public string?      Caption   { get; set; }
     public string?      Unit      { get; set; }
     public string?      ValueMode { get; set; }
+}
+
+// ── Call Tree element ─────────────────────────────────────────────────────────
+
+/// <summary>
+/// Serialisable DTO mirroring <see cref="CallTreeNode"/> for capture/replay.
+/// </summary>
+public sealed class ReportCallTreeNode
+{
+    public string                   Method           { get; set; } = string.Empty;
+    public string                   Module           { get; set; } = string.Empty;
+    public int                      InclusiveSamples { get; set; }
+    public int                      ExclusiveSamples { get; set; }
+    public double                   InclusivePct     { get; set; }
+    public double                   ExclusivePct     { get; set; }
+    public List<ReportCallTreeNode> Children         { get; set; } = [];
+}
+
+public sealed class ReportCallTree : ReportElement
+{
+    public List<ReportCallTreeNode> Roots   { get; set; } = [];
+    public string?                  Caption { get; set; }
+    public int                      TopN    { get; set; } = 20;
+}
+
+public sealed class ReportReference : ReportElement
+{
+    public string Label { get; set; } = string.Empty;
+    public string Url   { get; set; } = string.Empty;
 }
 
 // ── Top-level JSON envelope ───────────────────────────────────────────────────

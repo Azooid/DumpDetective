@@ -101,7 +101,7 @@ public sealed class CaptureSink : IRenderSink
         => CurrentElements().Add(new ReportText { Content = line });
 
     public void Reference(string label, string url)
-        => CurrentElements().Add(new ReportText { Content = $"{label}: {url}" });
+        => CurrentElements().Add(new ReportReference { Label = label, Url = url });
 
     public void BlankLine() { /* not captured — content-free */ }
 
@@ -120,23 +120,23 @@ public sealed class CaptureSink : IRenderSink
     public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                          string? caption = null, int topN = 20)
     {
-        // CaptureSink stores structured elements; fall back to a Text entry for now.
-        if (caption is not null) CurrentElements().Add(new ReportText { Content = caption });
-        int shown = 0;
-        FlattenNodes(roots, 0, topN, ref shown);
-    }
-
-    void FlattenNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
-    {
-        foreach (var n in nodes)
+        static ReportCallTreeNode ToDto(CallTreeNode n) => new()
         {
-            if (shown >= topN) return;
-            shown++;
-            string indent = new string(' ', depth * 2);
-            CurrentElements().Add(new ReportText { Content = $"{indent}{n.InclusivePct:F1}%  {n.Method}  [{n.Module}]" });
-            if (n.Children is { Count: > 0 })
-                FlattenNodes(n.Children, depth + 1, topN, ref shown);
-        }
+            Method           = n.Method,
+            Module           = n.Module,
+            InclusiveSamples = n.InclusiveSamples,
+            ExclusiveSamples = n.ExclusiveSamples,
+            InclusivePct     = n.InclusivePct,
+            ExclusivePct     = n.ExclusivePct,
+            Children         = [.. n.Children.Select(ToDto)],
+        };
+
+        CurrentElements().Add(new ReportCallTree
+        {
+            Roots   = [.. roots.Take(topN).Select(ToDto)],
+            Caption = caption,
+            TopN    = topN,
+        });
     }
 
     public void Explain(string? what, string? why = null, string[]? bullets = null,

@@ -114,7 +114,11 @@ public sealed class StaticRefsAnalyzer
 
             // Phase 2: BFS per declaring type with a shared visited set.
             var typeList = byType.ToList();
-            var results  = new (string DeclType, List<StaticFieldEntry> Fields)[typeList.Count];
+            // Use a ConcurrentQueue so each parallel worker adds directly without holding
+            // all per-type List<StaticFieldEntry> arrays alive simultaneously.
+            // ConcurrentQueue is a lock-free linked-segment queue — no thread-local stealing
+            // overhead like ConcurrentBag, and no per-call lock like a List+lock approach.
+            var allFieldsQueue = new ConcurrentQueue<StaticFieldEntry>();
             long totalSz = 0;
             int  done    = 0;
             var  sw      = System.Diagnostics.Stopwatch.StartNew();
@@ -128,7 +132,6 @@ public sealed class StaticRefsAnalyzer
                 i =>
                 {
                     var (declType, fields) = typeList[i];
-                    var entries = new List<StaticFieldEntry>(fields.Count);
 
                     // Deduplicate identical root addresses within the same declaring type.
                     // First field row gets retained size; duplicate rows get 0.
@@ -142,7 +145,7 @@ public sealed class StaticRefsAnalyzer
                             var (fieldRet, _) = bfsCache.ComputeRetained(group.Key, visitedIdx);
                             Interlocked.Add(ref totalSz, fieldRet);
 
-                            entries.Add(new StaticFieldEntry(
+                            allFieldsQueue.Enqueue(new StaticFieldEntry(
                                 DeclType:     declType,
                                 FieldName:    first.FieldName,
                                 FieldType:    first.FieldType,
@@ -152,7 +155,7 @@ public sealed class StaticRefsAnalyzer
                                 IsEstimated:  false));
 
                             foreach (var dup in group.Skip(1))
-                                entries.Add(new StaticFieldEntry(declType, dup.FieldName, dup.FieldType,
+                                allFieldsQueue.Enqueue(new StaticFieldEntry(declType, dup.FieldName, dup.FieldType,
                                     IsCollectionType(dup.FieldType), 0, dup.Addr, false));
                         }
                     }
@@ -170,7 +173,7 @@ public sealed class StaticRefsAnalyzer
                                 ctx.Heap, group.Key, visited, nodeCap, mtSizeCache, localMtSizeMisses,
                                 ref workerNodesWalked, modeLabel, update);
 
-                            entries.Add(new StaticFieldEntry(
+                            allFieldsQueue.Enqueue(new StaticFieldEntry(
                                 DeclType:     declType,
                                 FieldName:    first.FieldName,
                                 FieldType:    first.FieldType,
@@ -182,7 +185,7 @@ public sealed class StaticRefsAnalyzer
 
                             foreach (var dup in group.Skip(1))
                             {
-                                entries.Add(new StaticFieldEntry(
+                                allFieldsQueue.Enqueue(new StaticFieldEntry(
                                     DeclType:     declType,
                                     FieldName:    dup.FieldName,
                                     FieldType:    dup.FieldType,
@@ -194,7 +197,6 @@ public sealed class StaticRefsAnalyzer
                         }
                     }
 
-                    results[i] = (declType, entries);
                     int cur = Interlocked.Increment(ref done);
                     if (sw.ElapsedMilliseconds >= 200)
                     {
@@ -203,8 +205,7 @@ public sealed class StaticRefsAnalyzer
                     }
                 });
 
-            var allFields = new List<StaticFieldEntry>(results.Sum(r => r.Fields.Count));
-            foreach (var (_, typeFields) in results) allFields.AddRange(typeFields);
+            var allFields = allFieldsQueue.ToList(); // single allocation after all workers done
             allFields.Sort((a, b) => b.RetainedSize.CompareTo(a.RetainedSize));
             _fields     = allFields;
             _totalSz    = Interlocked.Read(ref totalSz);
