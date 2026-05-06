@@ -2,6 +2,7 @@
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using DumpDetective.Core.Models;
+using DumpDetective.Core.Interfaces;
 using System.Diagnostics;
 
 namespace DumpDetective.Analysis.Memory;
@@ -14,6 +15,28 @@ public static class DumpCollector
     /// <summary>Full collection (string dups + event leaks) using an existing <see cref="DumpContext"/>.</summary>
     public static DumpSnapshot CollectFull(DumpContext ctx, Action<string>? progress = null)
         => CollectFromContext(ctx, full: true, progress);
+
+    /// <summary>
+    /// Full collection with additional consumers that piggyback on the single heap walk.
+    /// Use this to collect e.g. <see cref="FragmentationConsumer"/> or <see cref="BfsPass1Consumer"/>
+    /// without a second heap enumeration.
+    /// </summary>
+    public static DumpSnapshot CollectFull(DumpContext ctx, IReadOnlyList<IHeapObjectConsumer> extraConsumers, Action<string>? progress = null)
+        => CollectFromContext(ctx, full: true, progress, extraConsumers);
+
+    /// <summary>
+    /// Cache-build-only walk: runs only the four consumers needed to populate
+    /// <c>ctx.Snapshot</c> (TypeStats, InboundRef, StringGroups, GenCounter) plus
+    /// any <paramref name="extraConsumers"/>. Heavy analysis consumers are omitted.
+    /// After the main walk, runs <c>EnumerateFinalizableObjects()</c> sequentially
+    /// and dispatches to <paramref name="finalizableConsumers"/> if provided.
+    /// Use this from <c>LoadCommand</c> where the goal is writing cache files only.
+    /// </summary>
+    public static void CollectForLoad(DumpContext ctx,
+                                      IReadOnlyList<IHeapObjectConsumer> extraConsumers,
+                                      Action<string>? progress = null,
+                                      IReadOnlyList<IFinalizableObjectConsumer>? finalizableConsumers = null)
+        => HeapObjectCollector.CollectForCacheBuild(ctx, extraConsumers, progress, finalizableConsumers);
 
     /// <summary>Lightweight collection using an existing <see cref="DumpContext"/>.</summary>
     public static DumpSnapshot CollectLightweight(DumpContext ctx, Action<string>? progress = null)
@@ -29,11 +52,12 @@ public static class DumpCollector
 
     // ── Private collect paths ─────────────────────────────────────────────────
 
-    private static DumpSnapshot CollectFromContext(DumpContext ctx, bool full, Action<string>? progress = null)
+    private static DumpSnapshot CollectFromContext(DumpContext ctx, bool full, Action<string>? progress = null,
+                                                   IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
     {
         var snapshot = CreateSnapshot(ctx.DumpPath, ctx.FileTime, full);
         snapshot.ClrVersion = ctx.ClrVersion;
-        CollectAll(ctx.Runtime, snapshot, full, progress, ctx);
+        CollectAll(ctx.Runtime, snapshot, full, progress, ctx, extraConsumers);
         var (findings, score) = HealthScorer.Score(snapshot, ThresholdLoader.Current.Scoring);
         snapshot.Findings    = findings.ToList();
         snapshot.HealthScore = score;
@@ -83,7 +107,8 @@ public static class DumpCollector
     /// that <c>EnsureSnapshot</c> would otherwise trigger.
     /// </summary>
     private static void CollectAll(ClrRuntime runtime, DumpSnapshot snapshot, bool full,
-                                   Action<string>? progress = null, DumpContext? ctx = null)
+                                   Action<string>? progress = null, DumpContext? ctx = null,
+                                   IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
     {
         // Track elapsed time per sub-collector only when a progress listener is attached
         var sw = progress is not null ? Stopwatch.StartNew() : null;
@@ -114,7 +139,7 @@ public static class DumpCollector
         {
             RuntimeSubCollectors.CollectSegmentLayout(heap, snapshot);
             if (ctx is not null && full)
-                HeapObjectCollector.CollectHeapObjectsCombined(ctx, snapshot, progress);
+                HeapObjectCollector.CollectHeapObjectsCombined(ctx, snapshot, progress, extraConsumers);
             else
                 HeapObjectCollector.CollectHeapObjects(heap, snapshot, full, progress);
 

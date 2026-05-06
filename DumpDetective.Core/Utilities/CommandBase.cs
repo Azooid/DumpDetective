@@ -19,6 +19,9 @@ public static class CommandBase
         set => ExecutionContext.SuppressVerbose = value;
     }
 
+    // ── PersistCache — forwarded to ExecutionContext ──────────────────────────
+
+
     // ── Parameter overrides — forwarded to ExecutionContext ───────────────────
     public static void SetOverride(string key, string value)       => ExecutionContext.SetOverride(key, value);
     public static void SetSharedOverride(string key, string value) => ExecutionContext.SetSharedOverride(key, value);
@@ -56,6 +59,17 @@ public static class CommandBase
         string? outputPath,
         Action<DumpContext, IRenderSink> body)
         => Execute(dumpPath, outputPath is not null ? new[] { outputPath } : null, body);
+
+    /// <summary>
+    /// <see cref="CliArgs"/>-aware overload. Convenience wrapper that extracts
+    /// dump path and output paths from <paramref name="a"/>.
+    /// </summary>
+    public static int Execute(
+        CliArgs a,
+        Action<DumpContext, IRenderSink> body)
+    {
+        return Execute(a.DumpPath, a.EffectiveOutputPaths, body);
+    }
 
     /// <summary>
     /// Multi-output overload. Each path in <paramref name="outputPaths"/> receives its own sink,
@@ -187,7 +201,7 @@ public static class CommandBase
         {
             if (SuppressVerbose) body();
             else AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
-                .Start(message, _ => body());
+                .Start(Markup.Escape(message), _ => body());
         }
         finally
         {
@@ -206,7 +220,7 @@ public static class CommandBase
         {
             if (SuppressVerbose) body(_ => { });
             else AnsiConsole.Status().Spinner(Spinner.Known.Dots).SpinnerStyle(Style.Parse("blue"))
-                .Start(message, ctx => body(msg =>
+                .Start(Markup.Escape(message), ctx => body(msg =>
                 {
                     if (msg.StartsWith("[SCAN]", StringComparison.Ordinal))
                     {

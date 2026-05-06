@@ -29,21 +29,39 @@ public sealed class BfsIndexCache
     // Memory: 4 bytes × N (vs 8+4=12 for a copy+map, or 32 for the dict) — saves ~1.92 GB at 80M objects.
     private readonly int[] _sortedIdxMap;
 
+    /// <param name="sortedIdxMap">
+    /// Optional pre-built sorted index map (e.g. from <see cref="BfsPass1State.SortedIdxMap"/>).
+    /// When provided the constructor skips the O(N log N) sort and ~440 MB allocation,
+    /// saving ~10–30 s and 440 MB at 110M objects. Pass <see langword="null"/> when
+    /// loading from disk (the map must be rebuilt because indices were re-assigned).
+    /// </param>
     internal BfsIndexCache(
-        ulong[] indexToAddr, long[] sizes, int[] offsets, int[] children)
+        ulong[] indexToAddr, long[] sizes, int[] offsets, int[] children,
+        int[]? sortedIdxMap = null)
     {
         IndexToAddr = indexToAddr;
         Sizes       = sizes;
         Offsets     = offsets;
         Children    = children;
 
-        // Build sorted-index map.  GC.AllocateUninitializedArray skips zero-init since
-        // the array is fully overwritten below.
-        int n         = indexToAddr.Length;
-        _sortedIdxMap = GC.AllocateUninitializedArray<int>(n);
-        for (int i = 0; i < n; i++) _sortedIdxMap[i] = i;
-        // Sort _sortedIdxMap by the address each index points to — no copy of IndexToAddr needed.
-        Array.Sort(_sortedIdxMap, (a, b) => IndexToAddr[a].CompareTo(IndexToAddr[b]));
+        if (sortedIdxMap is not null)
+        {
+            // Reuse the already-sorted map produced by BuildPass1/GetPass1State.
+            _sortedIdxMap = sortedIdxMap;
+        }
+        else
+        {
+            // Load path: indices were assigned during deserialization, so we must
+            // rebuild the sorted map.  GC.AllocateUninitializedArray skips zero-init
+            // since the array is fully overwritten below.
+            int n         = indexToAddr.Length;
+            _sortedIdxMap = GC.AllocateUninitializedArray<int>(n);
+            for (int i = 0; i < n; i++) _sortedIdxMap[i] = i;
+            // Array.Sort(TKey[],TValue[]) uses the intrinsic comparer — faster than lambda.
+            var sortedAddrs = GC.AllocateUninitializedArray<ulong>(n);
+            indexToAddr.AsSpan().CopyTo(sortedAddrs);
+            Array.Sort(sortedAddrs, _sortedIdxMap);
+        }
     }
 
     public int NodeCount => IndexToAddr.Length;
@@ -69,10 +87,14 @@ public sealed class BfsIndexCache
 
     /// <summary>
     /// Returns the cache file path derived from a dump path.
-    /// "app.dmp" → "app.bfs.idx"
+    /// "D:\dumps\app.dmp" → "D:\dumps\.ddcache\app\app.bfs.idx"
     /// </summary>
-    public static string CachePath(string dumpPath) =>
-        Path.ChangeExtension(dumpPath, ".bfs.idx");
+    public static string CachePath(string dumpPath)
+    {
+        string dumpDir  = Path.GetDirectoryName(Path.GetFullPath(dumpPath)) ?? Path.GetTempPath();
+        string dumpName = Path.GetFileNameWithoutExtension(dumpPath);
+        return Path.Combine(dumpDir, ".ddcache", dumpName, dumpName + ".bfs.idx");
+    }
 
     /// <summary>
     /// Returns true when a .bfs.idx file exists and was built from the same dump
@@ -114,6 +136,7 @@ public sealed class BfsIndexCache
     {
         var    dumpInfo = new FileInfo(dumpPath);
         string tmp      = cachePath + ".tmp";
+        Directory.CreateDirectory(Path.GetDirectoryName(cachePath)!);
 
         // Compute total uncompressed payload for progress display:
         //   header(28) + IndexToAddr(N*8) + Sizes(N*8) + Offsets((N+1)*4) + Children(E*4)

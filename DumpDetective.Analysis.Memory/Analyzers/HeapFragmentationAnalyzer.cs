@@ -3,6 +3,7 @@ using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Runtime;
+using System.Runtime.InteropServices;
 
 namespace DumpDetective.Analysis.Memory.Analyzers;
 
@@ -18,18 +19,56 @@ namespace DumpDetective.Analysis.Memory.Analyzers;
 /// </summary>
 public sealed class HeapFragmentationAnalyzer
 {
+    /// <summary>
+    /// Builds a <see cref="HeapFragmentationData"/> from a <see cref="FragmentationConsumer"/>
+    /// that was already walked as part of a combined <see cref="DumpCollector.CollectFull"/> pass.
+    /// Applies pinned handle counts via handle enumeration only — no additional heap walk.
+    /// </summary>
+    public static HeapFragmentationData BuildFromConsumer(ClrRuntime runtime, ClrHeap heap, FragmentationConsumer consumer)
+    {
+        // Apply pinned counts — handle enumeration only, not a heap walk.
+        var pinnedCounts = new Dictionary<ulong, int>();
+        foreach (var h in runtime.EnumerateHandles())
+        {
+            if (h.HandleKind != ClrHandleKind.Pinned || h.Object == 0) continue;
+            var seg = heap.GetSegmentByAddress(h.Object);
+            if (seg is not null)
+            {
+                ref int c = ref CollectionsMarshal.GetValueRefOrAddDefault(pinnedCounts, seg.Address, out _);
+                c++;
+            }
+        }
+        foreach (var (addr, count) in pinnedCounts)
+            if (consumer.SegData.TryGetValue(addr, out var s))
+                s.PinnedCount = count;
+
+        return BuildResult(consumer);
+    }
+
     public HeapFragmentationData Analyze(DumpContext ctx)
     {
-        var (segments, distribution) = ScanCombined(ctx);
-        return new HeapFragmentationData(segments, distribution);
+        // Fast path: return cached result when the dump has not changed since last run.
+        string cachePath = FragmentationCache.CachePath(ctx.DumpPath);
+        if (FragmentationCache.IsValid(cachePath, ctx.DumpPath))
+        {
+            var cached = FragmentationCache.TryLoad(cachePath);
+            if (cached is not null)
+                return cached;
+        }
+
+        var result = ScanCombined(ctx);
+
+        // Persist result for subsequent runs — fire-and-forget; a failure here is non-fatal.
+        try { FragmentationCache.Save(cachePath, ctx.DumpPath, result); } catch { }
+
+        return result;
     }
 
     /// <summary>
     /// Single parallel pass over all heap segments via <see cref="HeapWalker"/> that fills
     /// both per-segment live/free byte counts and the free-hole size distribution.
     /// </summary>
-    private static (IReadOnlyList<HeapSegmentInfo> Segments, IReadOnlyList<FreeHoleBucket> Distribution)
-        ScanCombined(DumpContext ctx)
+    private static HeapFragmentationData ScanCombined(DumpContext ctx)
     {
         // Count pinned handles per segment address
         var pinnedCounts = new Dictionary<ulong, int>();
@@ -57,6 +96,12 @@ public sealed class HeapFragmentationAnalyzer
             if (consumer.SegData.TryGetValue(addr, out var s))
                 s.PinnedCount = count;
 
+        var r = BuildResult(consumer);
+        return r;
+    }
+
+    private static HeapFragmentationData BuildResult(FragmentationConsumer consumer)
+    {
         var segments = consumer.SegData.Values
             .Where(s => s.CommittedBytes > 0)
             .OrderByDescending(s => s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0)
@@ -80,6 +125,6 @@ public sealed class HeapFragmentationAnalyzer
             })
             .ToList();
 
-        return (segments, distribution);
+        return new HeapFragmentationData(segments, distribution);
     }
 }

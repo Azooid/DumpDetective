@@ -20,11 +20,11 @@ public sealed class StringDuplicatesAnalyzer
         // Fast path — reuse HeapSnapshot when available
         if (ctx.Snapshot is { } snap)
         {
-            var groups = new List<StringDupGroup>(snap.StringGroups.Count);
-            foreach (var kv in snap.StringGroups)
+            var groups = new List<StringDupGroup>(snap.StringGroupsCount);
+            foreach (var kv in snap.StreamStringGroups())
                 groups.Add(new StringDupGroup(kv.Key, kv.Value.Count, kv.Value.TotalSize));
             var strResult = new StringDuplicatesData(groups, snap.TotalStringCount, snap.TotalStringSize);
-            // StringGroups is only read here — release it now to free memory.
+            // StringGroups has been streamed — delete the temp file now.
             snap.ReleaseStringGroups();
             return strResult;
         }

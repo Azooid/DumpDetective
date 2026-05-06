@@ -1,9 +1,10 @@
 ﻿using Microsoft.Diagnostics.Runtime;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
+using System.Diagnostics;
+using System.Runtime;
 using DumpDetective.Core.Utilities;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -28,9 +29,10 @@ public static class HeapWalker
     /// </summary>
     /// <returns>Total size in bytes of all free objects (used to compute fragmentation).</returns>
     public static long Walk(
-        ClrHeap                       heap,
-        IReadOnlyList<IHeapObjectConsumer> consumers,
-        Action<string>?               progress = null)
+        ClrHeap                            heap,
+        IReadOnlyList<IHeapObjectConsumer>  consumers,
+        Action<string>?                    progress             = null,
+        IReadOnlyList<IFinalizableObjectConsumer>? finalizableConsumers = null)
     {
         const int MaxParallelSegments = 8;
 
@@ -186,6 +188,11 @@ public static class HeapWalker
                     for (int c = 0; c < bucketClones[b].Length; c++)
                         bucketClones[b][c] = null!;
 
+                // Non-compacting GC: collect dead clone arrays (InboundRef stripe
+                // backings, BfsPass1 chunk arrays freed in MergeFrom, etc.).
+                // No LOH compaction — primary consumers (TypeStats, StringGroups,
+                // BfsPass1 chunks) are still live; moving them here would invalidate
+                // caches before the next consumer-read phase.
                 GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
             }
             finally
@@ -199,7 +206,49 @@ public static class HeapWalker
         if (progress is not null && totalWatch is not null)
             progress($"[SCAN]Heap walk|{processedCount}|{(long)totalWatch.Elapsed.TotalMilliseconds}");
 
+        // ── Finalizable-object pass (sequential — queue is typically tiny) ───
+        if (finalizableConsumers is { Count: > 0 })
+            RunFinalizablePass(heap, finalizableConsumers, progress);
+
         return freeBytes;
+    }
+
+    /// <summary>
+    /// Runs <c>heap.EnumerateFinalizableObjects()</c> sequentially and dispatches
+    /// each object to every registered <see cref="IFinalizableObjectConsumer"/>.
+    /// Called after the main parallel heap walk and consumer merging are complete.
+    /// </summary>
+    private static void RunFinalizablePass(
+        ClrHeap                                   heap,
+        IReadOnlyList<IFinalizableObjectConsumer> consumers,
+        Action<string>?                           progress)
+    {
+        int  count     = 0;
+        var  sw        = progress is not null ? Stopwatch.StartNew() : null;
+        var  rateSw    = progress is not null ? Stopwatch.StartNew() : null;
+
+        try
+        {
+            foreach (var obj in heap.EnumerateFinalizableObjects())
+            {
+                for (int i = 0; i < consumers.Count; i++)
+                    consumers[i].ConsumeFinalizableObject(in obj, heap);
+
+                if (progress is not null && (++count & 0xFF) == 0 && rateSw!.ElapsedMilliseconds >= 200)
+                {
+                    progress($"Scanning finalizer queue \u2014 {count:N0} objs  \u2022  {sw!.Elapsed.TotalSeconds:F1}s");
+                    rateSw.Restart();
+                }
+            }
+        }
+        finally
+        {
+            for (int i = 0; i < consumers.Count; i++)
+                consumers[i].OnFinalizableQueueComplete();
+
+            if (progress is not null)
+                progress($"[SCAN]Finalizer queue|{count}|{(long)sw!.Elapsed.TotalMilliseconds}");
+        }
     }
 
     // ── Shared HeapTypeMeta builder ───────────────────────────────────────────

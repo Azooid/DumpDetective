@@ -26,7 +26,8 @@ internal static class HeapObjectCollector
     // ctx.Snapshot (HeapSnapshot), so RenderEmbeddedReports gets a cache hit
     // and never walks the heap a second time.
 
-    internal static void CollectHeapObjectsCombined(DumpContext ctx, DumpSnapshot s, Action<string>? progress = null)
+    internal static void CollectHeapObjectsCombined(DumpContext ctx, DumpSnapshot s, Action<string>? progress = null,
+                                                    IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
     {
         var heap = ctx.Heap;
 
@@ -52,11 +53,25 @@ internal static class HeapObjectCollector
         var eventAnalyzer = new Analyzers.EventAnalysisAnalyzer();     eventAnalyzer.Reset();
 
         // ── Single heap walk — all consumers driven in one pass ───────────────
-        long freeBytes = HeapWalker.Walk(heap,
-            [typeStatsC, genCounter, inbound, strings,
-             threadNames, threadPool, httpReqs, cwt,
-             timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer],
-            progress);
+        IReadOnlyList<IHeapObjectConsumer> allConsumers;
+        if (extraConsumers is null || extraConsumers.Count == 0)
+        {
+            allConsumers = [typeStatsC, genCounter, inbound, strings,
+                            threadNames, threadPool, httpReqs, cwt,
+                            timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer];
+        }
+        else
+        {
+            var list = new List<IHeapObjectConsumer>(14 + extraConsumers.Count)
+            {
+                typeStatsC, genCounter, inbound, strings,
+                threadNames, threadPool, httpReqs, cwt,
+                timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer
+            };
+            list.AddRange(extraConsumers);
+            allConsumers = list;
+        }
+        long freeBytes = HeapWalker.Walk(heap, allConsumers, progress);
 
         // ── Populate DumpSnapshot from consumer results ───────────────────────
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
@@ -115,11 +130,56 @@ internal static class HeapObjectCollector
             genCounter.PohObjCount, genCounter.PohObjSize,
             typeStatsC.TotalObjects, inbound.TotalRefs,
             strings.TotalStringCount, strings.TotalStringSize,
-            inbound.TopAddrs, inbound.Histogram, inbound.InboundCountsSize));
+            inbound.TopAddrs, inbound.Histogram, inbound.InboundCountsSize,
+            dumpPath: ctx.DumpPath));
 
-        // InboundCounts (~1.9 GB) is still needed by SharedReferrerCache.Build to extract
-        // hot addresses — ReleaseRaw() is called there once that extraction is complete.
-        // Everything else that needs inbound data reads TopInboundAddrs / InboundHistogram.
+        // The three large dictionaries (TypeStats, InboundCounts, StringGroups) have been
+        // written to temp files by HeapSnapshot.Create above. Release the consumer-side
+        // references now so the GC can reclaim those backing arrays without waiting for
+        // the next analysis phase to run.
+        inbound.ReleaseRaw();
+    }
+
+    // ── Cache-build-only walk ─────────────────────────────────────────────────
+    // Runs ONLY the four consumers that are strictly required to build ctx.Snapshot
+    // (HeapSnapshot) — TypeStats, InboundRef, StringGroup, GenCounter — plus any
+    // caller-supplied extras (e.g. FragmentationConsumer, BfsPass1Consumer).
+    // All heavyweight analysis consumers (EventAnalysisAnalyzer, AsyncStacksAnalyzer,
+    // WcfChannelsAnalyzer, etc.) are deliberately excluded to save ~30–50% walk time.
+    // Use this from LoadCommand where the goal is writing cache files, not analyzing.
+
+    internal static void CollectForCacheBuild(DumpContext ctx, IReadOnlyList<IHeapObjectConsumer> extraConsumers,
+                                              Action<string>? progress = null,
+                                              IReadOnlyList<IFinalizableObjectConsumer>? finalizableConsumers = null)
+    {
+        var heap = ctx.Heap;
+
+        var typeStatsC = new Consumers.TypeStatsConsumer();
+        var genCounter = new Consumers.GenCounterConsumer();
+        var inbound    = new Consumers.InboundRefConsumer();
+        var strings    = new Consumers.StringGroupConsumer();
+
+        var allConsumers = new List<IHeapObjectConsumer>(4 + extraConsumers.Count)
+            { typeStatsC, genCounter, inbound, strings };
+        allConsumers.AddRange(extraConsumers);
+
+        HeapWalker.Walk(heap, allConsumers, progress, finalizableConsumers);
+
+        // Pre-populate HeapSnapshot — same as CollectHeapObjectsCombined, so
+        // SharedReferrerCache.Build (and any other consumer of ctx.Snapshot) works normally.
+        ctx.PreloadSnapshot(HeapSnapshot.Create(
+            typeStatsC.TypeStats, inbound.InboundCounts, strings.StringGroups,
+            genCounter.Gen0Bytes, genCounter.Gen1Bytes, genCounter.Gen2Bytes,
+            genCounter.LohBytes,  genCounter.PohBytes,
+            genCounter.Gen0ObjCount, genCounter.Gen1ObjCount, genCounter.Gen2ObjCount,
+            genCounter.FrozenObjCount, genCounter.FrozenObjSize,
+            genCounter.PohObjCount, genCounter.PohObjSize,
+            typeStatsC.TotalObjects, inbound.TotalRefs,
+            strings.TotalStringCount, strings.TotalStringSize,
+            inbound.TopAddrs, inbound.Histogram, inbound.InboundCountsSize,
+            dumpPath: ctx.DumpPath));
+
+        inbound.ReleaseRaw();
     }
 
     // ── Main heap object walk ─────────────────────────────────────────────────

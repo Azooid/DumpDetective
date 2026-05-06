@@ -184,7 +184,7 @@ public sealed class HighRefsAnalyzer
         if (ctx.Snapshot is not null)
         {
             SharedReferrerCache? cache = null;
-            CommandBase.RunStatus("Building referrer map (heap walk)...", () =>
+            CommandBase.RunStatus("Building referrer map...", () =>
                 cache = ctx.GetOrCreateAnalysis<SharedReferrerCache>(
                     () => SharedReferrerCache.Build(ctx)));
 

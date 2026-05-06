@@ -80,46 +80,66 @@ internal sealed class InboundRefConsumer : IHeapObjectConsumer
 
     public void OnWalkComplete()
     {
-        // Count total entries across all stripes to pre-size the merged dict,
-        // avoiding incremental resizes during the O(N) merge loop.
-        int totalEntries = 0;
-        for (int i = 0; i < StripeCount; i++) totalEntries += _stripes[i].Count;
+        // Compute TopAddrs, Histogram, and totals DIRECTLY from the 256 stripes —
+        // no merged Dictionary<ulong,int> needed.
+        //
+        // Old approach: created a 2.5 GB merged dict while 256 stripes (~2.5 GB) were
+        // still alive → 5 GB peak. The merged dict was then held as InboundCounts but
+        // HeapSnapshot.Create does NOT store it (it is immediately freed by ReleaseRaw).
+        // The merged dict was pure overhead — never used for any analysis.
+        //
+        // New approach: iterate each stripe once to collect candidates (count >= 10)
+        // and histogram counts, then free each stripe immediately. Peak = 2.5 GB (stripes
+        // only) → drops to 0 as each is freed. No 2.5 GB merged dict ever allocated.
 
-        var merged = new Dictionary<ulong, int>(totalEntries);
-        long totalRefs = 0;
+        var candidates  = new List<HeapAddrCount>(1024);
+        var histCounts  = new int[HistogramBuckets.Length];
+        long totalRefs  = 0;
+        int  totalItems = 0;
+
         for (int i = 0; i < StripeCount; i++)
         {
-            foreach (var (k, v) in _stripes[i]) merged[k] = v;
-            totalRefs    += _stripeRefs[i];
-            _stripes[i].Clear();
-            _stripes[i] = null!; // null the ref so the stripe backing array is GC-eligible
+            var stripe = _stripes[i];
+            totalRefs  += _stripeRefs[i];
+            totalItems += stripe.Count;
+
+            foreach (var (addr, cnt) in stripe)
+            {
+                if (cnt >= 10) candidates.Add(new HeapAddrCount(addr, cnt));
+
+                // Histogram — buckets are non-overlapping so break on first match.
+                for (int b = 0; b < HistogramBuckets.Length; b++)
+                {
+                    if (cnt >= HistogramBuckets[b].Lo && cnt <= HistogramBuckets[b].Hi)
+                    {
+                        histCounts[b]++;
+                        break;
+                    }
+                }
+            }
+
+            // Free this stripe immediately — never needed again.
+            stripe.Clear();
+            _stripes[i] = null!;
         }
-        InboundCounts     = merged;
-        TotalRefs         = totalRefs;
-        InboundCountsSize = merged.Count;
 
-        // Pre-distil top-50 addrs (used by HighRefsAnalyzer + SharedReferrerCache.Build).
-        // Stored as a tiny array so InboundCounts (~1.9 GB) can be released immediately
-        // after hot-address extraction without losing the data needed for reports.
-        TopAddrs = merged
-            .Where(kv => kv.Value >= 10)
-            .OrderByDescending(kv => kv.Value)
-            .Take(50)
-            .Select(kv => new HeapAddrCount(kv.Key, kv.Value))
-            .ToArray();
+        // Sort candidates descending, keep top 50.
+        candidates.Sort(static (a, b) => b.Count.CompareTo(a.Count));
+        TopAddrs = candidates.Count <= 50
+            ? candidates.ToArray()
+            : candidates.GetRange(0, 50).ToArray();
 
-        // Pre-build the ref-count histogram so HighRefsAnalyzer never needs the
-        // raw 80 M-entry dict for histogram computation — O(N) done once here.
         var hist = new InboundBucket[HistogramBuckets.Length];
         for (int b = 0; b < HistogramBuckets.Length; b++)
-        {
-            int lo = HistogramBuckets[b].Lo, hi = HistogramBuckets[b].Hi;
-            int cnt = 0;
-            foreach (var v in merged.Values)
-                if (v >= lo && v <= hi) cnt++;
-            hist[b] = new InboundBucket(lo, hi, cnt);
-        }
+            hist[b] = new InboundBucket(HistogramBuckets[b].Lo, HistogramBuckets[b].Hi, histCounts[b]);
         Histogram = hist;
+
+        TotalRefs         = totalRefs;
+        InboundCountsSize = totalItems;
+
+        // InboundCounts is never stored in HeapSnapshot and is freed immediately by
+        // ReleaseRaw(). Avoid the 2.5 GB allocation entirely — use an empty sentinel.
+        InboundCounts = [];
     }
 
     /// <summary>

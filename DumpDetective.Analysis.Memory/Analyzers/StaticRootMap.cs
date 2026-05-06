@@ -20,6 +20,14 @@ internal sealed class StaticRootAddresses
 
     internal static StaticRootAddresses Build(DumpContext ctx)
     {
+        // Fast path: load from cache (enumerating static fields is ~200–250s).
+        string cachePath = StaticRootsCache.CachePath(ctx.DumpPath);
+        if (StaticRootsCache.IsValid(cachePath, ctx.DumpPath))
+        {
+            var cached = StaticRootsCache.TryLoad(cachePath);
+            if (cached is not null) return new StaticRootAddresses(cached, 0);
+        }
+
         var addresses      = new HashSet<ulong>();
         int skippedModules = 0;
 
@@ -55,6 +63,9 @@ internal sealed class StaticRootAddresses
             }
         }
         catch { }
+
+        // Persist for subsequent runs.
+        try { StaticRootsCache.Save(cachePath, ctx.DumpPath, addresses); } catch { }
 
         return new StaticRootAddresses(addresses, skippedModules);
     }

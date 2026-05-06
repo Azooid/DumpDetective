@@ -19,7 +19,7 @@ namespace DumpDetective.Analysis.Memory.Consumers;
 /// Free-hole buckets use the floor log2 of the size so each bucket spans
 /// [2^k, 2^(k+1)) bytes — displayed as “&lt; 1 KB”, “1–4 KB”, etc. in the report.
 /// </summary>
-internal sealed class FragmentationConsumer : IHeapObjectConsumer
+public sealed class FragmentationConsumer : IHeapObjectConsumer
 {
     // segment address → mutable state; keyed the same way as HeapFragmentationAnalyzer
     public readonly Dictionary<ulong, MutableSeg> SegData;

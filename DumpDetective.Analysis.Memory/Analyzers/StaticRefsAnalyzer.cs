@@ -107,7 +107,7 @@ public sealed class StaticRefsAnalyzer
             var mtSizeCache = new Dictionary<ulong, long>(4096);
             if (bfsCache is null && ctx.Snapshot is { } sizeSnap)
             {
-                foreach (var (_, agg) in sizeSnap.TypeStats)
+                foreach (var (_, agg) in sizeSnap.StreamTypeStats())
                     if (agg.MT != 0 && agg.Count > 0)
                         mtSizeCache[agg.MT] = agg.Size / agg.Count;
             }

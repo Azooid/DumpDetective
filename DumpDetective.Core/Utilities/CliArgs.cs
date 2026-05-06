@@ -230,7 +230,7 @@ public sealed class CliArgs
 
             // Positional
             positionals.Add(a);
-            if (dumpPath is null && IsKnownInputFile(a))
+            if (dumpPath is null && (IsKnownInputFile(a) || IsDirectoryPath(a)))
             {
                 dumpPath = a;
             }
@@ -267,6 +267,20 @@ public sealed class CliArgs
     public static bool IsTraceFile(string path) =>
         path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Returns <see langword="true"/> when the positional looks like a directory —
+    /// it ends with a separator or <c>.</c>, or it already exists on disk as a directory.
+    /// </summary>
+    private static bool IsDirectoryPath(string path)
+    {
+        if (path.EndsWith(Path.DirectorySeparatorChar)   ||
+            path.EndsWith(Path.AltDirectorySeparatorChar)||
+            path.EndsWith('.'))
+            return true;
+        try { return Directory.Exists(path); }
+        catch { return false; }
+    }
 
     private static string NormKey(string name) =>
         name.TrimStart('-').ToLowerInvariant();

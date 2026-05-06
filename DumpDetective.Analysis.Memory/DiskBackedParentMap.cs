@@ -40,6 +40,19 @@ internal sealed class DiskBackedParentMap : IDisposable
     private long ChildrenOffset    => HeaderBytes;
     private long ParentsOffset     => HeaderBytes + _count * 8L;
 
+    // ── Path ─────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Returns the cache file path inside the <c>.ddcache</c> folder.
+    /// "D:\dumps\app.dmp" → "D:\dumps\.ddcache\app\app.parent.map"
+    /// </summary>
+    public static string CachePath(string dumpPath)
+    {
+        string dumpDir  = Path.GetDirectoryName(Path.GetFullPath(dumpPath)) ?? Path.GetTempPath();
+        string dumpName = Path.GetFileNameWithoutExtension(dumpPath);
+        return Path.Combine(dumpDir, ".ddcache", dumpName, dumpName + ".parent.map");
+    }
+
     // ── Construction ──────────────────────────────────────────────────────────
 
     private DiskBackedParentMap(
@@ -65,7 +78,8 @@ internal sealed class DiskBackedParentMap : IDisposable
     /// <param name="filePath">Destination path; will be overwritten if it exists.</param>
     public static DiskBackedParentMap Write(
         Dictionary<ulong, ParentSlots>[] stripes,
-        string filePath)
+        string filePath,
+        bool deleteOnDispose = false)
     {
         // 1. Count total entries.
         int total = 0;
@@ -115,7 +129,40 @@ internal sealed class DiskBackedParentMap : IDisposable
         }
 
         // 5. Open as memory-mapped file.
-        return OpenCore(filePath, deleteOnDispose: true);
+        return OpenCore(filePath, deleteOnDispose);
+    }
+
+    /// <summary>
+    /// Writes a pre-sorted (child→parent) pair array directly to disk without
+    /// re-sorting. <paramref name="sortedChildren"/> must already be sorted ascending.
+    /// Called by <see cref="SharedReferrerCache"/> when the parent map is derived
+    /// from the BFS CSR index — no heap walk required.
+    /// </summary>
+    public static DiskBackedParentMap WriteFromSortedArrays(
+        ulong[] sortedChildren, ulong[] parents, int count, string filePath,
+        bool deleteOnDispose = false)
+    {
+        string tmp = filePath + ".tmp";
+        try
+        {
+            using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write,
+                                           FileShare.None, bufferSize: 1 << 20))
+            {
+                Span<byte> header = stackalloc byte[8];
+                long countLong = count;
+                MemoryMarshal.Write(header, in countLong);
+                fs.Write(header);
+                fs.Write(MemoryMarshal.AsBytes(new ReadOnlySpan<ulong>(sortedChildren, 0, count)));
+                fs.Write(MemoryMarshal.AsBytes(new ReadOnlySpan<ulong>(parents,        0, count)));
+            }
+            File.Move(tmp, filePath, overwrite: true);
+        }
+        catch
+        {
+            try { File.Delete(tmp); } catch { }
+            throw;
+        }
+        return OpenCore(filePath, deleteOnDispose);
     }
 
     /// <summary>
@@ -158,6 +205,17 @@ internal sealed class DiskBackedParentMap : IDisposable
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Opens an existing parent-map file for read-only lookups without writing anything.
+    /// Returns <see langword="null"/> if the file does not exist, is too small, or cannot be opened.
+    /// </summary>
+    public static DiskBackedParentMap? TryLoad(string filePath, bool deleteOnDispose = false)
+    {
+        if (!File.Exists(filePath)) return null;
+        try { return OpenCore(filePath, deleteOnDispose); }
+        catch { return null; }
+    }
 
     private static DiskBackedParentMap OpenCore(string filePath, bool deleteOnDispose)
     {

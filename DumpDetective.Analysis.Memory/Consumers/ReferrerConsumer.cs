@@ -2,6 +2,7 @@
 using System.Runtime.InteropServices;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Analysis.Memory.Consumers;
 

@@ -132,6 +132,7 @@ public sealed class DumpContext : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+        _snapshot?.Dispose();
         Runtime.Dispose();
         _dt.Dispose();
     }

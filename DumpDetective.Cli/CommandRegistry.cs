@@ -181,8 +181,9 @@ public static class CommandRegistry
 
             new ObjectInspectCommand(),
 
-            // ── bfs cache ─────────────────────────────────────────────────────
-            new BuildBfsCommand(),
+            // ── cache lifecycle ─────────────────────────────────────────────
+            new LoadCommand(),
+            new CloseCommand(),
         ];
 
         // Phase 2: derive the full-analyze subset, then assemble the final array

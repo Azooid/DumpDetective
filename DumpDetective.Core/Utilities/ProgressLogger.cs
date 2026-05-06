@@ -278,19 +278,36 @@ public sealed class ProgressLogger
 
     private void WriteLiveLines(string[] lines)
     {
-        ClearLive();
         int w = Math.Max(40, Console.WindowWidth - 1);
-        for (int i = 0; i < lines.Length; i++)
+
+        if (_hasLive && _liveLineCount == lines.Length)
         {
-            // Pad / truncate each line to terminal width so overwriting works cleanly
-            string ln = lines[i].Length < w ? lines[i].PadRight(w) : lines[i][..w];
-            if (i < lines.Length - 1)
-                Console.WriteLine(ln);
-            else
-                Console.Write(ln); // no newline on last — cursor stays on it
+            // Same number of lines — overwrite in-place without clearing.
+            // Move cursor to the top live line first (if more than one line).
+            if (_liveLineCount > 1)
+                Console.Write($"\x1b[{_liveLineCount - 1}A"); // cursor up N-1
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string ln = lines[i].Length < w ? lines[i].PadRight(w) : lines[i][..w];
+                Console.Write('\r' + ln);
+                if (i < lines.Length - 1)
+                    Console.WriteLine();
+            }
         }
-        _hasLive       = true;
-        _liveLineCount = lines.Length;
+        else
+        {
+            ClearLive();
+            for (int i = 0; i < lines.Length; i++)
+            {
+                string ln = lines[i].Length < w ? lines[i].PadRight(w) : lines[i][..w];
+                if (i < lines.Length - 1)
+                    Console.WriteLine(ln);
+                else
+                    Console.Write(ln);
+            }
+            _hasLive       = true;
+            _liveLineCount = lines.Length;
+        }
     }
 
     private void ClearLive()

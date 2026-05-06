@@ -20,8 +20,8 @@ public sealed class HeapStatsAnalyzer
         // Fast path — reuse HeapSnapshot when no object-level filters are active
         if (ctx.Snapshot is { } snap && filter is null && genFilter is null)
         {
-            var rows = new List<HeapStatRow>(snap.TypeStats.Count);
-            foreach (var (name, a) in snap.TypeStats)
+            var rows = new List<HeapStatRow>(snap.TypeStatsCount);
+            foreach (var (name, a) in snap.StreamTypeStats())
                 rows.Add(new HeapStatRow(name, a.Count, a.Size, a.GenLabel, a.MT));
             return new HeapStatsData(rows, rows.Sum(r => r.Size), rows.Sum(r => r.Count));
         }

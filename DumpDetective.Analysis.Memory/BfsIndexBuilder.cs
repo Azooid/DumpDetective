@@ -9,19 +9,40 @@ namespace DumpDetective.Analysis.Memory;
 /// <summary>Intermediate state produced by <see cref="BfsIndexBuilder.BuildPass1"/>.</summary>
 public sealed class BfsPass1State
 {
-    internal readonly ulong[]               IndexToAddr;
-    internal readonly long[]                Sizes;
-    internal readonly Dictionary<ulong,int> AddrToIndex;
-    public   readonly long                  TotalBytes;
+    internal readonly ulong[] IndexToAddr;
+    internal readonly long[]  Sizes;
+    /// <summary>
+    /// Index map sorted by address value. <c>SortedIdxMap[i]</c> is the creation-order
+    /// index whose address is the i-th smallest. Enables O(log N) address lookups
+    /// using 4 bytes × N instead of the 32 bytes × N of a <c>Dictionary&lt;ulong,int&gt;</c>.
+    /// Saves ~3.2 GB at 110M objects compared to the old dictionary approach.
+    /// </summary>
+    internal readonly int[]   SortedIdxMap;
+    public   readonly long    TotalBytes;
     public   int NodeCount => IndexToAddr.Length;
 
-    internal BfsPass1State(ulong[] indexToAddr, long[] sizes,
-                           Dictionary<ulong,int> addrToIndex, long totalBytes)
+    internal BfsPass1State(ulong[] indexToAddr, long[] sizes, int[] sortedIdxMap, long totalBytes)
     {
-        IndexToAddr = indexToAddr;
-        Sizes       = sizes;
-        AddrToIndex = addrToIndex;
-        TotalBytes  = totalBytes;
+        IndexToAddr  = indexToAddr;
+        Sizes        = sizes;
+        SortedIdxMap = sortedIdxMap;
+        TotalBytes   = totalBytes;
+    }
+
+    /// <summary>O(log N) address-to-index lookup via binary search over <see cref="SortedIdxMap"/>.</summary>
+    internal bool TryGetIndex(ulong addr, out int idx)
+    {
+        int lo = 0, hi = SortedIdxMap.Length - 1;
+        while (lo <= hi)
+        {
+            int   mid    = (lo + hi) >>> 1;
+            ulong midKey = IndexToAddr[SortedIdxMap[mid]];
+            if (midKey == addr) { idx = SortedIdxMap[mid]; return true; }
+            if (midKey <  addr) lo = mid + 1;
+            else                hi = mid - 1;
+        }
+        idx = -1;
+        return false;
     }
 }
 
@@ -29,7 +50,14 @@ public sealed class BfsPass1State
 public sealed class BfsPass2State
 {
     internal readonly BfsPass1State Pass1;
-    internal readonly int[]         ChildCounts;
+    /// <summary>
+    /// Per-node outbound edge count. Used only for the prefix-sum that builds
+    /// <see cref="BfsIndexCache.Offsets"/> at the start of
+    /// <see cref="BfsIndexBuilder.BuildPass3"/>. Released immediately after that
+    /// prefix-sum via <see cref="ReleaseChildCounts"/> to free ~440 MB before
+    /// the 72-second parallel fill begins.
+    /// </summary>
+    internal int[]?                 ChildCounts; // non-readonly: BuildPass3 releases it early
     public   readonly long          TotalEdges;
 
     internal BfsPass2State(BfsPass1State pass1, int[] childCounts, long totalEdges)
@@ -38,6 +66,10 @@ public sealed class BfsPass2State
         ChildCounts = childCounts;
         TotalEdges  = totalEdges;
     }
+
+    /// <summary>Nulls <see cref="ChildCounts"/> so the 440 MB array is GC-eligible
+    /// once the prefix-sum in BuildPass3 is complete.</summary>
+    internal void ReleaseChildCounts() => ChildCounts = null;
 }
 
 /// <summary>
@@ -127,7 +159,6 @@ public static class BfsIndexBuilder
         int totalNodes  = (int)Interlocked.Read(ref totalObjsAtomic);
         var indexToAddr = GC.AllocateUninitializedArray<ulong>(Math.Max(totalNodes, 1));
         var sizes       = GC.AllocateUninitializedArray<long>(Math.Max(totalNodes, 1));
-        var addrToIndex = new Dictionary<ulong, int>(totalNodes);
         int pos = 0;
         for (int i = 0; i < perSeg.Length; i++)
         {
@@ -135,14 +166,26 @@ public static class BfsIndexBuilder
             perSeg[i] = default; // release this segment's arrays — GC can collect them now
             for (int j = 0; j < addrs.Length; j++)
             {
-                addrToIndex[addrs[j]] = pos;
-                indexToAddr[pos]      = addrs[j];
-                sizes[pos]            = szs[j];
+                indexToAddr[pos] = addrs[j];
+                sizes[pos]       = szs[j];
                 pos++;
             }
         }
 
-        return new BfsPass1State(indexToAddr, sizes, addrToIndex, totalBytesAtomic);
+        // Build sorted-index map: sort a copy of addresses alongside 0..N-1 index map.
+        // Array.Sort(TKey[], TValue[]) uses intrinsics (faster than comparator lambda)
+        // and is the same sort BfsIndexCache used to do in its constructor — we now do
+        // it here so BuildPass3 can reuse SortedIdxMap as _sortedIdxMap, saving ~440 MB
+        // and the sort time in the constructor.
+        var sortedAddrs  = GC.AllocateUninitializedArray<ulong>(Math.Max(totalNodes, 1));
+        var sortedIdxMap = GC.AllocateUninitializedArray<int>(Math.Max(totalNodes, 1));
+        indexToAddr.AsSpan(0, totalNodes).CopyTo(sortedAddrs);
+        for (int i = 0; i < totalNodes; i++) sortedIdxMap[i] = i;
+        Array.Sort(sortedAddrs, sortedIdxMap, 0, totalNodes);
+        // sortedAddrs is a temporary needed only for the sort; release it immediately.
+        sortedAddrs = null!;
+
+        return new BfsPass1State(indexToAddr, sizes, sortedIdxMap, totalBytesAtomic);
     }
 
     // ── Pass 2: count forward edges per node (parallel segments) ─────────────
@@ -169,12 +212,12 @@ public static class BfsIndexBuilder
                 foreach (var obj in seg.EnumerateObjects())
                 {
                     if (!obj.IsValid || obj.IsNull ||
-                        !p1.AddrToIndex.TryGetValue(obj.Address, out int pIdx)) continue;
+                        !p1.TryGetIndex(obj.Address, out int pIdx)) continue;
 
                     localScanned++;
                     foreach (var childAddr in obj.EnumerateReferenceAddresses(carefully: false))
                     {
-                        if (childAddr == 0 || !p1.AddrToIndex.ContainsKey(childAddr)) continue;
+                        if (childAddr == 0 || !p1.TryGetIndex(childAddr, out _)) continue;
                         childCounts[pIdx]++; // safe: pIdx is unique per thread
                         localEdges++;
                     }
@@ -220,7 +263,12 @@ public static class BfsIndexBuilder
         var offsets = GC.AllocateUninitializedArray<int>(nodeCount + 1);
         offsets[0] = 0;
         for (int i = 0; i < nodeCount; i++)
-            offsets[i + 1] = offsets[i] + p2.ChildCounts[i];
+            offsets[i + 1] = offsets[i] + p2.ChildCounts![i];
+
+        // ChildCounts is only needed for the prefix-sum above.
+        // Release it now so the ~440 MB array is GC-eligible before the
+        // 72-second parallel fill begins (pass 3 is the dominant memory consumer).
+        p2.ReleaseChildCounts();
 
         // children: pure positional write — never read before being written.
         // writeCursor: fully overwritten by Array.Copy below.
@@ -242,12 +290,12 @@ public static class BfsIndexBuilder
                 foreach (var obj in seg.EnumerateObjects())
                 {
                     if (!obj.IsValid || obj.IsNull ||
-                        !p1.AddrToIndex.TryGetValue(obj.Address, out int pIdx)) continue;
+                        !p1.TryGetIndex(obj.Address, out int pIdx)) continue;
 
                     localScanned++;
                     foreach (var childAddr in obj.EnumerateReferenceAddresses(carefully: false))
                     {
-                        if (childAddr == 0 || !p1.AddrToIndex.TryGetValue(childAddr, out int cIdx)) continue;
+                        if (childAddr == 0 || !p1.TryGetIndex(childAddr, out int cIdx)) continue;
                         children[writeCursor[pIdx]++] = cIdx; // safe: pIdx unique per thread
                     }
 
@@ -269,7 +317,9 @@ public static class BfsIndexBuilder
                 Interlocked.Add(ref scanned, localScanned);
             });
 
-        return new BfsIndexCache(p1.IndexToAddr, p1.Sizes, offsets, children);
+        // SortedIdxMap from pass 1 is identical to what BfsIndexCache constructor
+        // used to build internally — reuse it directly to skip an 880 MB sort.
+        return new BfsIndexCache(p1.IndexToAddr, p1.Sizes, offsets, children, p1.SortedIdxMap);
     }
 
     /// <summary>

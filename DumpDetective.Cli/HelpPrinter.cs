@@ -22,12 +22,14 @@ internal static class HelpPrinter
                                        "deadlock-detection", "async-stacks"]),
         ("Exceptions / Diagnostics",  ["exception-analysis", "event-analysis"]),
         ("Infrastructure / Network",  ["http-requests", "connection-pool", "wcf-channels", "timer-leaks"]),
-        ("Targeted / Interactive",    ["type-instances", "object-inspect", "module-list", "build-bfs"]),
-        ("Replay",                    ["render"]),
+        ("Targeted / Interactive",    ["type-instances", "object-inspect", "module-list"]),
+        ("Cache Lifecycle",           ["load", "close"]),
+        ("Replay / Comparison",       ["render", "diff"]),
     ];
 
     private static readonly (string Heading, string[] Names)[] s_traceGroups =
     [
+        ("Orchestrator",              ["trace-analyze"]),
         ("Threads / Concurrency",     ["threadpool-starvation"]),
         ("CPU / Allocation",          ["cpu-trace", "alloc-trace"]),
         ("GC / Exceptions / Locks",   ["gc-trace", "exceptions-trace", "contention-trace"]),

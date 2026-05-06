@@ -36,6 +36,7 @@ public sealed class AnalyzeCommand : ICommand
 
         Options:
           --full                   Full combined report (scored summary + all sub-reports)
+          --persist                Keep all .ddcache temp files after analysis for re-use on next run
           --str-top <n>            string-duplicates: max groups shown (default 100)
           --str-min-count <n>      string-duplicates: min duplicate count (default 2)
           --str-min-waste <bytes>  string-duplicates: min wasted bytes (default 0)
@@ -48,6 +49,7 @@ public sealed class AnalyzeCommand : ICommand
           DumpDetective analyze app.dmp
           DumpDetective analyze app.dmp --full --output full-report.html
           DumpDetective analyze app.dmp --full --str-min-waste 1048576
+          DumpDetective analyze app.dmp --full --persist
         """;
 
     public int Run(string[] args)
@@ -64,14 +66,13 @@ public sealed class AnalyzeCommand : ICommand
         string? dumpPath   = a.DumpPath;
         string? outputPath = a.OutputPath;
 
+
         if (dumpPath is null)       { AnsiConsole.MarkupLine("[bold red]✗[/] dump file path required."); return 1; }
         if (!File.Exists(dumpPath)) { AnsiConsole.MarkupLine($"[bold red]✗[/] file not found: {Markup.Escape(dumpPath)}"); return 1; }
 
         var log = new ProgressLogger();
         log.SectionHeader($"DumpDetective Analysis  {DumpDetective.Core.Utilities.AppInfo.Version}");
         log.Info($"Analyzing dump: {Path.GetFileName(dumpPath)}");
-        foreach (var p in a.EffectiveOutputPaths)
-            log.InfoM($"Output: {ProgressLogger.FileLink(p)}", indent: true);
         log.Info("Loading dump file...", indent: true);
 
         try

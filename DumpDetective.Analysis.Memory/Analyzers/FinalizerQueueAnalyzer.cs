@@ -2,6 +2,7 @@
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Runtime;
+using System.Runtime.InteropServices;
 
 namespace DumpDetective.Analysis.Memory.Analyzers;
 
@@ -24,6 +25,18 @@ public sealed class FinalizerQueueAnalyzer
 {
     public FinalizerQueueData Analyze(DumpContext ctx, bool collectAddresses = false)
     {
+        // Fast path: use disk cache if valid (built by LoadCommand).
+        string cachePath = FinalizerQueueCache.CachePath(ctx.DumpPath);
+        if (FinalizerQueueCache.IsValid(cachePath, ctx.DumpPath))
+        {
+            var cached = FinalizerQueueCache.TryLoad(cachePath, ctx.DumpPath);
+            if (cached is not null)
+            {
+                ctx.SetAnalysis(cached);
+                return cached;
+            }
+        }
+
         var (finThread, finFrames, finBlocked) = GetFinalizerInfo(ctx);
         HashSet<ulong>? finalizableAddrs = null;
         var stats      = ScanQueue(ctx, collectAddresses, out finalizableAddrs);
@@ -36,8 +49,14 @@ public sealed class FinalizerQueueAnalyzer
         CommandBase.RunStatus("Checking resurrection candidates...",
             () => resurrect = CountResurrectionCandidates(ctx, finalizableAddrs));
 
-        return new FinalizerQueueData(stats, total, totalSize, finBlocked, finFrames, resurrect,
+        var result = new FinalizerQueueData(stats, total, totalSize, finBlocked, finFrames, resurrect,
             finThread?.ManagedThreadId ?? 0, finThread?.OSThreadId ?? 0);
+
+        // Persist so subsequent runs (trend-analysis, analyze --full) skip the expensive scan.
+        try { FinalizerQueueCache.Save(cachePath, ctx.DumpPath, result); } catch { }
+
+        ctx.SetAnalysis(result);
+        return result;
     }
 
     private static (ClrThread? Thread, IReadOnlyList<string> Frames, bool Blocked)

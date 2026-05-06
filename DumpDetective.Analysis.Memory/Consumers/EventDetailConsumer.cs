@@ -26,18 +26,25 @@ internal sealed class EventDetailConsumer : IHeapObjectConsumer
     // (Publisher type, field name) → distinct publisher-object count
     public readonly Dictionary<(string, string), int> InstanceCounts = new(128);
 
-    // Number of unique publisher objects seen
-    public int PublisherCount { get; private set; }
+    // Shared across all clones so progress reads are live during the parallel walk.
+    // [0] = publisher count, [1] = subscriber count.
+    private readonly long[] _shared;
 
-    // Running subscriber total — readable during the walk for live progress
-    public long _subscriberCount;
-    public ref long SubscriberCount => ref _subscriberCount;
+    /// <summary>Live publisher count (all clones combined, readable during walk).</summary>
+    public long PublisherCount   => Interlocked.Read(ref _shared[0]);
+    /// <summary>Live subscriber count (all clones combined, readable during walk).</summary>
+    public long SubscriberCount  => Interlocked.Read(ref _shared[1]);
+
     private long _objCount;
 
     public EventDetailConsumer(HashSet<ulong> staticRoots, ClrRuntime runtime)
+        : this(staticRoots, runtime, new long[2]) { }
+
+    private EventDetailConsumer(HashSet<ulong> staticRoots, ClrRuntime runtime, long[] shared)
     {
         _staticRoots = staticRoots;
         _runtime     = runtime;
+        _shared      = shared;
     }
 
     public void Consume(in ClrObject obj, HeapTypeMeta meta, ClrHeap heap)
@@ -70,10 +77,10 @@ internal sealed class EventDetailConsumer : IHeapObjectConsumer
                 var subs = CollectSubscribers(delVal);
                 if (subs.Count == 0) continue;
 
-                PublisherCount++;
-                // Interlocked because clones run in parallel and _subscriberCount
-                // is read from outside for live progress display.
-                Interlocked.Add(ref _subscriberCount, subs.Count);
+                Interlocked.Increment(ref _shared[0]);
+                // Interlocked because clones run in parallel and _shared is read
+                // from outside for live progress display.
+                Interlocked.Add(ref _shared[1], subs.Count);
                 var key = (typeName, fn);
                 if (!RawGroups.TryGetValue(key, out var list))
                     RawGroups[key] = list = new List<EventSubscriberInfo>();
@@ -89,14 +96,14 @@ internal sealed class EventDetailConsumer : IHeapObjectConsumer
     public void OnWalkComplete() { }
 
     public IHeapObjectConsumer CreateClone()
-        => new EventDetailConsumer(_staticRoots, _runtime);
+        => new EventDetailConsumer(_staticRoots, _runtime, _shared);  // shares counters with root
 
     public void MergeFrom(IHeapObjectConsumer other)
     {
         var src = (EventDetailConsumer)other;
-        PublisherCount   += src.PublisherCount;
-        _objCount        += src._objCount;        // MergeFrom is serial — no Interlocked needed
-        _subscriberCount += src._subscriberCount;
+        // _shared counters are already aggregated (clones wrote directly into the
+        // root's shared array via Interlocked), so no need to sum them here.
+        _objCount += src._objCount;
 
         foreach (var (key, srcList) in src.RawGroups)
         {

@@ -48,10 +48,10 @@ public sealed class MemoryLeakAnalyzer
 
         if (ctx.Snapshot is { } snapFast)
         {
-            // Fast path — read TypeAgg directly; no I/O, effectively instant
+            // Fast path — stream TypeAgg from temp file; no large in-memory dict
             CommandBase.RunStatus("Reading type stats from snapshot cache (Step 1: fast-path)...", () =>
             {
-                foreach (var (name, agg) in snapFast.TypeStats)
+                foreach (var (name, agg) in snapFast.StreamTypeStats())
                 {
                     typeStats[name] = (agg.Count, agg.Size, agg.Ls, agg.Lc, agg.G2c, agg.G2s,
                                        agg.GenLabel, agg.SampleAddrs.Count > 0 ? agg.SampleAddrs[0] : 0, agg.MT);
@@ -213,27 +213,39 @@ public sealed class MemoryLeakAnalyzer
             var sizeCandidates  = sizeSuspects.Where(s => !countNames.Contains(s.Name)).Take(2).ToList();
             var rootCandidates  = countCandidates.Concat(sizeCandidates).ToList();
 
-            // Step 4a: build GC roots map
-            var rootMap = new Dictionary<ulong, (string Kind, string? ObjType)>();
-            CommandBase.RunStatus("Building GC roots map (Step 4a)...", () =>
+            // Step 4a: build GC roots map — check disk cache first (EnumerateRoots is ~280s).
+            var rootMap   = new Dictionary<ulong, (string Kind, string? ObjType)>();
+            string gcRootCachePath = GcRootsCache.CachePath(ctx.DumpPath);
+            bool gcRootCacheHit    = false;
+            if (GcRootsCache.IsValid(gcRootCachePath, ctx.DumpPath))
             {
-                foreach (var root in ctx.Heap.EnumerateRoots())
+                var cached = GcRootsCache.TryLoad(gcRootCachePath);
+                if (cached is not null) { rootMap = cached; gcRootCacheHit = true; }
+            }
+            if (!gcRootCacheHit)
+            {
+                CommandBase.RunStatus("Building GC roots map (Step 4a)...", () =>
                 {
-                    if (root.Object == 0 || rootMap.ContainsKey(root.Object)) continue;
-                    string kind = root.RootKind switch
+                    foreach (var root in ctx.Heap.EnumerateRoots())
                     {
-                        ClrRootKind.Stack             => "Stack (thread local)",
-                        ClrRootKind.StrongHandle      => "GC Handle — Strong",
-                        ClrRootKind.PinnedHandle      => "GC Handle — Pinned",
-                        ClrRootKind.AsyncPinnedHandle => "GC Handle — Async-Pinned",
-                        ClrRootKind.RefCountedHandle  => "GC Handle — RefCount",
-                        ClrRootKind.FinalizerQueue    => "Finalizer Queue",
-                        _                             => root.RootKind.ToString(),
-                    };
-                    var obj = ctx.Heap.GetObject(root.Object);
-                    rootMap[root.Object] = (kind, obj.IsValid ? obj.Type?.Name : null);
-                }
-            });
+                        if (root.Object == 0 || rootMap.ContainsKey(root.Object)) continue;
+                        string kind = root.RootKind switch
+                        {
+                            ClrRootKind.Stack             => "Stack (thread local)",
+                            ClrRootKind.StrongHandle      => "GC Handle — Strong",
+                            ClrRootKind.PinnedHandle      => "GC Handle — Pinned",
+                            ClrRootKind.AsyncPinnedHandle => "GC Handle — Async-Pinned",
+                            ClrRootKind.RefCountedHandle  => "GC Handle — RefCount",
+                            ClrRootKind.FinalizerQueue    => "Finalizer Queue",
+                            _                             => root.RootKind.ToString(),
+                        };
+                        var obj = ctx.Heap.GetObject(root.Object);
+                        rootMap[root.Object] = (kind, obj.IsValid ? obj.Type?.Name : null);
+                    }
+                    // Persist for subsequent runs — always written (directory persists with --persist).
+                    try { GcRootsCache.Save(gcRootCachePath, ctx.DumpPath, rootMap); } catch { }
+                });
+            }
 
             // Step 4b: build full referrer map — heap walk #2 (most expensive step).
             // SharedReferrerCache is shared with HighRefsAnalyzer — whichever of the two

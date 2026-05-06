@@ -94,6 +94,18 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     {
         if (ctx.GetAnalysis<EventAnalysisData>() is { } cached) return cached;
 
+        // Fast path: use disk cache if valid (built by LoadCommand or a prior run).
+        string cachePath = EventAnalysisCache.CachePath(ctx.DumpPath);
+        if (EventAnalysisCache.IsValid(cachePath, ctx.DumpPath))
+        {
+            var fromDisk = EventAnalysisCache.TryLoad(cachePath, ctx.DumpPath);
+            if (fromDisk is not null)
+            {
+                ctx.SetAnalysis(fromDisk);
+                return fromDisk;
+            }
+        }
+
         // Full detailed scan (matching old EventAnalysisCommand behavior)
         var result = AnalyzeDetailed(ctx);
         ctx.SetAnalysis(result);
@@ -104,12 +116,13 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
     private static EventAnalysisData AnalyzeDetailed(DumpContext ctx)
     {
         HashSet<ulong> staticRoots = [];
-        CommandBase.RunStatus("Building static root map...", () =>
-        {
-            // Address-only cache: event analysis only needs to know whether a
-            // subscriber target is statically rooted.
-            staticRoots = ctx.GetOrCreateAnalysis<StaticRootAddresses>(() => StaticRootAddresses.Build(ctx)).Addresses;
-        });
+
+        // Avoid ctx.GetOrCreateAnalysis here — that wraps the factory in a RunStatus
+        // spinner which crashes when AnalyzeDetailed is already running inside one.
+        // Use a direct ctx cache lookup and fall back to Build() (disk-cached, ~6 ms).
+        var staticRootsObj = ctx.GetAnalysis<StaticRootAddresses>() ?? StaticRootAddresses.Build(ctx);
+        ctx.SetAnalysis(staticRootsObj);   // store so callers later in the session hit ctx directly
+        staticRoots = staticRootsObj.Addresses;
 
         var consumer = new Consumers.EventDetailConsumer(staticRoots, ctx.Runtime);
 
@@ -122,7 +135,7 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
                         raw.StartsWith("merging", StringComparison.Ordinal)             ||
                         raw.StartsWith("finalising", StringComparison.Ordinal))
                     {
-                        update($"Scanning event handlers \u2014 {consumer.PublisherCount:N0} publishers  \u2022  {Interlocked.Read(ref consumer.SubscriberCount):N0} subscribers  \u2022  {raw}");
+                        update($"Scanning event handlers \u2014 {consumer.PublisherCount:N0} publishers  \u2022  {consumer.SubscriberCount:N0} subscribers  \u2022  {raw}");
                     }
                     else
                     {
@@ -162,7 +175,13 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
         // Sum of instanceCounts values = total (pub-obj, field) pairs with subscribers
         // This matches old EventAnalysisCommand's leaks.Count passed to RenderFooter
         int totalPublisherInstances = instanceCounts.Values.Sum();
-        return new EventAnalysisData(groups, totalPublisherInstances);
+        var result = new EventAnalysisData(groups, totalPublisherInstances);
+
+        // Persist so subsequent runs skip the expensive heap walk.
+        string cachePath = EventAnalysisCache.CachePath(ctx.DumpPath);
+        try { EventAnalysisCache.Save(cachePath, ctx.DumpPath, result); } catch { }
+
+        return result;
     }
 
     private static ulong GetRepresentativeAddr(List<EventSubscriberInfo> subs) => 0; // addr no longer tracked
