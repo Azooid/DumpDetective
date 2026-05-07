@@ -43,6 +43,11 @@ If you are new, use this path:
 - [Health Score](#health-score)
 - [Performance & Resource Expectations](#performance--resource-expectations)
 - [Thresholds](#thresholds)
+
+**Documentation:**
+- [Documentation Index](Docs/documentation.md) — all commands with links to detailed docs, triage playbooks, output format reference
+- [Memory Analysis Guide](Docs/Memory-Guide.md) — all dump commands, options, and workflows
+- [Trace Analysis Guide](Docs/Trace-Guide.md) — all trace commands, options, and collection recipes
 - [Testing](Docs/Testing.md)
 
 ---
@@ -203,8 +208,9 @@ DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
 
 Detailed command references:
 
-- [Memory Guide](Docs/Memory-Guide.md)
-- [Trace Guide](Docs/Trace-Guide.md)
+- [Documentation Index](Docs/documentation.md) — complete command tables, triage playbooks, and output format reference
+- [Memory Analysis Guide](Docs/Memory-Guide.md) — all dump commands with options and examples
+- [Trace Analysis Guide](Docs/Trace-Guide.md) — all trace commands with options and collection recipes
 
 ### Command Families
 
@@ -212,7 +218,7 @@ Detailed command references:
 |---|---|---|
 | Health / orchestration | `analyze`, `trend-analysis` | dump files |
 | Report replay / comparison | `render`, `diff` | saved `.json` / `.bin` |
-| Memory dump analysis | `heap-stats`, `gen-summary`, `memory-leak`, `gc-roots`, `object-inspect`, `build-bfs`, and related dump commands | `.dmp`, `.mdmp` |
+| Memory dump analysis | `heap-stats`, `gen-summary`, `memory-leak`, `gc-roots`, `object-inspect`, `load`, `close`, and related dump commands | `.dmp`, `.mdmp` |
 | Trace analysis | `trace-analyze`, `cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation` | `.nettrace`, `.etl` |
 
 The sections below follow that same split: high-level workflows first, then dump-only commands, then trace-only commands.
@@ -467,7 +473,8 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `gc-roots` | No | GC roots and referrers for a given type (too slow for `--full`) |
 | `type-instances` | No | All instances of a given type (`--type <name>` required) |
 | `object-inspect` | No | All field values of an object with optional retained-size BFS (`--address <hex>` required) |
-| `build-bfs` | No | Pre-build the BFS retained-size index cache (`.bfs.idx`) for a dump file or every dump in a directory |
+| `load` | No | Pre-build all analysis caches for a dump file or every dump in a directory |
+| `close` | No | Delete all analysis cache files for a dump file or directory |
 
 ---
 
@@ -494,20 +501,110 @@ Options:
 # Inspect a single object (no retained sizes)
 DumpDetective object-inspect app.dmp -x 0x00000276DB084170
 
-# Inspect with retained-size BFS per field (builds cache on first run)
+# Inspect with retained-size BFS per field (builds cache on first run; fast on repeat runs)
 DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
 
-# Inspect with cache loaded (fast — no BFS rebuild)
-DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
-
-# Recurse 3 levels deep, all fields use cache
+# Recurse 3 levels deep
 DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained -d 3
 
 # Cap BFS per field to 1M nodes (fast estimate for very deep graphs)
 DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained --retained-cap 1000000
 ```
 
-> **Tip:** Run `build-bfs` once before `object-inspect --retained` so the first retained-size run is instant.
+> **Tip:** Run `load` once before `object-inspect --retained` so all caches are pre-built and the first retained-size run is instant.
+
+---
+
+### `load`
+
+Pre-builds all analysis caches for a dump file so that subsequent `analyze --full` runs complete as fast as possible. Accepts either a **single dump file** or a **directory** — when a directory is given every `.dmp`/`.mdmp` file is processed sequentially, one at a time, so peak memory stays bounded. Already-valid caches are skipped; use `--force` to rebuild all.
+
+```
+DumpDetective load <dump-file-or-directory> [options]
+
+Options:
+  --force, -f    Rebuild all caches even if valid ones already exist
+  -h, --help     Show this help
+```
+
+**Caches written to `.ddcache\<dump-name>\` alongside the dump:**
+
+| Cache file | Contents |
+|---|---|
+| `stringGroups.bin` | String-duplicates data |
+| `fragmentation.bin` | Heap fragmentation segments and distribution |
+| `gc-roots.bin` | All GC root addresses and types |
+| `static-roots.bin` | Statically-rooted object addresses |
+| `hot-addr-types.bin` | Referencing-type breakdown for top-30 objects |
+| `finalizer-queue.bin` | Finalizer queue per-type stats and thread info |
+| `<dump>.bfs.idx` | Brotli-compressed forward-reference BFS graph (CSR format) |
+| `<dump>.parent.map` | Child-to-parent address map (~1.2–1.3 GB typical) |
+
+The BFS index is built in 3 passes with 8 parallel workers. Pass 1 enumerates all live objects and records shallow sizes. Pass 2 counts outbound references per node to size the CSR arrays. Pass 3 fills the edge arrays. The result is validated against the dump's file size and last-write timestamp on every load — a stale or mismatched cache is rebuilt automatically.
+
+**Measured BFS build timings**
+
+| Phase | ~87 M nodes | ~95 M nodes | ~111 M nodes |
+|---|---:|---:|---:|
+| Pass 1 — enumerate | 47.6 s | 48.0 s | 52.6 s |
+| Pass 2 — count edges | 66.5 s | 68.0 s | 74.0 s |
+| Pass 3 — fill edges | 67.1 s | 68.7 s | 74.0 s |
+| Save (Brotli Optimal) | 30.7 s | 32.4 s | 36.6 s |
+| **Total build** | **211.9 s** | **217.1 s** | **237.2 s** |
+| Load (subsequent runs) | 9.8 s | 10.2 s | 11.5 s |
+
+With caches loaded, all 23 sub-reports in `analyze --full` complete in **6–7 s per dump** — versus 230–300 s without caches for the five BFS-heavy sub-reports. See [Performance & Resource Expectations](#performance--resource-expectations) for a full before/after benchmark.
+
+**Cache tradeoff (~100 M object heap):**
+
+- `.bfs.idx` file size: ~725 MB; `parent.map`: ~1.2–1.3 GB
+- Additional RAM after cache load: ~3 GB
+- Retained-size work avoided per run: 3–7 min
+- Typical full-report wall-clock reduction: ~600–800 s → ~200–400 s
+
+If RAM is tight, use targeted commands or skip cache loading with `--no-cache`.
+
+**Examples:**
+```bash
+# Pre-build all caches for a single dump (one-time setup)
+DumpDetective load app.dmp
+
+# Force rebuild (e.g. after a code update)
+DumpDetective load app.dmp --force
+
+# Pre-build caches for all dumps in a directory (skips already-valid caches)
+DumpDetective load D:\dumps
+
+# Then use instantly in object-inspect or analyze --full
+DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
+DumpDetective analyze app.dmp --full
+```
+
+---
+
+### `close`
+
+Deletes all analysis cache files created by `load` or by `analyze --full` for a given dump. Accepts a **single dump file** or a **directory**. Use `--dry-run` to preview what would be deleted without removing anything.
+
+```
+DumpDetective close <dump-file-or-directory> [options]
+
+Options:
+  --dry-run   Show what would be deleted without deleting
+  -h, --help  Show this help
+```
+
+**Examples:**
+```bash
+# Delete all caches for a single dump
+DumpDetective close app.dmp
+
+# Preview what would be deleted
+DumpDetective close app.dmp --dry-run
+
+# Delete caches for all dumps in a directory
+DumpDetective close D:\dumps
+```
 
 ---
 
@@ -582,81 +679,6 @@ Common trace use cases:
 - Use `exceptions-trace` when a service is throwing at high volume or hiding error floods.
 - Use `contention-trace` when threads are blocked on locks and you need hotspot call sites.
 - Use `threadpool-starvation` when the runtime is under worker-thread pressure or sync-over-async blocking is suspected.
-
----
-
-### `build-bfs`
-
-Pre-builds and saves a BFS forward-reference index (`.bfs.idx`) alongside each dump file. Once built, `object-inspect --retained` loads it in seconds instead of re-walking the entire heap.
-
-Accepts either a **single dump file** or a **directory** containing multiple dumps. When a directory is given, each `.dmp`/`.mdmp` file is processed sequentially — one at a time so peak memory stays bounded.
-
-```
-DumpDetective build-bfs <dump-file-or-directory> [options]
-
-Options:
-  --force, -f    Rebuild even if a valid cache already exists
-  --recurse, -r  When input is a directory, also search subdirectories
-  -h, --help     Show this help
-```
-
-**How it works:**
-
-The builder runs a parallel 3-pass algorithm over the managed heap:
-
-| Pass | What it does |
-|---|---|
-| 1 — enumerate | Assigns a stable integer index to every live object; records shallow size |
-| 2 — count edges | Counts outbound references per node (determines CSR array sizes) |
-| 3 — fill edges | Fills the CSR edge arrays with child node indices |
-
-The resulting graph is a **Compressed Sparse Row (CSR)** structure stored as a Brotli-compressed binary file next to the dump (`<dump>.bfs.idx`). The cache is validated against the dump's file size and last-write timestamp — a stale or mismatched cache is automatically ignored and rebuilt.
-
-Once loaded, `ComputeRetained` runs a pure in-memory BFS with zero ClrMD I/O, completing in milliseconds per field regardless of heap size.
-
-This cache is now intentionally optimized for report speed rather than minimum memory footprint. A small change in the retained-size caching path improved estimate precision and made repeated retained-size work much cheaper, but the loaded cache can consume noticeably more RAM on very large heaps.
-
-**Observed tradeoff on a large heap:**
-
-| Metric | Example value |
-|---|---:|
-| Managed objects | ~100 M |
-| `.bfs.idx` file size | ~725 MB |
-| Additional RAM after cache load | ~3 GB |
-| Repeated retained-size work avoided | ~3-7 min |
-| Typical full-report improvement | ~600-800s -> ~200-400s |
-
-If you have enough memory headroom, this is usually a net win: faster reports, less repeated BFS work, and better retained-size estimate accuracy. If RAM is tight, use targeted commands or skip cache loading with `--no-cache`.
-
-**Typical timings (22 GB / 63 M node heap):**
-
-| Phase | Time |
-|---|---:|
-| Pass 1 — enumerate (8 parallel segments) | ~35 s |
-| Pass 2 — count edges (8 parallel segments) | ~40 s |
-| Pass 3 — fill edges (8 parallel segments) | ~38 s |
-| Save (Brotli Optimal, chunked) | ~30 s |
-| **Total build** | **~2.5 min** |
-| Load (subsequent runs) | **~6 s** |
-| Retained BFS per field (post-load) | **< 2 s** |
-
-**Examples:**
-```bash
-# Build and save for a single dump (one-time setup)
-DumpDetective build-bfs app.dmp
-
-# Force rebuild (e.g. after a code update)
-DumpDetective build-bfs app.dmp --force
-
-# Build caches for all dumps in a directory (skips already-valid caches)
-DumpDetective build-bfs D:\dumps
-
-# Build recursively, rebuild all even if caches exist
-DumpDetective build-bfs D:\dumps --recurse --force
-
-# Then use instantly in object-inspect
-DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
-```
 
 ---
 
@@ -939,35 +961,12 @@ The numbers below come from a real `DumpDetective analyze --full` run on a produ
 | Managed heap | 245.6 KB | 15.65 GB | +15.65 GB |
 | Private bytes | 5.9 MB | 16.68 GB | +16.68 GB |
 
-**Memory growth by stage**
-
-| Stage | Working Set Delta | Working Set After | Managed Delta |
-|---|---:|---:|---:|
-| Load dump | +733.8 MB | 746.4 MB | +719.5 MB |
-| Heap walk + scoring (full) | +8.25 GB | 8.97 GB | +4.94 GB |
-| BFS cache load | +4.18 GB | 13.15 GB | +5.71 GB |
-| Sub-reports (all) | +1.82 GB | 14.97 GB | -2.55 GB |
-
-**Slowest analyzers in this run**
-
-| Analyzer | Time |
-|---|---:|
-| memory-leak | 281.5s |
-| high-refs | 280.6s |
-| event-analysis | 265.4s |
-| heap-fragmentation | 264.4s |
-| large-objects | 204.0s |
-| finalizer-queue | 200.1s |
-
 **What this means in practice**
 
-- On a ~25 GB dump, the single heap walk is fast enough to process ~110.5M objects in about 77 seconds on a healthy machine.
-- `analyze --full` is dominated by the retention-heavy analyzers (`memory-leak`, `high-refs`, `event-analysis`, `heap-fragmentation`, `large-objects`, `finalizer-queue`), not by dump load time.
-- BFS cache load is a major but predictable memory spike. If you are short on RAM, prefer targeted commands before running the full combined report.
-- The current BFS cache path is intentionally more aggressive about caching forward-graph data up front. In exchange for a larger in-memory cache, retained-size work is faster and size-estimate precision is better.
-- On very large heaps, this tradeoff is material: a roughly 100M-object dump can produce a `.bfs.idx` file around 725 MB, add about 3 GB of RAM while loaded, and remove roughly 3-7 minutes of repeated retained-size work from the overall report.
-- In practice, that change can pull a large full-report run from roughly 600-800 seconds down into the 200-400 second range, while also improving retained-size estimate accuracy.
-- For a dump of this scale (~25 GB), **NVMe storage and at least 16 GB free RAM are strongly recommended**. If you regularly run full analysis on similar dumps, plan for 24 GB+ free RAM.
+- The single heap walk processes ~110.5 M objects in ~77 s on an NVMe machine — dump load itself takes only ~1 s.
+- `analyze --full` wall-clock time is dominated by the BFS-heavy sub-reports (`memory-leak`, `high-refs`, `event-analysis`, `heap-fragmentation`, `large-objects`, `finalizer-queue`), not by dump load or initial collection time.
+- BFS cache load (+4.2 GB RAM) is the single largest memory spike. If RAM is tight, use targeted commands rather than `--full`, or run on a machine with at least 16 GB free.
+- For a dump of this scale, **NVMe storage and 16 GB+ free RAM are required**. Plan for 24 GB+ if you run `analyze --full` regularly.
 
 ### Heap walk throughput
 
@@ -982,7 +981,7 @@ See the measured benchmark above for a concrete large-dump example.
 | < 500 MB | < 1 M | < 5 s | < 300 MB |
 | 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
 | 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
-| 15 – 30 GB | ~50 – 120 M | 5–8 min | 12–17 GB |
+| 15 – 30 GB | ~50 – 120 M | 5–8 min (with cache) / 15–25 min (first run) | 12–17 GB |
 
 > Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
 >
@@ -1001,7 +1000,7 @@ See the measured benchmark above for a concrete large-dump example.
 | `finalizer-queue` | ~0.5 s | ~2.5 min |
 | All others | < 0.3 s | usually < 30 s (`large-objects` can exceed that on very large heaps) |
 
-Recent measured sub-report timings on a 110 M object production dump:
+Recent measured sub-report timings on a 110 M object production dump (without pre-built BFS cache):
 
 | Sub-report | Time | Notes |
 |---|---:|---|
@@ -1032,16 +1031,75 @@ The ratio stays well below 1× because:
 
 ### `trend-analysis --full` across multiple dumps
 
-Each dump is processed **sequentially** — loaded, analysed, fully released — before the next one begins. Peak memory therefore equals the most expensive single dump in the set, not the sum of all dumps.
+Each dump is processed **sequentially** — loaded, analysed, fully released — before the next one begins. Peak memory equals the most expensive single dump in the set, not the sum of all dumps.
 
-Example runtimes from real runs:
+#### Measured benchmark: 3 production IIS dumps (~25 GB each)
 
-| Scenario | Dump size | Object count | Total time | Peak RAM |
-|---|---|---|---|---|
-| Load-test w3wp | 3.65 GB | 10.7 M | 12.5 s | 2.09 GB |
-| Production w3wp | ~25 GB | 110.5 M | 409 s (~6.8 min) | 15.53 GB |
+The numbers below come from a real `trend-analysis . --full` run against three production IIS worker dumps taken within minutes of each other.
 
-For large production dumps with roughly **100 M+ managed objects**, budget roughly **5–8 minutes** and **15–17 GB RAM** at peak.
+**Dump inventory**
+
+| Dump | Object count | BFS nodes | BFS edges |
+|---|---:|---:|---:|
+| D1 | 86,546,865 | 87,104,236 | 246,874,211 |
+| D2 | 110,472,530 | 111,252,975 | 290,156,029 |
+| D3 | 94,789,885 | 95,441,188 | 263,506,045 |
+
+**End-to-end wall-clock time**
+
+| Run | BFS caches | Total time | vs. no-cache |
+|---|---|---:|---|
+| Without pre-built caches | Built on-demand per dump | 1827.9 s (~30.5 min) | baseline |
+| With pre-built caches (`load` run first) | Loaded from disk | 365.3 s (~6.1 min) | **~5× faster** |
+
+**Per-dump breakdown — without cache**
+
+| Dump | Heap walk | BFS build | Sub-reports (wall) |
+|---|---:|---:|---:|
+| D1 (86.5 M objs) | 83.9 s | 211.9 s (3-pass + save) | 234.1 s |
+| D2 (110.5 M objs) | 121.2 s | 237.2 s | 298.6 s |
+| D3 (94.8 M objs) | 87.4 s | 217.1 s | 296.8 s |
+
+BFS build breakdown (3-pass): pass 1 enumerate ~48–53 s, pass 2 count edges ~67–74 s, pass 3 fill edges ~67–74 s, save (Brotli) ~31–37 s.
+
+**Per-dump breakdown — with pre-built caches**
+
+| Dump | Heap walk | BFS load | Sub-reports (wall) |
+|---|---:|---:|---:|
+| D1 (86.5 M objs) | 83.0 s | 9.8 s | 6.2 s |
+| D2 (110.5 M objs) | 93.0 s | 11.5 s | 6.1 s |
+| D3 (94.8 M objs) | 86.8 s | 10.2 s | 7.0 s |
+
+With caches loaded, all 23 sub-reports complete in ~6–7 s per dump. Without caches, the five BFS-heavy sub-reports (`static-refs`, `heap-fragmentation`, `event-analysis`, `memory-leak`, `high-refs`) each take 150–300 s and dominate wall-clock time.
+
+**Peak memory usage**
+
+| Run | Peak working set | Peak managed heap | Peak private bytes |
+|---|---:|---:|---:|
+| Without cache | 13.56 GB | 13.01 GB | 14.18 GB |
+| With cache | 15.04 GB | 12.30 GB | 16.12 GB |
+
+The with-cache run peaks slightly higher on working set because the BFS index (~3.5–4.4 GB per dump) remains mapped in memory while the parallel sub-reports execute. Without cache, the BFS is built then partially freed before sub-reports start. Either way, plan for **14–16 GB free RAM** for a 3-dump run at this scale.
+
+**Pipeline memory deltas — with cache**
+
+| Stage | WS delta | WS after |
+|---|---:|---:|
+| Load dump | +733 MB | ~760 MB |
+| Heap walk + scoring | +5.5–6.4 GB | ~6.3–10.8 GB |
+| BFS cache load | +3.5–4.4 GB | ~9.8–14.8 GB |
+| Sub-reports (23 parallel) | −361 MB – +421 MB | ~12.9–15.2 GB |
+| Render trend report | +3 MB | ~3.6 GB |
+
+Each dump's heap walk and BFS load is the main memory spike. Sub-reports add relatively little because all the expensive BFS traversals read from the already-loaded index rather than building new structures.
+
+**Rule of thumb for `trend-analysis --full`:**
+
+- Heap walk throughput: ~900,000–1,100,000 objects/second per dump.
+- Sub-report wall time with caches: dominated by `static-refs` (~6–7 s) — all other sub-reports finish in ≤ 4 s.
+- Sub-report wall time without caches: dominated by `heap-fragmentation`, `event-analysis`, `static-refs` (~230–300 s) — run `load` first on any dump you plan to analyze repeatedly.
+- Memory peak per dump: roughly **0.5–0.6× dump file size** in free RAM.
+- For 3 × ~25 GB dumps: plan for **16+ GB free RAM** and **~6 min** (with caches) or **~30 min** (without).
 
 ### Offline `render`
 
@@ -1049,16 +1107,7 @@ For large production dumps with roughly **100 M+ managed objects**, budget rough
 
 ### BFS retained-size cache (`.bfs.idx`)
 
-`object-inspect --retained` computes exclusive retained sizes per reference field using BFS. Without a cache this re-walks the full 168 M-edge graph for every field — on a 22 GB heap that takes several minutes.
-
-Run `build-bfs` once to build and save a Brotli-compressed CSR graph index alongside the dump. On subsequent `object-inspect --retained` runs the index loads in ~6 s and each per-field BFS completes in under 2 s regardless of heap depth or object count.
-
-| Scenario | Time |
-|---|---:|
-| First run (no cache) — 22 GB heap, 63 M objects | ~5–15 min |
-| `build-bfs` (one-time, 8 parallel workers) | ~2.5 min |
-| Load existing cache | ~6 s |
-| Per-field retained BFS (post-load) | < 2 s |
+Run `load` once per dump to pre-build all analysis caches. With caches loaded, all 23 sub-reports in `analyze --full` complete in **6–7 s per dump** regardless of heap size — versus 230–300 s without caches for the five BFS-heavy sub-reports. The [`load` command section](#load) covers options, measured build timings across three dump sizes, and the RAM tradeoff. The `trend-analysis --full` benchmark above has a measured end-to-end comparison across three ~25 GB production dumps: **1827.9 s without caches → 365.3 s with, ~5× speedup**. Use `close` to delete all caches when a dump is no longer needed.
 
 ---
 

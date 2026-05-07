@@ -1,21 +1,22 @@
 # DumpDetective Memory Guide
 
-Complete standalone reference for memory-dump workflows and commands. This guide is intended to be sufficient without opening CLI help.
+Complete standalone reference for memory-dump workflows and commands. For the full documentation index, see [documentation.md](documentation.md).
+
+---
 
 ## Scope
 
-Input file types:
-
-- `.dmp`
-- `.mdmp`
+Input file types: `.dmp`, `.mdmp`
 
 Primary use cases:
 
-- Memory growth and retention
+- Memory growth and retention analysis
 - GC pressure and fragmentation
-- Finalizer/handle/backlog diagnostics
+- Finalizer, handle, and async backlog diagnostics
 - Thread and deadlock inspection from a dump snapshot
 - Cross-dump trend analysis and report replay/diff
+
+---
 
 ## Fast Start
 
@@ -30,168 +31,111 @@ DumpDetective analyze app.dmp --full --output report.bin
 DumpDetective render report.bin --output report.html
 ```
 
-## Output And Replay Model
+---
 
-- Most memory commands emit HTML by default.
-- Use `.bin` when you want compact archival and later replay.
-- `render` converts saved `.json`/`.bin` into `.html`, `.md`, `.txt`, `.json`, or `.bin`.
-- `diff` compares two saved reports (`.json`/`.bin`) without reopening dumps.
+## Output and Replay Model
+
+- All commands write to the console by default; pass `-o <file>` to save.
+- `.html` — self-contained with inline CSS/JS, sticky nav, and collapsible sections.
+- `.bin` — Brotli-compressed JSON; compact for archival and replayable via `render`.
+- `render` converts any saved `.json`/`.bin` into `.html`, `.md`, `.txt`, `.json`, or `.bin` without reopening the dump.
+- `diff` compares two saved reports without reopening dumps.
+
+---
 
 ## Command Index
 
-Included in `analyze --full` unless marked No.
+Commands marked **No** are excluded from `analyze --full` because they require extra arguments or are too slow for batch runs.
 
-| Command | Included in `--full` |
-|---|:---:|
-| `heap-stats` | Yes |
-| `gen-summary` | Yes |
-| `heap-fragmentation` | Yes |
-| `large-objects` | Yes |
-| `pinned-objects` | Yes |
-| `memory-leak` | Yes |
-| `high-refs` | Yes |
-| `string-duplicates` | Yes |
-| `finalizer-queue` | Yes |
-| `handle-table` | Yes |
-| `static-refs` | Yes |
-| `weak-refs` | Yes |
-| `thread-analysis` | Yes |
-| `thread-pool` | Yes |
-| `deadlock-detection` | Yes |
-| `async-stacks` | Yes |
-| `exception-analysis` | Yes |
-| `event-analysis` | Yes |
-| `http-requests` | Yes |
-| `connection-pool` | Yes |
-| `wcf-channels` | Yes |
-| `timer-leaks` | Yes |
-| `module-list` | Yes |
-| `gc-roots` | No |
-| `type-instances` | No |
-| `object-inspect` | No |
-| `build-bfs` | No |
+| Command | Category | In `--full` | Detail |
+|---|---|:---:|---|
+| `analyze` | Orchestration | — | [→](memory/Orchestrator/analyze.md) |
+| `trend-analysis` | Orchestration | — | [→](memory/Orchestrator/trend-analysis.md) |
+| `render` | Replay | — | [→](memory/Replay-Comparison/render.md) |
+| `diff` | Replay | — | [→](memory/Replay-Comparison/diff.md) |
+| `load` | Cache Lifecycle | — | [→](memory/Cache-Lifecycle/load.md) |
+| `close` | Cache Lifecycle | — | [→](memory/Cache-Lifecycle/close.md) |
+| `heap-stats` | Heap / Memory | ✓ | [→](memory/Heap-Memory/heap-stats.md) |
+| `gen-summary` | Heap / Memory | ✓ | [→](memory/Heap-Memory/gen-summary.md) |
+| `heap-fragmentation` | Heap / Memory | ✓ | [→](memory/Heap-Memory/heap-fragmentation.md) |
+| `large-objects` | Heap / Memory | ✓ | [→](memory/Heap-Memory/large-objects.md) |
+| `pinned-objects` | Heap / Memory | ✓ | [→](memory/Heap-Memory/pinned-objects.md) |
+| `memory-leak` | Heap / Memory | ✓ | [→](memory/Heap-Memory/memory-leak.md) |
+| `high-refs` | Heap / Memory | ✓ | [→](memory/Heap-Memory/high-refs.md) |
+| `string-duplicates` | Heap / Memory | ✓ | [→](memory/Heap-Memory/string-duplicates.md) |
+| `finalizer-queue` | Heap / Memory | ✓ | [→](memory/Heap-Memory/finalizer-queue.md) |
+| `handle-table` | Heap / Memory | ✓ | [→](memory/Heap-Memory/handle-table.md) |
+| `static-refs` | Heap / Memory | ✓ | [→](memory/Heap-Memory/static-refs.md) |
+| `weak-refs` | Heap / Memory | ✓ | [→](memory/Heap-Memory/weak-refs.md) |
+| `event-analysis` | Heap / Memory | ✓ | [→](memory/Heap-Memory/event-analysis.md) |
+| `exception-analysis` | Exceptions | ✓ | [→](memory/Exceptions-Diagnostics/exception-analysis.md) |
+| `gc-roots` | Heap / Memory | No | [→](memory/Heap-Memory/gc-roots.md) |
+| `thread-analysis` | Threads | ✓ | [→](memory/Threads-Concurrency/thread-analysis.md) |
+| `thread-pool` | Threads | ✓ | [→](memory/Threads-Concurrency/thread-pool.md) |
+| `deadlock-detection` | Threads | ✓ | [→](memory/Threads-Concurrency/deadlock-detection.md) |
+| `async-stacks` | Threads | ✓ | [→](memory/Threads-Concurrency/async-stacks.md) |
+| `connection-pool` | Infrastructure | ✓ | [→](memory/Infrastructure-Network/connection-pool.md) |
+| `http-requests` | Infrastructure | ✓ | [→](memory/Infrastructure-Network/http-requests.md) |
+| `timer-leaks` | Infrastructure | ✓ | [→](memory/Infrastructure-Network/timer-leaks.md) |
+| `wcf-channels` | Infrastructure | ✓ | [→](memory/Infrastructure-Network/wcf-channels.md) |
+| `module-list` | Targeted | ✓ | [→](memory/Targeted-Interactive/module-list.md) |
+| `type-instances` | Targeted | No | [→](memory/Targeted-Interactive/type-instances.md) |
+| `object-inspect` | Targeted | No | [→](memory/Targeted-Interactive/object-inspect.md) |
+| `build-bfs` | Cache Lifecycle | No | Pre-builds BFS index and parent map on disk |
 
-## Workflow Commands
+---
+
+## Orchestration Commands
 
 ### `analyze`
 
-Usage:
-
-```text
-DumpDetective analyze <dump-file> [options]
-```
-
-What it does:
-
-- Produces a scored health report for one dump.
-- `--full` adds all embedded sub-reports.
-
-Options:
-
-- `--full` Full combined report.
-- `--str-top <n>` `string-duplicates` max groups (default `100`).
-- `--str-min-count <n>` `string-duplicates` min duplicate count (default `2`).
-- `--str-min-waste <bytes>` `string-duplicates` min wasted bytes (default `0`).
-- `--bfs-depth <n>` `static-refs` BFS sample depth (default is about 1% of heap objects).
-- `--exact` `static-refs` full BFS (slower, precise).
-- `-o, --output <file>` Output file.
-- `-h, --help` Help.
-
-Examples:
+Produces a scored health report for one dump. In default mode, runs a fast lightweight collection and scores the dump across nine health dimensions. With `--full`, runs all included sub-commands and embeds their reports as chapters.
 
 ```bash
 DumpDetective analyze app.dmp
 DumpDetective analyze app.dmp --full
-DumpDetective analyze app.dmp --full --output full-report.html
-DumpDetective analyze app.dmp --full --output full-report.html --format bin
+DumpDetective analyze app.dmp --full --output report.html
+DumpDetective analyze app.dmp --full --output report.bin
 ```
+
+Options: `--full`, `--str-top <n>`, `--str-min-count <n>`, `--str-min-waste <bytes>`, `--bfs-depth <n>`, `--exact`, `-o <file>` — [full details →](memory/Orchestrator/analyze.md)
+
+### Health Scoring
+
+`HealthScorer.Score` evaluates the dump snapshot against thresholds from `dd-thresholds.json`. Default critical thresholds: Gen2 > 5 GB, LOH > 1 GB, finalizer thread blocked, deadlock cycle detected, thread count > 1000, event subscribers > 50,000, active connections > 500, async backlog > 10,000. Score: 0–100 (lower = worse).
 
 ### `trend-analysis`
 
-Usage:
-
-```text
-DumpDetective trend-analysis <dump1> <dump2> [<dump3> ...] [options]
-DumpDetective trend-analysis <dump-directory> [options]
-DumpDetective trend-analysis --list <paths.txt> [options]
-```
-
-Options:
-
-- `--list <file>` Load dump paths from text file.
-- `--full` Full collection per dump with richer data and embedded sub-reports.
-- `--baseline <n>` 1-based baseline dump index (default `1`).
-- `--ignore-event <type>` Exclude matching event publisher types (repeatable).
-- `--prefix <p>` Dump label prefix (default `D`).
-- `--str-top <n>` String duplicate groups max (default `100`).
-- `--str-min-count <n>` String duplicate count min (default `2`).
-- `--str-min-waste <bytes>` String duplicate waste min (default `0`).
-- `--bfs-depth <n>` `static-refs` BFS sample depth.
-- `--exact` `static-refs` full BFS.
-- `-o, --output <file>` Output file.
-- `-h, --help` Help.
-
-Examples:
+Analyzes multiple dumps over time, producing a trend table of heap size, generation distribution, object counts, thread counts, and other metrics per dump. Confirms whether a leak is actively growing.
 
 ```bash
 DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --output trends.html
 DumpDetective trend-analysis C:\dumps --full --output trend.bin
-DumpDetective trend-analysis --list dumps.txt --full --output report.md
-DumpDetective trend-analysis d1.dmp d2.dmp d3.dmp --baseline 2 --output report.html
+DumpDetective trend-analysis --list dumps.txt --baseline 2 --output report.md
 ```
+
+Options: explicit paths, `<directory>`, `--list <file>`, `--full`, `--baseline <n>`, `--ignore-event <type>`, `--prefix <p>`, `--str-top <n>`, `-o <file>` — [full details →](memory/Orchestrator/trend-analysis.md)
+
+---
+
+## Replay and Comparison Commands
 
 ### `render`
 
-Usage:
-
-```text
-DumpDetective render <data.json|data.bin> [options]
-```
-
-Accepted inputs:
-
-- `report` format from any single-dump command.
-- `trend-raw` format from `trend-analysis`.
-
-Options:
-
-- `--baseline <n>` Baseline for trend rendering (trend-raw only).
-- `--ignore-event <type>` Event filter (trend-raw only, repeatable).
-- `--mini` Trend summary only.
-- `--from <n>` Extract dump #n sub-report from trend data.
-- `--command <name>` Extract only selected command chapter(s), repeatable.
-- `-o, --output <file>` Output path.
-- `--format <fmt>` Format shorthand (`html|md|json|bin`).
-- `-h, --help` Help.
-
-Examples:
+Converts a saved `.json`/`.bin` report to any output format without reopening the dump. Supports format conversion, chapter filtering, trend baseline changes, and per-dump sub-report extraction.
 
 ```bash
-DumpDetective render snapshots.bin --output report.html
+DumpDetective render snapshots.bin
+DumpDetective render snapshots.bin --output report.md
 DumpDetective render snapshots.bin --mini --output trend-only.html
 DumpDetective render snapshots.bin --from 2 --command memory-leak --output d2-memleak.html
-DumpDetective render analyze-report.bin --output report.md
 ```
+
+Options: `--baseline <n>`, `--ignore-event <type>`, `--mini`, `--from <n>`, `--command <name>`, `-o <file>` — [full details →](memory/Replay-Comparison/render.md)
 
 ### `diff`
 
-Usage:
-
-```text
-DumpDetective diff <before.json|before.bin> <after.json|after.bin> [options]
-```
-
-Options:
-
-- `--key-col <n>` Table row key column index (default `0`).
-- `--changed-only` Hide unchanged chapters/sections.
-- `--show-same` Show unchanged rows in diff tables.
-- `--command <name>` For trend-raw, diff only selected command chapter(s), repeatable.
-- `--ignore-event <type>` Trend rendering event filter, repeatable.
-- `-o, --output <file>` Output path (default `<before>-vs-<after>.html`).
-- `-h, --help` Help.
-
-Examples:
+Compares two saved reports. Matches chapters and sections by name, rows by key column. Changed cells appear as `new ← old`; new/deleted rows are highlighted.
 
 ```bash
 DumpDetective diff before.bin after.bin -o delta.html
@@ -199,330 +143,149 @@ DumpDetective diff week1.bin week2.bin --changed-only -o delta.html
 DumpDetective diff week1.bin week2.bin --command memory-leak -o memleak-delta.html
 ```
 
-## Memory Command Reference
+Options: `--key-col <n>`, `--changed-only`, `--show-same`, `--command <name>`, `--ignore-event <type>`, `-o <file>` — [full details →](memory/Replay-Comparison/diff.md)
+
+---
+
+## Cache Lifecycle Commands
+
+### `load`
+
+Pre-builds all analysis caches (BFS index, parent map, fragmentation, GC roots, static roots, finalizer queue, event analysis, string groups) so that `analyze --full` runs in seconds rather than minutes.
+
+```bash
+DumpDetective load app.dmp
+DumpDetective load C:\dumps\
+DumpDetective load app.dmp --force
+```
+
+Options: `<path>` (file or directory), `--force` — [full details →](memory/Cache-Lifecycle/load.md)
+
+### `close`
+
+Deletes `.ddcache/<dump-name>/` for one dump or all dumps in a directory.
+
+```bash
+DumpDetective close app.dmp
+DumpDetective close app.dmp --dry-run
+DumpDetective close C:\dumps\
+```
+
+Options: `<path>`, `--dry-run` — [full details →](memory/Cache-Lifecycle/close.md)
+
+---
+
+## Heap and Memory Commands
 
 ### `heap-stats`
-
-```text
-Usage: DumpDetective heap-stats <dump-file> [options]
-Options:
-	--top <n>          Number of types to show (default 50)
-	--sort <col>       Sort by: size | count | name (default size)
-	--min-size <n>     Minimum total size in bytes
-	--filter <str>     Type name substring filter
-	--gen <gen>        Generation filter: gen0 | gen1 | gen2 | loh | poh
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Top types by total size and instance count. Options: `--top <n>`, `--sort size|count|name`, `--min-size <bytes>`, `--filter <str>`, `--gen gen0|gen1|gen2|loh|poh` — [full details →](memory/Heap-Memory/heap-stats.md)
 
 ### `gen-summary`
-
-```text
-Usage: DumpDetective gen-summary <dump-file> [options]
-Options:
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Heap bytes and object counts by GC generation. No extra options. — [full details →](memory/Heap-Memory/gen-summary.md)
 
 ### `heap-fragmentation`
-
-```text
-Usage: DumpDetective heap-fragmentation <dump-file> [options]
-Options:
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Free-hole analysis per heap segment; live/free byte ratio. — [full details →](memory/Heap-Memory/heap-fragmentation.md)
 
 ### `large-objects`
-
-```text
-Usage: DumpDetective large-objects <dump-file> [options]
-Options:
-	-n, --top <N>          Top N objects (default 50)
-	-s, --min-size <bytes> Minimum object size (default 85000)
-	-f, --filter <name>    Type substring filter
-	-a, --addresses        Show object addresses
-	--type-breakdown       Aggregate-only by type
-	-o, --output <file>    Output report file
-	-h, --help             Show help
-```
+Individual objects ≥ 85 KB on the LOH. Options: `--top <n>`, `--min-size <bytes>`, `--filter <name>`, `--addresses`, `--type-breakdown` — [full details →](memory/Heap-Memory/large-objects.md)
 
 ### `pinned-objects`
-
-```text
-Usage: DumpDetective pinned-objects <dump-file> [options]
-Options:
-	-a, --addresses    Show object addresses (up to 100 per type)
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Objects pinned via GC handles grouped by type and handle kind. Options: `--addresses` — [full details →](memory/Heap-Memory/pinned-objects.md)
 
 ### `memory-leak`
-
-```text
-Usage: DumpDetective memory-leak <dump-file> [options]
-Options:
-	-n, --top <N>         Top N types in heap-stat table (default 30)
-	--min-count <N>       Min instances for suspect table (default 500)
-	--no-root-trace       Skip GC root tracing
-	--include-system      Include System.*/Microsoft.* suspects
-	-o, --output <file>   Output report file
-	-h, --help            Show help
-```
+Suspects ranked by instance count and retained size with root-chain traces. Options: `--top <n>`, `--min-count <n>`, `--no-root-trace`, `--include-system` — [full details →](memory/Heap-Memory/memory-leak.md)
 
 ### `high-refs`
-
-```text
-Usage: DumpDetective high-refs <dump-file> [options]
-Options:
-	--top <n>           Number of objects (default 30)
-	--min-refs <n>      Minimum inbound ref count (default 10)
-	--addresses         Show object addresses
-	-o, --output <f>    Output report file
-	-h, --help          Show help
-```
+Most-referenced objects by inbound reference count. Options: `--top <n>`, `--min-refs <n>`, `--addresses` — [full details →](memory/Heap-Memory/high-refs.md)
 
 ### `string-duplicates`
-
-```text
-Usage: DumpDetective string-duplicates <dump-file> [options]
-Options:
-	--top <n>          Number of groups to show (default 50)
-	--min-count <n>    Minimum duplicate count (default 2)
-	--min-waste <n>    Minimum wasted bytes (default 0)
-	--pattern <str>    String content substring filter
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Duplicate string groups sorted by wasted bytes. Options: `--top <n>`, `--min-count <n>`, `--min-waste <bytes>`, `--pattern <str>` — [full details →](memory/Heap-Memory/string-duplicates.md)
 
 ### `finalizer-queue`
-
-```text
-Usage: DumpDetective finalizer-queue <dump-file> [options]
-Options:
-	-n, --top <N>      Top N types (default 30)
-	-a, --addresses    Show up to 20 addresses per type
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Types queued for finalization; resurrection detection; finalizer-blocked detection. Options: `--top <n>`, `--addresses` — [full details →](memory/Heap-Memory/finalizer-queue.md)
 
 ### `handle-table`
-
-```text
-Usage: DumpDetective handle-table <dump-file> [options]
-Options:
-	-n, --top <N>       Top N types per handle kind (default 5)
-	-f, --filter <k>    Filter by handle kind substring
-	-o, --output <f>    Output report file
-	-h, --help          Show help
-```
+GC handle table by kind: Strong, WeakShort, WeakLong, Pinned, AsyncPinned, Dependent. Options: `--top <n>`, `--filter <kind>` — [full details →](memory/Heap-Memory/handle-table.md)
 
 ### `static-refs`
-
-```text
-Usage: DumpDetective static-refs <dump-file> [options]
-Options:
-	-f, --filter <t>       Include only matching types/fields
-	-e, --exclude <t>      Exclude matching types (repeatable)
-	-a, --addresses        Show object addresses
-	--bfs-depth <n>        Sampling depth for retained-size BFS
-	-o, --output <f>       Output report file
-	-h, --help             Show help
-```
+Statically-rooted object trees with optional BFS retained-size computation. Options: `--filter <t>`, `--exclude <t>`, `--addresses`, `--bfs-depth <n>` — [full details →](memory/Heap-Memory/static-refs.md)
 
 ### `weak-refs`
-
-```text
-Usage: DumpDetective weak-refs <dump-file> [options]
-Options:
-	-a, --addresses    Show handle addresses
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `thread-analysis`
-
-```text
-Usage: DumpDetective thread-analysis <dump-file> [options]
-Options:
-	-s, --stacks          Show top stack frames per thread
-	-b, --blocked-only    Show only blocked threads
-	--state <s>           Filter: blocked | running | dead | all (default all)
-	--name <substr>       Thread-name substring filter
-	-o, --output <file>   Output report file
-	-h, --help            Show help
-```
-
-### `thread-pool`
-
-```text
-Usage: DumpDetective thread-pool <dump-file> [options]
-Options:
-	-o, --output <file>   Output report file
-	-h, --help            Show help
-```
-
-### `deadlock-detection`
-
-```text
-Usage: DumpDetective deadlock-detection <dump-file> [options]
-Options:
-	-o, --output <file>   Output report file
-	-h, --help            Show help
-```
-
-### `async-stacks`
-
-```text
-Usage: DumpDetective async-stacks <dump-file> [options]
-Options:
-	-f, --filter <t>   State-machine type substring filter
-	-n, --top <N>      Top N methods (default 50)
-	-a, --addresses    Show state machine addresses (up to 200)
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `exception-analysis`
-
-```text
-Usage: DumpDetective exception-analysis <dump-file> [options]
-Options:
-	-n, --top <N>      Top N exception types (default 20)
-	-f, --filter <t>   Type substring filter
-	-a, --addresses    Include object addresses
-	-s, --stack        Show throw stack per type
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Weak GC handles — alive vs. collected object breakdown. Options: `--addresses` — [full details →](memory/Heap-Memory/weak-refs.md)
 
 ### `event-analysis`
-
-```text
-Usage: DumpDetective event-analysis <dump-file> [options]
-Options:
-	-n, --top <N>      Top N event fields (default 20)
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `http-requests`
-
-```text
-Usage: DumpDetective http-requests <dump-file> [options]
-Options:
-	-a, --addresses    Show object addresses (up to 200)
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `connection-pool`
-
-```text
-Usage: DumpDetective connection-pool <dump-file> [options]
-Options:
-	-a, --addresses    Show connection object addresses (up to 200)
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `wcf-channels`
-
-```text
-Usage: DumpDetective wcf-channels <dump-file> [options]
-Options:
-	-a, --addresses    Show object addresses
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `timer-leaks`
-
-```text
-Usage: DumpDetective timer-leaks <dump-file> [options]
-Options:
-	-a, --addresses    Show timer object addresses (up to 200 per type)
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
-
-### `module-list`
-
-```text
-Usage: DumpDetective module-list <dump-file> [options]
-Options:
-	-f, --filter <t>   Module name substring filter
-	--app-only         Show non-system assemblies only
-	-o, --output <f>   Output report file
-	-h, --help         Show help
-```
+Event fields with high subscriber counts; event-handler leak detection. Options: `--top <n>` — [full details →](memory/Heap-Memory/event-analysis.md)
 
 ### `gc-roots`
+Traces GC root paths for a type or specific object address. Expensive — not in `--full`. Options: `--type <name>`, `--address <0xADDR>`, `--max-results <n>`, `--no-indirect` — [full details →](memory/Heap-Memory/gc-roots.md)
 
-```text
-Usage: DumpDetective gc-roots <dump-file> --type <typename> [options]
-Options:
-	-t, --type <name>       Type substring to trace
-	--address <0xADDR>      Trace single object by address
-	-n, --max-results <N>   Max instances for --type mode (default 10)
-	--no-indirect           Skip 1-hop referrer scan
-	-o, --output <f>        Output report file
-	-h, --help              Show help
-Note: at least one of --type or --address is required.
-```
+---
+
+## Exceptions and Diagnostics
+
+### `exception-analysis`
+Live exception instances by type; message samples and stack frames. Options: `--top <n>`, `--filter <t>`, `--addresses`, `--stack` — [full details →](memory/Exceptions-Diagnostics/exception-analysis.md)
+
+---
+
+## Threads and Concurrency Commands
+
+### `thread-analysis`
+All managed threads by state, wait kind, GC mode, and top stack frames. Options: `--stacks`, `--blocked-only`, `--state <s>`, `--name <substr>` — [full details →](memory/Threads-Concurrency/thread-analysis.md)
+
+### `thread-pool`
+ThreadPool counters: worker counts, pending items, task state breakdown. — [full details →](memory/Threads-Concurrency/thread-pool.md)
+
+### `deadlock-detection`
+Sync-block DFS cycle detection; reports thread cycle with lock addresses. — [full details →](memory/Threads-Concurrency/deadlock-detection.md)
+
+### `async-stacks`
+Active async state machines by method name and suspension state. Options: `--filter <t>`, `--top <n>`, `--addresses` — [full details →](memory/Threads-Concurrency/async-stacks.md)
+
+---
+
+## Infrastructure and Network Commands
+
+### `connection-pool`
+Live DB connections and commands by state; masked connection strings. Options: `--addresses` — [full details →](memory/Infrastructure-Network/connection-pool.md)
+
+### `http-requests`
+In-flight `HttpRequestMessage` / `HttpClient` objects by method and URL. Options: `--addresses` — [full details →](memory/Infrastructure-Network/http-requests.md)
+
+### `timer-leaks`
+Live `System.Threading.Timer` instances; due-time, period, and callback. Options: `--addresses` — [full details →](memory/Infrastructure-Network/timer-leaks.md)
+
+### `wcf-channels`
+WCF channel state (0–5 → CommunicationState); endpoint addresses; fault reasons. Options: `--addresses` — [full details →](memory/Infrastructure-Network/wcf-channels.md)
+
+---
+
+## Targeted and Interactive Commands
 
 ### `type-instances`
-
-```text
-Usage: DumpDetective type-instances <dump-file> --type <name> [options]
-Options:
-	-t, --type <name>    Type substring to search (required)
-	-n, --top <N>        Max instances in detail view (default 50)
-	-a, --addresses      Show individual object addresses
-	--min-size <bytes>   Include only instances larger than N bytes
-	--gen <0|1|2|loh>    Generation filter
-	-o, --output <f>     Output report file
-	-h, --help           Show help
-```
+All instances of a specific type with individual and retained sizes. Options: `--type <name>` (required), `--top <n>`, `--addresses`, `--min-size <bytes>`, `--gen <gen>` — [full details →](memory/Targeted-Interactive/type-instances.md)
 
 ### `object-inspect`
+Deep recursive field dump for one object by hex address. Options: `--address <hex>` (required), `--depth <n>`, `--max-array <n>`, `--retained`, `--retained-cap <n>`, `--no-cache`, `--no-save` — [full details →](memory/Targeted-Interactive/object-inspect.md)
 
-```text
-Usage: DumpDetective object-inspect <dump-file> --address <hex> [options]
-Options:
-	--address, -x <addr>    Object address in hex (required)
-	-d, --depth <N>         Recursion depth (default 5)
-	--max-array <N>         Max array elements shown (default 10)
-	--retained, -r          Compute retained size per reference field
-	--retained-cap <N>      BFS node cap per field (default unlimited)
-	--no-cache              Ignore existing BFS cache
-	--no-save               Do not save BFS cache after build
-	-o, --output <f>        Output report file
-	-h, --help              Show help
-```
+### `module-list`
+Loaded assemblies classified as Dynamic, GAC, System, or App. Options: `--filter <t>`, `--app-only` — [full details →](memory/Targeted-Interactive/module-list.md)
 
 ### `build-bfs`
-
-```text
-Usage: DumpDetective build-bfs <dump-file-or-directory> [options]
-Options:
-	--force, -f    Rebuild even if cache already exists
-	--recurse, -r  Recurse when input is a directory
-	-h, --help     Show help
-```
-
-Examples:
+Pre-builds the BFS forward-reference index and child→parent map on disk.
 
 ```bash
 DumpDetective build-bfs app.dmp
 DumpDetective build-bfs app.dmp --force
 DumpDetective build-bfs D:\dumps --recurse --force
-DumpDetective object-inspect app.dmp -x 0x00000276DB084170 --retained
 ```
+
+---
 
 ## Suggested Incident Triage Path
 
-1. Run `analyze --full` and open HTML output.
-2. Start with score/findings, then inspect `memory-leak`, `high-refs`, `heap-fragmentation`, `finalizer-queue`.
-3. Use `gc-roots`, `type-instances`, and `object-inspect` for narrowed suspects.
-4. Save `.bin` snapshots over time and compare with `diff`.
+1. Run `analyze --full` and open the HTML output.
+2. Read the health score and Critical/Warning findings first.
+3. Follow up with `memory-leak`, `high-refs`, `heap-fragmentation`, `finalizer-queue`.
+4. Use `gc-roots`, `type-instances`, and `object-inspect` to narrow specific suspects.
+5. Save `.bin` snapshots over time and compare with `diff` to confirm growth rate.
