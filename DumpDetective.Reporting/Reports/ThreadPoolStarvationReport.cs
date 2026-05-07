@@ -75,7 +75,9 @@ public sealed class ThreadPoolStarvationReport
             var threadCounts = data.Adjustments.Select(a => (double)a.NewCount).ToList();
             sink.Sparkline(threadCounts, "Thread pool size over adjustments", " threads");
         }
-        var rows = data.Adjustments.Select(a => new[]
+        var rows = data.Adjustments
+            .Where(a => !string.Equals(a.ReasonName, "Warmup", StringComparison.OrdinalIgnoreCase) || a.NewCount > 0)
+            .Select(a => new[]
         {
             a.Timestamp, a.NewCount.ToString("N0"), a.ReasonName,
             a.AverageThroughput > 0 ? $"{a.AverageThroughput:F2}" : "—",

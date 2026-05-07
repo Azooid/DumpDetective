@@ -9,7 +9,9 @@ public sealed record ContentionTraceData(
     double AvgWaitMs,
     int ThreadsAffected,
     IReadOnlyList<ContentionHotspot> Hotspots,
-    IReadOnlyList<ContentionEvent> Events);
+    IReadOnlyList<ContentionEvent> Events,
+    /// <summary>Total contention wait-ms bucketed per second (sorted). Used for sparkline.</summary>
+    IReadOnlyList<double>? WaitTimeline = null);
 
 public sealed record ContentionHotspot(
     string Location,

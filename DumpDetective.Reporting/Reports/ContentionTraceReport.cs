@@ -33,8 +33,11 @@ public sealed class ContentionTraceReport
         if (data.TotalContentions == 0)
         {
             sink.Alert(AlertLevel.Warning, "No contention events found in trace.",
-                "Collect with contention events enabled.",
-                "dotnet-trace: add --providers 'Microsoft-Windows-DotNETRuntime:0x4000:4'\nPerfView: check 'ContentionStacks' in providers");
+                "To capture contention events, re-collect with one of the following:",
+                "dotnet-trace:\n" +
+                "  dotnet-trace collect --providers 'Microsoft-Windows-DotNETRuntime:0x4000:4'\n\n" +
+                "PerfView:\n" +
+                "  PerfView.exe /ClrEvents:Contention,Threading,Stack,Default /NoGui collect");
             return;
         }
 
@@ -49,6 +52,11 @@ public sealed class ContentionTraceReport
                 "Contention is measurable and worth optimising at scale.",
                 "Review the top hotspots below.");
 
+        // Lock contention wait time over time — sparkline
+        if (data.WaitTimeline is { Count: > 2 } waitTl)
+            sink.Sparkline(waitTl, "Lock contention wait time over time (ms/second)", " ms");
+
+
         // Top hotspots
         sink.Section("Top Contention Hotspots", "contention-hotspots");
         var hRows = data.Hotspots.Take(top).Select(h => new[]
@@ -58,6 +66,19 @@ public sealed class ContentionTraceReport
             $"{h.TotalWaitMs:F1} ms",
             $"{h.MaxWaitMs:F1} ms",
         }).ToList();
+
+        // Detect when ETW call stacks weren't captured for contention events
+        bool allNoStack = data.Hotspots.Count > 0
+            && data.Hotspots.Take(top).All(h => string.IsNullOrEmpty(h.Location)
+                || h.Location.Equals("(no stack)", StringComparison.OrdinalIgnoreCase));
+        if (allNoStack)
+            sink.Alert(AlertLevel.Warning,
+                "No call stacks captured for contention events.",
+                "The trace was collected without ETW stack walking for ContentionStart events. " +
+                "Total contention counts and wait times are accurate but hotspot attribution is unavailable.",
+                "Re-collect with stack-walking enabled:\n" +
+                "  dotnet-trace: --providers 'Microsoft-Windows-DotNETRuntime:0x4000:5' (level 5 = Verbose)\n" +
+                "  PerfView: check 'ContentionStacks' in the Advanced Providers dialog");
         // Wait time breakdown by contention hotspot — stacked bar
         var hotSegs = data.Hotspots.Take(6)
             .Select(h => {
@@ -102,5 +123,5 @@ public sealed class ContentionTraceReport
     }
 
     private static string TrimFrame(string s, int max) =>
-        s.Length <= max ? s : "…" + s[^(max - 1)..];
+        TraceReportHelpers.TrimFrame(s, max);
 }

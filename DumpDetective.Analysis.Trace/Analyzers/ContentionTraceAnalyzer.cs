@@ -27,7 +27,8 @@ public sealed class ContentionTraceAnalyzer
     public ContentionTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
                                         string? processFilter = null)
     {
-        var pending  = new Dictionary<int, double>();
+        // Key: ThreadID → (startTimeMs, topFrame captured at ContentionStart)
+        var pending  = new Dictionary<int, (double StartMs, string Frame)>();
         var events   = new List<ContentionEvent>();
         var hotspots = new Dictionary<string, HotspotAcc>(StringComparer.Ordinal);
 
@@ -44,20 +45,21 @@ public sealed class ContentionTraceAnalyzer
                 if (evName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) ||
                     evName.EndsWith("ContentionStart",  StringComparison.OrdinalIgnoreCase))
                 {
-                    pending[ev.ThreadID] = ev.TimeStampRelativeMSec;
+                    // Capture the call stack NOW — it is on the Start event, not Stop.
+                    pending[ev.ThreadID] = (ev.TimeStampRelativeMSec, TopFrame(ev));
                     continue;
                 }
 
                 if (evName.EndsWith("Contention/Stop", StringComparison.OrdinalIgnoreCase) ||
                     evName.EndsWith("ContentionStop",  StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!pending.TryGetValue(ev.ThreadID, out double startMs)) continue;
+                    if (!pending.TryGetValue(ev.ThreadID, out var entry)) continue;
                     pending.Remove(ev.ThreadID);
 
-                    double waitMs  = ev.TimeStampRelativeMSec - startMs;
-                    string frame   = TopFrame(ev);
+                    double waitMs = ev.TimeStampRelativeMSec - entry.StartMs;
+                    string frame  = entry.Frame;
 
-                    events.Add(new ContentionEvent(ev.ThreadID, waitMs, startMs, frame));
+                    events.Add(new ContentionEvent(ev.ThreadID, waitMs, entry.StartMs, frame));
 
                     if (!hotspots.TryGetValue(frame, out var acc))
                         hotspots[frame] = acc = new HotspotAcc();
@@ -98,9 +100,29 @@ public sealed class ContentionTraceAnalyzer
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
                       $"  |  {events.Count:N0} contentions  •  {totalWait:F1} ms total wait";
 
+        // ── Contention wait-time timeline ──────────────────────────────────────
+        // Bucket total wait-ms per second for a sparkline.
+        IReadOnlyList<double> waitTimeline = [];
+        if (events.Count > 1)
+        {
+            var perSecond = new Dictionary<int, double>();
+            foreach (var ev in events)
+            {
+                int bucket = (int)(ev.TimeMs / 1000.0);
+                perSecond.TryGetValue(bucket, out double prev);
+                perSecond[bucket] = prev + ev.WaitMs;
+            }
+            int minB = perSecond.Keys.Min();
+            int maxB = perSecond.Keys.Max();
+            var tl = new double[maxB - minB + 1];
+            foreach (var kv in perSecond)
+                tl[kv.Key - minB] = kv.Value;
+            waitTimeline = tl;
+        }
+
         return new ContentionTraceData(info, processFilter,
             events.Count, totalWait, maxWait, avgWait, threadsHit,
-            topHotspots, recentEvents);
+            topHotspots, recentEvents, waitTimeline);
     }
 
     private static string TopFrame(TraceEvent ev)

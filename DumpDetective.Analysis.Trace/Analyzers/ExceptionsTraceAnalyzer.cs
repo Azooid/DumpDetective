@@ -86,12 +86,32 @@ public sealed class ExceptionsTraceAnalyzer
             .Take(top)
             .ToList();
 
+        // ── Exception rate timeline ────────────────────────────────────────────
+        // Bucket all event timestamps into per-second counts for a sparkline.
+        IReadOnlyList<double> rateTimeline = [];
+        if (events.Count > 1)
+        {
+            var perSecond = new Dictionary<int, int>();
+            foreach (var ev in events)
+            {
+                int bucket = (int)(ev.TimeMs / 1000.0);
+                perSecond.TryGetValue(bucket, out int prev);
+                perSecond[bucket] = prev + 1;
+            }
+            int minB = perSecond.Keys.Min();
+            int maxB = perSecond.Keys.Max();
+            var tl = new double[maxB - minB + 1];
+            foreach (var kv in perSecond)
+                tl[kv.Key - minB] = kv.Value;
+            rateTimeline = tl;
+        }
+
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
                       $"  |  {events.Count:N0} exceptions  •  {byType.Count} unique types";
 
         return new ExceptionsTraceData(info, processFilter,
-            events.Count, byType.Count, topTypes, recentEvents);
+            events.Count, byType.Count, topTypes, recentEvents, rateTimeline);
     }
 
     private static string SafeStr(TraceEvent ev, string field)

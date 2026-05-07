@@ -36,6 +36,9 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-s
 .nav-sub-title{display:flex;align-items:center;gap:.3rem;padding:.2rem .55rem .2rem .6rem;font-size:11px;font-weight:700;color:#6b7280;text-decoration:none;border-radius:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .nav-sub-title::before{content:"▸";font-size:.62rem;color:#6b7280;flex-shrink:0}
 .nav-sub-chapters.open .nav-sub-title::before{content:"▾"}
+/* Empty group (no L3 children) — hide expand arrow, show as plain link */
+.nav-sub-chapters.nav-sub-empty .nav-sub-title::before{display:none}
+.nav-sub-chapters.nav-sub-empty .nav-sub-title{color:#374151;font-weight:600;padding-left:.55rem}
 .nav-sub-title:hover{color:#374151;background:#f3f4f8}
 .nav-sub-title.active{color:#4f46e5;background:#ede9fe}
 .nav-sub-items{display:none;margin:.04rem 0 .08rem .4rem;border-left:1px solid #e5e7eb}
@@ -161,11 +164,12 @@ th:hover{background:#ede9fe;color:#4f46e5}
 th.sort-asc .sort-icon::after{content:"↑"}
 th.sort-desc .sort-icon::after{content:"↓"}
 th.sort-asc .sort-icon,th.sort-desc .sort-icon{opacity:1;color:#4f46e5}
-td{padding:.32rem .7rem;border-bottom:1px solid #f3f4f6;vertical-align:top;white-space:nowrap;font-size:12px;color:#1a1f2e}
+td{padding:.32rem .7rem;border-bottom:1px solid #f3f4f6;vertical-align:top;white-space:nowrap;font-size:12px;color:#1a1f2e;min-width:0;max-width:600px}
 tr:last-child td{border-bottom:none}
 tr:nth-child(even) td{background:#fafbff}
 tr:hover td{background:#f5f3ff}
-td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:400px;line-height:1.4}
+td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:560px;line-height:1.5}
+td.method-text{white-space:normal;overflow-wrap:anywhere;word-break:normal;max-width:560px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 p.caption{font-size:11px;color:#9ca3af;margin:.12rem 0 .3rem;font-style:italic}
 td.trend-up2{color:#dc2626;font-weight:700}
 td.trend-up {color:#ea580c;font-weight:600}
@@ -185,7 +189,7 @@ td.sev-info {}
 .alert-info{background:#f5f3ff;border-color:#ddd6fe;border-left:4px solid #4f46e5}
 .alert-title{font-weight:700;margin-bottom:.2rem;font-size:12.5px;display:flex;align-items:center;gap:.3rem}
 .alert-icon{font-size:.95rem}
-.alert-detail{color:#4b5563;font-size:11.5px;margin-top:.18rem;font-style:italic}
+.alert-detail{color:#4b5563;font-size:11.5px;margin-top:.18rem;font-style:italic;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
 .alert-advice{background:#f0fdf4;border:1px solid #bbf7d0;border-left:3px solid #22c55e;border-radius:6px;padding:.5rem .8rem;margin-top:.45rem;font-size:12.5px;color:#14532d;line-height:1.55}
 .advice-label{display:flex;align-items:center;gap:.35rem;font-weight:700;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#16a34a;margin-bottom:.2rem}
 
@@ -328,6 +332,7 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 [data-theme="dark"] .nav-sub-chapters{border-left-color:#252840}
 [data-theme="dark"] .nav-sub-title{color:#8892b0}
 [data-theme="dark"] .nav-sub-title::before{color:#5b6280}
+[data-theme="dark"] .nav-sub-chapters.nav-sub-empty .nav-sub-title{color:#c5cae0}
 [data-theme="dark"] .nav-sub-title:hover{color:#c5cae0;background:#1e2035}
 [data-theme="dark"] .nav-sub-title.active{color:#818cf8;background:#2d2b5e}
 [data-theme="dark"] .nav-sub-items{border-left-color:#30354d}
@@ -369,7 +374,7 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 [data-theme="dark"] .alert-crit{background:#2a1218;border-color:#7f1d1d}
 [data-theme="dark"] .alert-warn{background:#1f1a0c;border-color:#78350f}
 [data-theme="dark"] .alert-info{background:#17152e;border-color:#312e7a}
-[data-theme="dark"] .alert-detail{color:#8892b0}
+[data-theme="dark"] .alert-detail{color:#8892b0;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
 [data-theme="dark"] .alert-advice{background:#0d2818;border-color:#166534;border-left-color:#4ade80;color:#bbf7d0}
 [data-theme="dark"] .advice-label{color:#4ade80}
 [data-theme="dark"] details{border-color:#252840}

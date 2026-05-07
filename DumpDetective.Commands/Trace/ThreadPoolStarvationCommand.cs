@@ -66,7 +66,10 @@ public sealed class ThreadPoolStarvationCommand : ICommand
             return 1;
         }
 
-        using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         try
         {
             if (!CommandBase.SuppressVerbose)
@@ -75,9 +78,9 @@ public sealed class ThreadPoolStarvationCommand : ICommand
             var data = _analyzer.Analyze(tracePath, top);
             _report.Render(data, sink, top);
 
-            foreach (var p in a.EffectiveOutputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
-            if (a.EffectiveOutputPaths.Count == 0 && sink.IsFile && sink.FilePath is not null)
+            if (outputPaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase)) && sink.IsFile && sink.FilePath is not null)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
             return 0;
         }

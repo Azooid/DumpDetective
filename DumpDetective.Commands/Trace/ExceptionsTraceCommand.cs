@@ -59,7 +59,10 @@ public sealed class ExceptionsTraceCommand : ICommand
 
         if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
 
-        using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         try
         {
             if (!CommandBase.SuppressVerbose)
@@ -70,7 +73,7 @@ public sealed class ExceptionsTraceCommand : ICommand
                 data = _analyzer.Analyze(tracePath!, top, processFilter));
 
             _report.Render(data!, sink, top);
-            GcTraceCommand.PrintOutputPath(a);
+            GcTraceCommand.PrintOutputPath(outputPaths);
             return 0;
         }
         catch (Exception ex)

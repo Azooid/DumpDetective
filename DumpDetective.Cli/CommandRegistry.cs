@@ -172,7 +172,17 @@ public static class CommandRegistry
                 new GcTraceAnalyzer(),              new GcTraceReport(),
                 new ContentionTraceAnalyzer(),      new ContentionTraceReport(),
                 new ExceptionsTraceAnalyzer(),      new ExceptionsTraceReport(),
-                new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport()),
+                new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport(),
+                new JitTraceAnalyzer(),             new JitTraceReport(),
+                new HttpTraceAnalyzer(),            new HttpTraceReport()),
+
+            new JitTraceCommand(
+                new JitTraceAnalyzer(),
+                new JitTraceReport()),
+
+            new HttpTraceCommand(
+                new HttpTraceAnalyzer(),
+                new HttpTraceReport()),
 
             // ── targeted / interactive ─────────────────────────────────────────
             new TypeInstancesCommand(

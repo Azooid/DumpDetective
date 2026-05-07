@@ -1,5 +1,6 @@
 ﻿using DumpDetective.Core.Models;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -211,8 +212,33 @@ public sealed class CpuTraceAnalyzer
             LogicalCores:     logicalCores,
             TopProcessName:   topProcessName.Length > 0 ? topProcessName : "(unknown)");
 
+        // ── Semantic analysis pipeline ─────────────────────────────────────────
+        // Run SemanticAnalyzer on the ORIGINAL call tree so detectors see real frame
+        // names (e.g. "Shaper`1+SimpleEnumerator.MoveNext") not collapsed labels.
+        // Then collapse for display purposes only.
+        var semanticFindings = SemanticAnalyzer.Analyze(callTree);
+        var collapsedCallTree = FrameworkCollapser.Collapse(callTree);
+
+        var hotChains        = HotChainExtractor.Extract(collapsedCallTree);
+        var categoryScores   = CategoryScorer.Score(semanticFindings);
+
+        // ── CPU timeline sparkline ─────────────────────────────────────────────
+        // Convert samplesPerSecond dict → sorted list of sample counts per second bucket.
+        // Scale to CPU% (samples × intervalMs / 1000 × 100) so sparkline is in % terms.
+        IReadOnlyList<double> samplesTimeline = [];
+        if (samplesPerSecond.Count > 1)
+        {
+            int minKey   = samplesPerSecond.Keys.Min();
+            int maxKey   = samplesPerSecond.Keys.Max();
+            var timeline = new double[maxKey - minKey + 1];
+            foreach (var kv in samplesPerSecond)
+                timeline[kv.Key - minKey] = kv.Value * intervalMs / 1000.0 * 100.0;
+            samplesTimeline = timeline;
+        }
+
         return new CpuTraceData(info, totalSamples, intervalMs, processFilter,
-            topMethods, hotPath, callTree, stats);
+            topMethods, hotPath, collapsedCallTree, stats,
+            semanticFindings, hotChains, categoryScores, samplesTimeline);
     }
 
     private static CallTreeNode Freeze(MutableNode n, int total, int childrenDepth = 5,

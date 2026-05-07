@@ -145,10 +145,11 @@ public static class CommandBase
         outputPath is null ? top : Math.Max(top, 200);
 
     /// <summary>
-    /// Builds the default output path from a dump path, replacing spaces in the
+    /// Builds a default output path from any input file path, replacing spaces in the
     /// filename with underscores so the result is shell-friendly.
+    /// Used by memory commands (via Execute) and trace commands for their HTML default.
     /// </summary>
-    private static string DefaultOutputPath(string dumpPath, string extension)
+    public static string DefaultOutputPath(string dumpPath, string extension)
     {
         var dir      = Path.GetDirectoryName(dumpPath) ?? ".";
         var filename = Path.GetFileNameWithoutExtension(dumpPath).Replace(' ', '_');

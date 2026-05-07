@@ -31,8 +31,11 @@ public sealed class AllocTraceReport
         if (data.TotalTicks == 0)
         {
             sink.Alert(AlertLevel.Warning, "No GCAllocationTick events found in trace.",
-                "Collect with allocation events enabled.",
-                "dotnet-trace: use --profile gc-verbose\nPerfView: enable 'GCAllocationTick' provider keyword 0x1");
+                "To capture allocation events, re-collect with one of the following:",
+                "dotnet-trace:\n" +
+                "  dotnet-trace collect --profile gc-verbose\n\n" +
+                "PerfView:\n" +
+                "  PerfView.exe /ClrEvents:GC,Type,GCHeapAndTypeNames,Default /NoGui collect");
             return;
         }
 
@@ -73,6 +76,19 @@ public sealed class AllocTraceReport
             DumpHelpers.FormatSize(cs.EstimatedBytes),
             cs.Ticks.ToString("N0"),
         }).ToList();
+
+        // Call site allocation stacked bar — label by type name (unique) not call-site frame
+        // (multiple call sites can share the same TopFrame when different types are allocated
+        //  from the same method, producing duplicate labels if we use TopFrame).
+        var csSegs = data.TopCallSites.Take(6)
+            .Select(cs => {
+                string lbl = TrimTypeName(cs.TypeName, 35);
+                return (Label: lbl, Value: (double)cs.EstimatedBytes);
+            })
+            .ToList();
+        if (csSegs.Count > 0)
+            sink.StackedBar(csSegs, valueMode: "size", caption: "Estimated allocation by type (top 6 call sites)");
+
         sink.Table(
             ["Call site", "Type allocated", "Estimated bytes", "Ticks"],
             csRows,
@@ -89,5 +105,21 @@ public sealed class AllocTraceReport
     }
 
     private static string TrimFrame(string s, int max) =>
-        s.Length <= max ? s : "…" + s[^(max - 1)..];
+        TraceReportHelpers.TrimFrame(s, max);
+
+    // Trim a fully-qualified type name: keep the last two segments (e.g. "Span.End" from
+    // "Elastic.Apm.Model.Span.End") so the chart label stays short but still meaningful.
+    private static string TrimTypeName(string s, int max)
+    {
+        if (s.Length <= max) return s;
+        // Try to take the last two dot-separated tokens for readability
+        int lastDot = s.LastIndexOf('.');
+        if (lastDot > 0)
+        {
+            int prevDot = s.LastIndexOf('.', lastDot - 1);
+            string shortened = prevDot >= 0 ? s[(prevDot + 1)..] : s[(lastDot + 1)..];
+            return shortened.Length <= max ? shortened : "…" + shortened[^(max - 1)..];
+        }
+        return "…" + s[^(max - 1)..];
+    }
 }

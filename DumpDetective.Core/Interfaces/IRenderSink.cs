@@ -73,9 +73,13 @@ public interface IRenderSink : IDisposable
                     string? valueMode = null)
     {
         double total = segments.Sum(s => s.Value);
-        KeyValues(segments.Select(s =>
-            (s.Label, $"{s.Value:F1}{unit ?? ""}  ({(total > 0 ? s.Value / total * 100 : 0):F1}%)")).ToList(),
-            caption);
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        KeyValues(segments.Select(s => {
+            string displayVal = sizeMode
+                ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)s.Value)
+                : $"{s.Value:F1}{unit ?? ""}";
+            return (s.Label, $"{displayVal}  ({(total > 0 ? s.Value / total * 100 : 0):F1}%)");
+        }).ToList(), caption);
     }
 
     /// <summary>

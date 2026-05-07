@@ -1,4 +1,5 @@
 using DumpDetective.Core.Models;
+using DumpDetective.Core.Tracing;
 
 namespace DumpDetective.Core.Models.CommandData;
 
@@ -13,7 +14,15 @@ public sealed record CpuTraceData(
     IReadOnlyList<CpuMethodStats>   TopMethods,
     IReadOnlyList<CallTreeNode>     HotPath,
     IReadOnlyList<CallTreeNode>     CallTree,
-    CpuStats?                       Stats = null);
+    CpuStats?                       Stats = null,
+    /// <summary>Semantic findings from pattern detectors. Empty when no patterns matched.</summary>
+    IReadOnlyList<TraceFinding>?    SemanticFindings = null,
+    /// <summary>Hot chains extracted from the call tree. Empty when TotalSamples == 0.</summary>
+    IReadOnlyList<HotChain>?        HotChains = null,
+    /// <summary>Per-category scores aggregated from SemanticFindings.</summary>
+    IReadOnlyList<CategoryScore>?   CategoryScores = null,
+    /// <summary>CPU samples bucketed per second (sorted chronologically). Used for timeline sparkline.</summary>
+    IReadOnlyList<double>?          SamplesTimeline = null);
 
 /// <summary>
 /// Aggregate CPU utilisation statistics derived from the sample stream.

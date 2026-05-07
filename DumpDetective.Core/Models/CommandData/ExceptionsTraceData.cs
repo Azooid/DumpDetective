@@ -6,7 +6,9 @@ public sealed record ExceptionsTraceData(
     int TotalThrown,
     int UniqueTypes,
     IReadOnlyList<ExceptionTypeSummary> TopTypes,
-    IReadOnlyList<ExceptionEvent> RecentEvents);
+    IReadOnlyList<ExceptionEvent> RecentEvents,
+    /// <summary>Exceptions-per-second bucketed timeline (sorted). Used for sparkline.</summary>
+    IReadOnlyList<double>? RateTimeline = null);
 
 public sealed record ExceptionTypeSummary(
     string ExceptionType,

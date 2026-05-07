@@ -4,6 +4,7 @@ using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Utilities;
+using DumpDetective.Reporting.Reports;
 
 namespace DumpDetective.Reporting.Sinks;
 
@@ -445,10 +446,11 @@ public sealed class HtmlSink : IRenderSink
                 if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
                 else if (cell is "↑" or "↑ ↑")  cellCls = " class=\"trend-up\"";
                 else if (cell.StartsWith("↓"))    cellCls = " class=\"trend-dn\"";
-                else if (cell.Length > 80)        cellCls = " class=\"long-text\"";
                 else if (cell is "Critical")      { cellCls = " class=\"sev-crit\""; cellContent = "<span class=\"sev-badge sev-badge-crit\">✗ Critical</span>"; }
                 else if (cell is "Warning")       { cellCls = " class=\"sev-warn\""; cellContent = "<span class=\"sev-badge sev-badge-warn\">⚠ Warning</span>"; }
                 else if (cell is "Info")          { cellCls = " class=\"sev-info\""; cellContent = "<span class=\"sev-badge sev-badge-info\">ℹ Info</span>"; }
+                else if (IsMethodCell(cell))      cellCls = " class=\"method-text\"";
+                else if (cell.Length > 55)        cellCls = " class=\"long-text\"";
                 _w.Write($"<td{cellCls}>{cellContent}</td>");
             }
             _w.WriteLine("</tr>");
@@ -591,7 +593,8 @@ public sealed class HtmlSink : IRenderSink
             _w.Write($"<span class=\"ct-toggle\">▶</span> ");
         else
             _w.Write("<span class=\"ct-leaf\">·</span> ");
-        _w.Write($"<span class=\"ct-method\" title=\"{H(node.Method)}\">{H(TruncateName(node.Method, 55))}</span>");
+        var _cleanMethod = TraceReportHelpers.CleanIlMethod(node.Method);
+        _w.Write($"<span class=\"ct-method\" title=\"{H(_cleanMethod)}\">{H(TruncateName(_cleanMethod, 55))}</span>");
         if (node.Module.Length > 0)
             _w.Write($" <span class=\"ct-mod\">{H(TruncateName(node.Module, 30))}</span>");
         _w.WriteLine("</td>");
@@ -636,6 +639,19 @@ public sealed class HtmlSink : IRenderSink
             _w.WriteLine("</div></div>");
             _inSection = false;
         }
+    }
+
+    /// <summary>
+    /// Returns true when the cell looks like a method/type name or a chain of them.
+    /// Such cells use word-break:break-all so they wrap at symbol boundaries.
+    /// </summary>
+    static bool IsMethodCell(string cell)
+    {
+        if (cell.Length < 30) return false;
+        // Chain cells use → separator
+        if (cell.Contains('→')) return true;
+        // Method cells contain both a dot and a parenthesis (e.g. Namespace.Class.Method(args))
+        return cell.Contains('.') && cell.Contains('(');
     }
 
     static string H(string s) =>

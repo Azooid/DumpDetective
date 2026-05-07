@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory.Analyzers;
+using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -8,43 +8,45 @@ using Spectre.Console;
 
 namespace DumpDetective.Commands.Trace;
 
-public sealed class ContentionTraceCommand : ICommand
+public sealed class JitTraceCommand : ICommand
 {
-    private readonly ContentionTraceAnalyzer _analyzer;
-    private readonly ContentionTraceReport   _report;
+    private readonly JitTraceAnalyzer _analyzer;
+    private readonly JitTraceReport   _report;
 
-    public ContentionTraceCommand(ContentionTraceAnalyzer analyzer, ContentionTraceReport report)
+    public JitTraceCommand(JitTraceAnalyzer analyzer, JitTraceReport report)
     {
         _analyzer = analyzer;
         _report   = report;
     }
 
-    public string Name               => "contention-trace";
-    public string Description        => "Lock contention analysis from a .nettrace or .etl trace (hotspot call sites, wait times, threads affected).";
+    public string Name               => "jit-trace";
+    public string Description        => "JIT compilation analysis from a .nettrace or .etl trace (methods compiled, JIT time, hot modules).";
     public bool   IncludeInFullAnalyze => false;
 
     private const string Help = """
-        Usage: DumpDetective contention-trace <trace-file> [options]
+        Usage: DumpDetective jit-trace <trace-file> [options]
 
-        Parses ContentionStart/Stop event pairs to report:
-          • Top contention hotspots by total accumulated wait time
-          • Worst individual lock acquisition delays
-          • Threads affected and overall contention metrics
+        Parses JIT compilation events (Method/JittingStarted, Method/LoadVerbose) to report:
+          • Total methods JIT-compiled and total compilation time
+          • Methods that took longest to compile (complex generics, large methods)
+          • Methods compiled multiple times (dynamic methods, Expression.Compile, ReJIT)
+          • Module-level JIT summary (candidates for ReadyToRun pre-compilation)
 
-        Collecting a contention trace:
-          dotnet-trace:  dotnet trace collect --providers 'Microsoft-Windows-DotNETRuntime:0x4000:4' -p <pid>
-          PerfView:      Enable 'ContentionStacks' in additional providers
+        Collecting a JIT trace:
+          dotnet-trace:  dotnet trace collect --profile startup -p <pid>
+          dotnet-trace:  dotnet trace collect --providers 'Microsoft-Windows-DotNETRuntime:0x10:5' -p <pid>
+          PerfView:      Enable 'JITStats' or 'Method' events in collection options
 
         Options:
-          --top <N>            Top N hotspots / events to show (default: 20)
+          --top <N>            Top N methods to show (default: 30)
           --process <name>     Filter to a specific process name
           -o, --output <file>  Write report to file (.html / .md / .txt / .json)
           -h, --help           Show this help
 
         Examples:
-          DumpDetective contention-trace app.nettrace
-                    DumpDetective contention-trace perf.etl --process w3wp
-          DumpDetective contention-trace app.nettrace --output contention.html
+          DumpDetective jit-trace app.nettrace
+          DumpDetective jit-trace startup.etl --process w3wp --top 50
+          DumpDetective jit-trace app.nettrace --output jit-report.html
         """;
 
     public int Run(string[] args)
@@ -52,7 +54,7 @@ public sealed class ContentionTraceCommand : ICommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         var     a             = CliArgs.Parse(args);
-        int     top           = a.GetInt("top", 20);
+        int     top           = a.GetInt("top", 30);
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
 
@@ -67,8 +69,8 @@ public sealed class ContentionTraceCommand : ICommand
             if (!CommandBase.SuppressVerbose)
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
 
-            ContentionTraceData? data = null;
-            CommandBase.RunStatus("Parsing contention events...", _ =>
+            JitTraceData? data = null;
+            CommandBase.RunStatus("Parsing JIT events...", _ =>
                 data = _analyzer.Analyze(tracePath!, top, processFilter));
 
             _report.Render(data!, sink, top);
@@ -84,5 +86,5 @@ public sealed class ContentionTraceCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "contention-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
+            "jit-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 }

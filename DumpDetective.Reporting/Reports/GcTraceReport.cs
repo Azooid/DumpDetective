@@ -35,8 +35,11 @@ public sealed class GcTraceReport
         if (data.TotalGcs == 0)
         {
             sink.Alert(AlertLevel.Warning, "No GC events found in trace.",
-                "Collect with GC events enabled.",
-                "dotnet-trace: use --profile gc-verbose\nPerfView: check 'GC' in collection options");
+                "To capture GC events, re-collect with one of the following:",
+                "dotnet-trace:\n" +
+                "  dotnet-trace collect --profile gc-verbose\n\n" +
+                "PerfView:\n" +
+                "  PerfView.exe /ClrEvents:GC,GCHeapSurvivalAndMovement,GCHeapAndTypeNames,Default /NoGui collect");
             return;
         }
 
@@ -85,8 +88,14 @@ public sealed class GcTraceReport
         if (data.Events.Count > 1)
         {
             var pauseTimeline = data.Events.Select(e => e.PauseMs).ToList();
-            sink.Sparkline(pauseTimeline, "GC pause timeline", " ms");
+            sink.Sparkline(pauseTimeline, "GC pause timeline (ms per collection)", " ms");
         }
+
+        // GC heap size timeline — heap size after each collection (in MB)
+        var heapSizes = data.Events.Where(e => e.HeapSizeAfter > 0)
+                                    .Select(e => e.HeapSizeAfter / (1024.0 * 1024.0)).ToList();
+        if (heapSizes.Count > 1)
+            sink.Sparkline(heapSizes, "Heap size after each GC (MB)", " MB");
 
         sink.Table(
             ["GC #", "Gen", "Reason", "Type", "Pause", "Heap before", "Heap after"],
