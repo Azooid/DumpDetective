@@ -39,6 +39,9 @@ public sealed class CpuTraceAnalyzer
         int totalSamples = 0;
         double intervalMs = 1.0; // default — overridden if we can read it from the trace
 
+        // Frame string interner — deduplicates method/module name strings across millions of samples
+        var interner = new FrameInterner(initialCapacity: 1024);
+
         // Per-second sample buckets for max CPU calculation (key = floor(ms/1000))
         var samplesPerSecond = new Dictionary<int, int>();
         var activeThreadIds  = new HashSet<int>();
@@ -94,9 +97,9 @@ public sealed class CpuTraceAnalyzer
                     var addr = cs.CodeAddress;
                     // FullMethodName returns "" (empty, not null) for unresolved native frames
                     string method = string.IsNullOrEmpty(addr.FullMethodName)
-                        ? (addr.ModuleName ?? "?")
-                        : addr.FullMethodName;
-                    string module = addr.ModuleName ?? "";
+                        ? interner.Intern(addr.ModuleName ?? "?")
+                        : interner.InternTruncated(addr.FullMethodName);
+                    string module = interner.Intern(addr.ModuleName ?? "");
                     frames.Add((method, module));
                     cs = cs.Caller;
                 }

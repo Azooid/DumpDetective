@@ -15,7 +15,8 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 
 - One-command health report (`analyze`) with a score and prioritized findings.
 - Deep memory diagnostics (`memory-leak`, `high-refs`, `gc-roots`, `object-inspect`).
-- Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`).
+- Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `thread-pool-starvation`, `async-trace`, `jit-trace`, `http-trace`, `sql-trace`).
+- Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 correlation rules that require both files to confirm root causes.
 - Multi-dump trend analysis for comparing behavior over time.
 - Interactive HTML reports with grouped navigation, charts, dark mode, and paged tables.
 - Export and replay support across HTML, Markdown, text, JSON, and compressed binary.
@@ -185,13 +186,17 @@ DumpDetective diff week1.bin week2.bin -o delta.html
 3. Run a single trace command for deeper drill-down.
 
 ```bash
-# Combined trace analysis (CPU + alloc + GC + exceptions + contention + starvation)
+# Combined trace analysis (all 10 analyzers)
 DumpDetective trace-analyze app.nettrace
+
+# Cross-source analysis using both trace and dump
+DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
 
 # Focused trace commands
 DumpDetective cpu-trace app.nettrace --output cpu-report.html
 DumpDetective gc-trace perf.etl --process w3wp --top 50 --output gc-report.html
-DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
+DumpDetective sql-trace perf.etl --process w3wp --slow-ms 500 --output sql-report.html
+DumpDetective thread-pool-starvation perf.etl --top 50 --output starvation.html
 ```
 
 ---
@@ -219,7 +224,7 @@ Detailed command references:
 | Health / orchestration | `analyze`, `trend-analysis` | dump files |
 | Report replay / comparison | `render`, `diff` | saved `.json` / `.bin` |
 | Memory dump analysis | `heap-stats`, `gen-summary`, `memory-leak`, `gc-roots`, `object-inspect`, `load`, `close`, and related dump commands | `.dmp`, `.mdmp` |
-| Trace analysis | `trace-analyze`, `cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation` | `.nettrace`, `.etl` |
+| Trace analysis | `trace-analyze`, `trace-dump-analyze`, `cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `thread-pool-starvation`, `async-trace`, `jit-trace`, `http-trace`, `sql-trace` | `.nettrace`, `.etl` (+ `.dmp` for `trace-dump-analyze`) |
 
 The sections below follow that same split: high-level workflows first, then dump-only commands, then trace-only commands.
 
@@ -610,17 +615,22 @@ DumpDetective close D:\dumps
 
 ### Trace Commands
 
-These commands accept a trace file, not a memory dump. Supported trace inputs are `.nettrace` and `.etl`.
+These commands accept a trace file, not a memory dump. Supported trace inputs are `.nettrace` and `.etl`. `trace-dump-analyze` additionally requires a `.dmp` file.
 
 | Command | Description |
 |---|---|
-| `trace-analyze` | Combined trace report that opens the trace once and runs the supported trace analyzers in sequence |
+| `trace-analyze` | Combined trace report that opens the trace once and runs all ten trace analyzers in sequence |
+| `trace-dump-analyze` | Cross-source analysis: trace + dump together with 10 correlation rules |
 | `cpu-trace` | CPU hot path, top methods, and call tree analysis |
 | `alloc-trace` | Allocation hotspot analysis based on `GCAllocationTick` events |
 | `gc-trace` | GC pause analysis, trigger reasons, and per-collection heap metrics |
 | `exceptions-trace` | First-chance exception volume, type breakdown, and flood detection |
 | `contention-trace` | Lock contention hotspot and wait-time analysis |
-| `threadpool-starvation` | ThreadPool starvation detection from wait and adjustment events |
+| `thread-pool-starvation` | ThreadPool starvation detection from wait and adjustment events |
+| `async-trace` | Async Task scheduling, sync-over-async hotspots, continuation call sites |
+| `jit-trace` | JIT compilation time, slowest methods, top modules by compilation load |
+| `http-trace` | HTTP request latency, top endpoints, error rates |
+| `sql-trace` | SQL/EF query latency, slow query list, per-database summary |
 
 ### `trace-analyze`
 
@@ -649,7 +659,11 @@ Options:
 - `gc-trace` for GC pause timing and trigger reasons.
 - `exceptions-trace` for exception flood detection.
 - `contention-trace` for lock hotspots and wait times.
-- `threadpool-starvation` for ThreadPool starvation signals.
+- `thread-pool-starvation` for ThreadPool starvation signals.
+- `async-trace` for async Task scheduling and sync-over-async blocking.
+- `jit-trace` for JIT compilation cost and warm-up overhead.
+- `http-trace` for HTTP request latency and error rates.
+- `sql-trace` for SQL/EF query latency and slow queries.
 
 **Examples:**
 ```bash
@@ -668,7 +682,11 @@ DumpDetective alloc-trace app.nettrace --process w3wp --output alloc.html
 DumpDetective gc-trace perf.etl --process w3wp --top 50 --output gc.html
 DumpDetective exceptions-trace app.nettrace --output exceptions.html
 DumpDetective contention-trace perf.etl --process w3wp --output contention.html
-DumpDetective threadpool-starvation perf.nettrace --top 50 --output starvation.html
+DumpDetective thread-pool-starvation perf.nettrace --top 50 --output starvation.html
+DumpDetective async-trace app.nettrace --output async.html
+DumpDetective jit-trace app.nettrace --output jit.html
+DumpDetective http-trace perf.etl --process w3wp --slow-ms 500 --output http.html
+DumpDetective sql-trace perf.etl --process w3wp --slow-ms 500 --output sql.html
 ```
 
 Common trace use cases:
@@ -678,7 +696,12 @@ Common trace use cases:
 - Use `gc-trace` when you need pause distributions, trigger reasons, or explicit `GC.Collect()` detection.
 - Use `exceptions-trace` when a service is throwing at high volume or hiding error floods.
 - Use `contention-trace` when threads are blocked on locks and you need hotspot call sites.
-- Use `threadpool-starvation` when the runtime is under worker-thread pressure or sync-over-async blocking is suspected.
+- Use `thread-pool-starvation` when the runtime is under worker-thread pressure or sync-over-async blocking is suspected.
+- Use `async-trace` when you need to detect `.Wait()` / `.Result` call sites and async scheduling delays.
+- Use `jit-trace` when cold-start or warm-up is taking too long.
+- Use `http-trace` when HTTP endpoint latency or error rates are elevated.
+- Use `sql-trace` when SQL query performance or connection pool pressure is suspected.
+- Use `trace-dump-analyze` when you have both a trace and a dump from the same incident — it surfaces the highest-confidence root causes by cross-correlating both sources.
 
 ---
 

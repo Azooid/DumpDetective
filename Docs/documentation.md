@@ -26,7 +26,7 @@ DumpDetective render report.bin --output report.md
 | [Memory Analysis Guide](Memory-Guide.md) | Workflows, triage paths, and all memory command options |
 | [Trace Analysis Guide](Trace-Guide.md) | Workflows and all trace command options |
 | [Memory Commands](#memory-commands) | All 31 dump-analysis commands with links to detailed docs |
-| [Trace Commands](#trace-commands) | All 7 trace commands with links to detailed docs |
+| [Trace Commands](#trace-commands) | All 12 trace commands with links to detailed docs |
 
 ---
 
@@ -112,11 +112,12 @@ Commands that operate on `.dmp` / `.mdmp` dump files.
 
 Commands that operate on `.nettrace` or `.etl` trace files.
 
-### Orchestration
+### Combined / Cross-source
 
 | Command | Description |
 |---|---|
-| [trace-analyze](trace/Orchestrator/trace-analyze.md) | Combined report: runs all six trace analyzers in a single pass |
+| [trace-analyze](trace/Orchestrator/trace-analyze.md) | Combined report: runs all ten trace analyzers in a single pass |
+| [trace-dump-analyze](trace/Orchestrator/trace-dump-analyze.md) | Cross-source analysis: runs all trace analyzers + lightweight dump walk, then correlates both sources to surface the highest-confidence root causes |
 
 ### CPU and Allocation
 
@@ -137,7 +138,16 @@ Commands that operate on `.nettrace` or `.etl` trace files.
 
 | Command | Description |
 |---|---|
-| [threadpool-starvation](trace/Threads-Concurrency/threadpool-starvation.md) | WaitHandle wait events and hill-climbing adjustments: starvation signal detection |
+| [thread-pool-starvation](trace/Threads-Concurrency/threadpool-starvation.md) | WaitHandle wait events and hill-climbing adjustments: starvation signal detection |
+| [async-trace](trace/Threads-Concurrency/async-trace.md) | Async Task scheduling, sync-over-async hotspots, continuation call sites |
+
+### JIT, HTTP, and SQL
+
+| Command | Description |
+|---|---|
+| [jit-trace](trace/JIT-HTTP/jit-trace.md) | JIT compilation time, slowest methods, top modules by compilation load |
+| [http-trace](trace/JIT-HTTP/http-trace.md) | HTTP request latency, top endpoints by count and latency, error rates |
+| [sql-trace](trace/JIT-HTTP/sql-trace.md) | SQL/EF query latency, slow query list, per-database summary |
 
 ---
 

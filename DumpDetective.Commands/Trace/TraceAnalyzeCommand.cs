@@ -10,6 +10,7 @@ using DumpDetective.Analysis.Trace;
 using DumpDetective.Analysis.Trace.Analyzers;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Spectre.Console;
+using CmdData = DumpDetective.Core.Models.CommandData;
 
 namespace DumpDetective.Commands.Trace;
 
@@ -18,16 +19,17 @@ namespace DumpDetective.Commands.Trace;
 /// producing a single combined report with one chapter per analyzer.
 ///
 /// Sub-analyzers: cpu-trace, alloc-trace, gc-trace, contention-trace,
-///                exceptions-trace, thread-pool-starvation, jit-trace, http-trace
+///                exceptions-trace, thread-pool-starvation, jit-trace, http-trace,
+///                async-trace, sql-trace
 /// </summary>
 public sealed class TraceAnalyzeCommand : ICommand
 {
     private static readonly (string Heading, string[] Names)[] s_traceGroups =
     [
-        ("CPU / Allocation", ["cpu-trace", "alloc-trace"]),
-        ("GC / Exceptions / Locks", ["gc-trace", "exceptions-trace", "contention-trace"]),
-        ("Threads / Concurrency", ["thread-pool-starvation"]),
-        ("JIT / HTTP", ["jit-trace", "http-trace"]),
+        ("CPU / Allocation",          ["cpu-trace", "alloc-trace"]),
+        ("GC / Exceptions / Locks",   ["gc-trace", "exceptions-trace", "contention-trace"]),
+        ("Threads / Concurrency",     ["thread-pool-starvation", "async-trace"]),
+        ("JIT / HTTP / SQL",          ["jit-trace", "http-trace", "sql-trace"]),
     ];
 
     private readonly CpuTraceAnalyzer              _cpu;
@@ -38,6 +40,8 @@ public sealed class TraceAnalyzeCommand : ICommand
     private readonly ThreadPoolStarvationAnalyzer  _starvation;
     private readonly JitTraceAnalyzer              _jit;
     private readonly HttpTraceAnalyzer             _http;
+    private readonly AsyncTraceAnalyzer            _async;
+    private readonly SqlTraceAnalyzer              _sql;
 
     private readonly CpuTraceReport              _cpuReport;
     private readonly AllocTraceReport            _allocReport;
@@ -47,6 +51,8 @@ public sealed class TraceAnalyzeCommand : ICommand
     private readonly ThreadPoolStarvationReport  _starvationReport;
     private readonly JitTraceReport              _jitReport;
     private readonly HttpTraceReport             _httpReport;
+    private readonly AsyncTraceReport            _asyncReport;
+    private readonly SqlTraceReport              _sqlReport;
 
     public TraceAnalyzeCommand(
         CpuTraceAnalyzer             cpu,             CpuTraceReport              cpuReport,
@@ -56,7 +62,9 @@ public sealed class TraceAnalyzeCommand : ICommand
         ExceptionsTraceAnalyzer      exceptions,      ExceptionsTraceReport       exceptionsReport,
         ThreadPoolStarvationAnalyzer starvation,      ThreadPoolStarvationReport  starvationReport,
         JitTraceAnalyzer             jit,             JitTraceReport              jitReport,
-        HttpTraceAnalyzer            http,            HttpTraceReport             httpReport)
+        HttpTraceAnalyzer            http,            HttpTraceReport             httpReport,
+        AsyncTraceAnalyzer           async_,          AsyncTraceReport            asyncReport,
+        SqlTraceAnalyzer             sql,             SqlTraceReport              sqlReport)
     {
         _cpu = cpu;           _cpuReport = cpuReport;
         _alloc = alloc;       _allocReport = allocReport;
@@ -66,10 +74,12 @@ public sealed class TraceAnalyzeCommand : ICommand
         _starvation = starvation; _starvationReport = starvationReport;
         _jit = jit;           _jitReport = jitReport;
         _http = http;         _httpReport = httpReport;
+        _async = async_;      _asyncReport = asyncReport;
+        _sql = sql;           _sqlReport = sqlReport;
     }
 
     public string Name               => "trace-analyze";
-    public string Description        => "Full trace analysis — opens trace once and runs all sub-analyzers (cpu, alloc, gc, contention, exceptions, thread-pool-starvation, jit, http).";
+    public string Description        => "Full trace analysis — opens trace once and runs all sub-analyzers (cpu, alloc, gc, contention, exceptions, thread-pool-starvation, jit, http, async, sql).";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
 
     private const string Help = """
@@ -149,16 +159,18 @@ public sealed class TraceAnalyzeCommand : ICommand
             using var sink = SinkFactory.CreateMulti(outputPaths);
             var captured = new Dictionary<string, ReportDoc>(StringComparer.OrdinalIgnoreCase);
 
-            // Hold data objects for all analyzers — used by the summary dashboard
-            // and the Diagnostic Interpretation section after all analyzers complete.
-            Core.Models.CommandData.CpuTraceData?              cpuData        = null;
-            Core.Models.CommandData.AllocTraceData?            allocData      = null;
-            Core.Models.CommandData.GcTraceData?               gcData         = null;
-            Core.Models.CommandData.ContentionTraceData?       contentionData = null;
-            Core.Models.CommandData.ExceptionsTraceData?       exceptionsData = null;
-            Core.Models.CommandData.ThreadPoolStarvationData?  starvationData = null;
-            Core.Models.CommandData.JitTraceData?              jitData        = null;
-            Core.Models.CommandData.HttpTraceData?             httpData       = null;
+            // Hold data objects for all analyzers — used by the summary dashboard,
+            // Diagnostic Interpretation, and the Correlation Analysis sections.
+            CmdData.CpuTraceData?              cpuData        = null;
+            CmdData.AllocTraceData?            allocData      = null;
+            CmdData.GcTraceData?               gcData         = null;
+            CmdData.ContentionTraceData?       contentionData = null;
+            CmdData.ExceptionsTraceData?       exceptionsData = null;
+            CmdData.ThreadPoolStarvationData?  starvationData = null;
+            CmdData.JitTraceData?              jitData        = null;
+            CmdData.HttpTraceData?             httpData       = null;
+            CmdData.AsyncTraceData?            asyncData      = null;
+            CmdData.SqlTraceData?              sqlData        = null;
 
             sink.Header("Trace Analysis",
                 $"File: {traceFileName}" +
@@ -229,6 +241,22 @@ public sealed class TraceAnalyzeCommand : ICommand
                 _httpReport.Render(httpData, cap, top);
                 captured["http-trace"] = cap.GetDoc();
             });
+            RunAnalyzer("async-trace", () =>
+            {
+                var cap = new CaptureSink();
+                cap.Header("Async / Task Trace", traceFileName, navLevel: 3, commandName: "async-trace");
+                asyncData = _async.Analyze(trace!, traceFileName, top, processFilter);
+                _asyncReport.Render(asyncData, cap, top);
+                captured["async-trace"] = cap.GetDoc();
+            });
+            RunAnalyzer("sql-trace", () =>
+            {
+                var cap = new CaptureSink();
+                cap.Header("SQL / EF Trace", traceFileName, navLevel: 3, commandName: "sql-trace");
+                sqlData = _sql.Analyze(trace!, traceFileName, top, processFilter, slowMs);
+                _sqlReport.Render(sqlData, cap, top);
+                captured["sql-trace"] = cap.GetDoc();
+            });
 
             // ── Trace Summary Dashboard ────────────────────────────────────────
             // Rendered FIRST so the reader gets a cross-cutting health overview
@@ -236,8 +264,22 @@ public sealed class TraceAnalyzeCommand : ICommand
             RenderTraceSummary(sink, traceFileName, cpuData, allocData, gcData,
                 contentionData, exceptionsData, starvationData, jitData, httpData);
 
+            // ── Unified Timeline ──────────────────────────────────────────────
+            // Cross-analyzer chronological event map — surfaces correlated events
+            // from GC, Contention, Exceptions, HTTP, SQL, Async in one view.
+            var timelineSlices = TraceTimelineBuilder.Build(
+                gcData, contentionData, exceptionsData, httpData, sqlData, asyncData);
+            RenderTimeline(sink, timelineSlices);
+
+            // ── Cross-Analyzer Correlation ────────────────────────────────────
+            // Runs after all analyzers complete — derives causal relationships
+            // between signals that no single analyzer can see in isolation.
+            var correlations = CorrelationEngine.Correlate(
+                cpuData, allocData, gcData, contentionData, exceptionsData,
+                starvationData, jitData, httpData, asyncData, sqlData);
+            RenderCorrelationFindings(sink, correlations);
+
             // ── Diagnostic Interpretation ─────────────────────────────────────
-            // Render a cross-cutting summary before the per-analyzer chapters.
             // Sourced from the CPU semantic pipeline which has the richest signal.
             RenderDiagnosticInterpretation(sink, cpuData);
 
@@ -294,14 +336,14 @@ public sealed class TraceAnalyzeCommand : ICommand
     private static void RenderTraceSummary(
         IRenderSink sink,
         string traceFileName,
-        Core.Models.CommandData.CpuTraceData?              cpu,
-        Core.Models.CommandData.AllocTraceData?            alloc,
-        Core.Models.CommandData.GcTraceData?               gc,
-        Core.Models.CommandData.ContentionTraceData?       contention,
-        Core.Models.CommandData.ExceptionsTraceData?       exceptions,
-        Core.Models.CommandData.ThreadPoolStarvationData?  starvation,
-        Core.Models.CommandData.JitTraceData?              jit,
-        Core.Models.CommandData.HttpTraceData?             http)
+        CmdData.CpuTraceData?              cpu,
+        CmdData.AllocTraceData?            alloc,
+        CmdData.GcTraceData?               gc,
+        CmdData.ContentionTraceData?       contention,
+        CmdData.ExceptionsTraceData?       exceptions,
+        CmdData.ThreadPoolStarvationData?  starvation,
+        CmdData.JitTraceData?              jit,
+        CmdData.HttpTraceData?             http)
     {
         sink.Header("Trace Summary", "", navLevel: 2);
         sink.Section("Overview", "summary-overview");
@@ -471,11 +513,62 @@ public sealed class TraceAnalyzeCommand : ICommand
         s.Length <= max ? s : "…" + s[^(max - 1)..];
 
     // ─────────────────────────────────────────────────────────────────────────
+    // Cross-Analyzer Correlation Findings
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void RenderCorrelationFindings(
+        IRenderSink                      sink,
+        IReadOnlyList<CorrelationFinding> findings)
+    {
+        if (findings.Count == 0) return;
+
+        sink.Header("Correlation Analysis", "", navLevel: 2);
+        sink.Section("Findings", "correlation-findings");
+        sink.Alert(AlertLevel.Info,
+            "The following findings are derived from cross-analyzer correlation — " +
+            "each represents a causal relationship between two or more signals that no single analyzer sees in isolation. " +
+            "Findings are ranked by score (0–100).",
+            detail: null);
+
+        // Summary table: one row per finding
+        var rows = new List<string[]>(findings.Count);
+        foreach (var f in findings)
+        {
+            string severity = f.Severity switch
+            {
+                FindingSeverity.Critical => "🔴 Critical",
+                FindingSeverity.Warning  => "⚠ Warning",
+                _                       => "ℹ Info"
+            };
+            rows.Add([severity, f.Category, $"{f.Score}/100", f.Headline,
+                      string.Join(", ", f.ContributingAreas)]);
+        }
+        sink.Table(
+            ["Severity", "Category", "Score", "Headline", "Contributing Analyzers"],
+            rows,
+            "Cross-analyzer causal findings — ranked by score");
+
+        // Detailed finding blocks
+        foreach (var f in findings)
+        {
+            var level = f.Severity switch
+            {
+                FindingSeverity.Critical => AlertLevel.Critical,
+                FindingSeverity.Warning  => AlertLevel.Warning,
+                _                       => AlertLevel.Info
+            };
+            sink.Alert(level,
+                $"[{f.Category}] {f.Headline}  (score: {f.Score}/100)",
+                f.Detail,
+                f.Advice);
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
     // Diagnostic Interpretation (CPU semantic findings + hot chains)
     // ─────────────────────────────────────────────────────────────────────────
     private static void RenderDiagnosticInterpretation(
         IRenderSink sink,
-        Core.Models.CommandData.CpuTraceData? cpuData)
+        CmdData.CpuTraceData? cpuData)
     {
         // Only render if the semantic pipeline produced findings or hot chains
         bool hasFindings = cpuData?.SemanticFindings is { Count: > 0 };
@@ -551,4 +644,40 @@ public sealed class TraceAnalyzeCommand : ICommand
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
             "trace-analyze requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Unified Timeline
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void RenderTimeline(
+        IRenderSink                      sink,
+        IReadOnlyList<TimelineSlice>     slices)
+    {
+        if (slices.Count == 0) return;
+
+        sink.Header("Unified Timeline", "", navLevel: 2);
+        sink.Section("Cross-Analyzer Event Timeline", "timeline-events");
+        sink.Alert(AlertLevel.Info,
+            $"Showing {slices.Count} significant events from all analyzers, ordered chronologically. " +
+            "Critical and long-duration events are prioritised when the count exceeds the display limit.",
+            detail: "Categories: GC · Contention · Exception · HTTP · SQL · Async. " +
+                    "Severity: 🔴 Critical  ⚠ Warning  ℹ Info");
+
+        var rows = new List<string[]>(slices.Count);
+        foreach (var s in slices)
+        {
+            string sevIcon = s.Severity switch
+            {
+                FindingSeverity.Critical => "🔴",
+                FindingSeverity.Warning  => "⚠",
+                _                       => "ℹ"
+            };
+            string start    = $"{s.StartMs:F0} ms";
+            string duration = s.DurationMs >= 1 ? $"{s.DurationMs:F0} ms" : "<1 ms";
+            rows.Add([start, duration, s.Category, sevIcon, s.Label]);
+        }
+        sink.Table(
+            ["Start", "Duration", "Category", "Sev", "Event"],
+            rows,
+            "Chronological cross-analyzer event timeline — sorted by start time");
+    }
 }

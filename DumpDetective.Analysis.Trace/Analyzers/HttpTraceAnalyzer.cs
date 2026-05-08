@@ -58,20 +58,43 @@ public sealed class HttpTraceAnalyzer
                     (evName.EndsWith("RequestStop",   StringComparison.OrdinalIgnoreCase) ||
                      evName.EndsWith("Request/Stop",  StringComparison.OrdinalIgnoreCase));
 
-                // ── System.Web / IIS ASPX: Microsoft-Windows-ASPNET ──────────────────────────
+                // ── Classic ASP.NET (System.Web / IIS): Microsoft-Windows-ASPNET  ─────────────
+                // Seen in traces as: Microsoft-Windows-ASPNET/Request/Start|Stop
                 bool isAspNetStart =
-                    (evName.IndexOf("ASPNET", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     evName.IndexOf("System.Web", StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    evName.IndexOf("Start", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    (evName.IndexOf("ASPNET",      StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     evName.IndexOf("System.Web",  StringComparison.OrdinalIgnoreCase) >= 0) &&
+                    evName.IndexOf("Start",   StringComparison.OrdinalIgnoreCase) >= 0 &&
                     evName.IndexOf("Request", StringComparison.OrdinalIgnoreCase) >= 0;
                 bool isAspNetStop =
-                    (evName.IndexOf("ASPNET", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     evName.IndexOf("System.Web", StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    evName.IndexOf("Stop", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    (evName.IndexOf("ASPNET",      StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     evName.IndexOf("System.Web",  StringComparison.OrdinalIgnoreCase) >= 0) &&
+                    evName.IndexOf("Stop",    StringComparison.OrdinalIgnoreCase) >= 0 &&
                     evName.IndexOf("Request", StringComparison.OrdinalIgnoreCase) >= 0;
 
-                bool isStart = isAspNetCoreStart || isAspNetStart;
-                bool isStop  = isAspNetCoreStop  || isAspNetStop;
+                // ── AspNetTrace/AspNetReq/Start|Stop  (older System.Web ETW provider) ─────────
+                // Seen in traces as: AspNetTrace/AspNetReq/Start
+                bool isAspNetTraceStart =
+                    evName.IndexOf("AspNetReq",  StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    evName.EndsWith("/Start",    StringComparison.OrdinalIgnoreCase);
+                bool isAspNetTraceStop =
+                    evName.IndexOf("AspNetReq",  StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    evName.EndsWith("/Stop",     StringComparison.OrdinalIgnoreCase);
+
+                // ── FrameworkEventSource GetResponse (HttpWebRequest / HttpClient pre-.NET Core) ─
+                // Seen as: System.Diagnostics.Eventing.FrameworkEventSource/GetResponse/Start|Stop
+                bool isFrameworkHttpStart =
+                    evName.IndexOf("FrameworkEventSource", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    (evName.IndexOf("GetResponse",       StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     evName.IndexOf("GetRequestStream",  StringComparison.OrdinalIgnoreCase) >= 0) &&
+                    evName.EndsWith("/Start", StringComparison.OrdinalIgnoreCase);
+                bool isFrameworkHttpStop =
+                    evName.IndexOf("FrameworkEventSource", StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    (evName.IndexOf("GetResponse",       StringComparison.OrdinalIgnoreCase) >= 0 ||
+                     evName.IndexOf("GetRequestStream",  StringComparison.OrdinalIgnoreCase) >= 0) &&
+                    evName.EndsWith("/Stop", StringComparison.OrdinalIgnoreCase);
+
+                bool isStart = isAspNetCoreStart || isAspNetStart || isAspNetTraceStart || isFrameworkHttpStart;
+                bool isStop  = isAspNetCoreStop  || isAspNetStop  || isAspNetTraceStop  || isFrameworkHttpStop;
 
                 if (!isStart && !isStop) continue;
 
@@ -82,12 +105,16 @@ public sealed class HttpTraceAnalyzer
 
                 if (isStart)
                 {
+                    // Method: ASP.NET Core uses "Method", classic ASP.NET/AspNetReq use "HttpMethod" or none
                     string method = SafeStr(ev, "Method");
                     if (method.Length == 0) method = SafeStr(ev, "HttpMethod");
+                    if (method.Length == 0) method = SafeStr(ev, "Verb");
                     if (method.Length == 0) method = "GET";
+                    // Path: ASP.NET Core "Path", classic "RequestPath", AspNetReq "Path" or "RequestPath" or "Url"
                     string path = SafeStr(ev, "Path");
                     if (path.Length == 0) path = SafeStr(ev, "RequestPath");
                     if (path.Length == 0) path = SafeStr(ev, "Url");
+                    if (path.Length == 0) path = SafeStr(ev, "RequestUrl");
                     if (path.Length == 0) path = "/";
                     inFlight[correlationKey] = new RequestStart(method, path,
                         ev.TimeStampRelativeMSec, ev.ThreadID);
@@ -126,7 +153,8 @@ public sealed class HttpTraceAnalyzer
         {
             return new HttpTraceData(
                 $"{traceFileName}  |  0 HTTP request events — collect with " +
-                "--providers 'Microsoft-AspNetCore-Hosting:0xFFFF:5' or 'Microsoft-Windows-ASPNET:0xFFFF:5'",
+                "--providers 'Microsoft-AspNetCore-Hosting:0xFFFF:5' or " +
+                "'Microsoft-Windows-ASPNET:0xFFFF:5' (IIS/classic ASP.NET)",
                 processFilter, 0, 0, 0, 0, 0, 0, 0, 0, slowThresholdMs, [], [], [], false);
         }
 

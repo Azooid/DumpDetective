@@ -29,10 +29,11 @@ internal static class HelpPrinter
 
     private static readonly (string Heading, string[] Names)[] s_traceGroups =
     [
-        ("Orchestrator",              ["trace-analyze"]),
-        ("Threads / Concurrency",     ["threadpool-starvation"]),
+        ("Orchestrator / Cross-source",    ["trace-analyze", "trace-dump-analyze"]),
+        ("Threads / Concurrency",     ["thread-pool-starvation", "async-trace"]),
         ("CPU / Allocation",          ["cpu-trace", "alloc-trace"]),
         ("GC / Exceptions / Locks",   ["gc-trace", "exceptions-trace", "contention-trace"]),
+        ("JIT / HTTP / SQL",          ["jit-trace", "http-trace", "sql-trace"]),
     ];
 
     public static void Print(IEnumerable<ICommand> commands)

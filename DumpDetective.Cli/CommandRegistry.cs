@@ -174,7 +174,9 @@ public static class CommandRegistry
                 new ExceptionsTraceAnalyzer(),      new ExceptionsTraceReport(),
                 new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport(),
                 new JitTraceAnalyzer(),             new JitTraceReport(),
-                new HttpTraceAnalyzer(),            new HttpTraceReport()),
+                new HttpTraceAnalyzer(),            new HttpTraceReport(),
+                new AsyncTraceAnalyzer(),           new AsyncTraceReport(),
+                new SqlTraceAnalyzer(),             new SqlTraceReport()),
 
             new JitTraceCommand(
                 new JitTraceAnalyzer(),
@@ -183,6 +185,27 @@ public static class CommandRegistry
             new HttpTraceCommand(
                 new HttpTraceAnalyzer(),
                 new HttpTraceReport()),
+
+            new AsyncTraceCommand(
+                new AsyncTraceAnalyzer(),
+                new AsyncTraceReport()),
+
+            new SqlTraceCommand(
+                new SqlTraceAnalyzer(),
+                new SqlTraceReport()),
+
+            new TraceDumpAnalyzeCommand(
+                new CpuTraceAnalyzer(),             new CpuTraceReport(),
+                new AllocTraceAnalyzer(),           new AllocTraceReport(),
+                new GcTraceAnalyzer(),              new GcTraceReport(),
+                new ContentionTraceAnalyzer(),      new ContentionTraceReport(),
+                new ExceptionsTraceAnalyzer(),      new ExceptionsTraceReport(),
+                new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport(),
+                new JitTraceAnalyzer(),             new JitTraceReport(),
+                new HttpTraceAnalyzer(),            new HttpTraceReport(),
+                new AsyncTraceAnalyzer(),           new AsyncTraceReport(),
+                new SqlTraceAnalyzer(),             new SqlTraceReport(),
+                new TraceDumpCorrelationReport()),
 
             // ── targeted / interactive ─────────────────────────────────────────
             new TypeInstancesCommand(
