@@ -42,8 +42,15 @@ public sealed class SqlTraceCommand : ICommand
           PerfView:
             /Providers:"Microsoft.Data.SqlClient.EventSource,Microsoft-EntityFrameworkCore"
 
+        Query selection (three tiers, up to 170 unique patterns):
+          Tier 1 — top 100 query patterns by cumulative total time
+          Tier 2 — top 50 query patterns by worst single-execution time (surfaces one-off slow outliers)
+          Tier 3 — up to 20 additional unique patterns with real SQL text not already in tiers 1–2
+          All tiers are merged, deduplicated, and sorted: real SQL text first (total ↓, max ↓),
+          then (no SQL text) placeholders at the bottom.
+
         Options:
-          --top <N>            Top N queries / commands to show (default: 20)
+          --top <N>            Tier-1 row cap (default: 100; tier-2 = N/2; 0 = unlimited)
           --process <name>     Filter to a specific process name
           --slow-ms <ms>       Slow command threshold in ms (default: 500)
           -o, --output <file>  Write report to file (.html / .md / .txt / .json)
@@ -60,7 +67,7 @@ public sealed class SqlTraceCommand : ICommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         var     a             = CliArgs.Parse(args);
-        int     top           = a.GetInt("top", 20);
+        int     top           = a.GetInt("top", 100);
         double  slowMs        = a.GetInt("slow-ms", 500);
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");

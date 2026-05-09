@@ -82,46 +82,47 @@ public sealed class TraceDumpCorrelationReport
             ("Info",           info > 0     ? info.ToString()     : "—"),
         ]);
 
-        // Render each finding as a styled alert block
-        foreach (var f in findings)
-        {
-            var level = f.Severity switch
-            {
-                FindingSeverity.Critical => AlertLevel.Critical,
-                FindingSeverity.Warning  => AlertLevel.Warning,
-                _                        => AlertLevel.Info,
-            };
-
-            string sources = f.ContributingAreas.Length > 0
-                ? " [sources: " + string.Join(" + ", f.ContributingAreas) + "]"
-                : "";
-
-            sink.Alert(
-                level,
-                $"[{f.Category}] {f.Headline}  (score {f.Score}/100){sources}",
-                f.Detail,
-                f.Advice);
-        }
-
-        // ── Ranked summary table ──────────────────────────────────────────────
-        sink.Section("Ranked Summary", "correlation-ranked");
-
+        // ── Ranked findings table (replaces per-finding alert blocks) ─────────
         var rows = new List<string[]>(findings.Count);
         foreach (var f in findings)
         {
             string sev = f.Severity switch
             {
+                FindingSeverity.Critical => "🔴 Critical",
+                FindingSeverity.Warning  => "🟡 Warning",
+                _                        => "🔵 Info",
+            };
+            string sources = f.ContributingAreas.Length > 0
+                ? string.Join(" + ", f.ContributingAreas)
+                : "—";
+            rows.Add([sev, f.Score.ToString(), f.Category, f.Headline, sources]);
+        }
+
+        sink.Table(
+            ["Severity", "Score", "Category", "Finding", "Sources"],
+            rows,
+            caption: "Findings ranked by confidence-weighted score. Expand details below for root cause explanation and remediation advice.");
+
+        // ── Finding detail accordions ─────────────────────────────────────────
+        sink.Section("Finding Details", "correlation-details");
+        foreach (var f in findings)
+        {
+            string severity = f.Severity switch
+            {
                 FindingSeverity.Critical => "Critical",
                 FindingSeverity.Warning  => "Warning",
                 _                        => "Info",
             };
-            rows.Add([sev, f.Score.ToString(), f.Category, f.Headline]);
+            sink.BeginDetails($"[{severity}]  {f.Category}  —  {f.Headline}  (score {f.Score}/100)", open: false);
+            if (!string.IsNullOrWhiteSpace(f.Detail))
+                sink.Text(f.Detail);
+            if (!string.IsNullOrWhiteSpace(f.Advice))
+            {
+                sink.BlankLine();
+                sink.Text($"Action: {f.Advice}");
+            }
+            sink.EndDetails();
         }
-
-        sink.Table(
-            ["Severity", "Score", "Category", "Finding"],
-            rows,
-            caption: "Findings ranked by confidence-weighted score (highest = most actionable).");
 
         // ── Next steps ────────────────────────────────────────────────────────
         sink.Section("Recommended Next Steps", "next-steps");

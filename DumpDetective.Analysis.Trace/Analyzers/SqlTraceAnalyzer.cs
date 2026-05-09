@@ -25,7 +25,7 @@ namespace DumpDetective.Analysis.Trace.Analyzers;
 /// </summary>
 public sealed class SqlTraceAnalyzer
 {
-    public SqlTraceData Analyze(string tracePath, int top = 20,
+    public SqlTraceData Analyze(string tracePath, int top = 100,
                                 string? processFilter = null, double slowMs = 500)
     {
         try
@@ -41,7 +41,7 @@ public sealed class SqlTraceAnalyzer
         }
     }
 
-    public SqlTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+    public SqlTraceData Analyze(TraceLog trace, string traceFileName, int top = 100,
                                 string? processFilter = null, double slowMs = 500)
     {
         // Pending commands: correlation ID (or ThreadID) → start info
@@ -132,21 +132,36 @@ public sealed class SqlTraceAnalyzer
         double maxMs   = commands.Max(c => c.DurationMs);
         double avgMs   = totalMs / commands.Count;
         int    errors  = commands.Count(c => c.IsError);
-        var    slow    = commands.Where(c => c.DurationMs >= slowMs)
-                                 .OrderByDescending(c => c.DurationMs)
-                                 .Take(top)
+        var    slow    = ApplyLimit(commands.Where(c => c.DurationMs >= slowMs)
+                                 .OrderByDescending(c => c.DurationMs), top)
                                  .ToList();
 
-        var topQueries = queryAcc.Values
-            .OrderByDescending(q => q.TotalMs)
-            .Take(top)
+        // Three-tier query selection:
+        //   Tier 1 — top `top` (100) by cumulative total time
+        //   Tier 2 — top `top/2` (50) by worst single-execution time (surfaces one-off outliers)
+        //   Tier 3 — top 20 additional unique patterns not already captured by tiers 1+2
+        const int uniqueExtra = 20;
+        var byTotal  = queryAcc.Values.OrderByDescending(q => q.TotalMs).Take(top).ToHashSet();
+        var byMax    = queryAcc.Values.OrderByDescending(q => q.MaxMs).Take(Math.Max(1, top / 2)).ToHashSet();
+        var covered  = new HashSet<QueryAcc>(byTotal.Concat(byMax));
+        var byUnique = queryAcc.Values.Where(q => !covered.Contains(q)
+                                               && !q.Text.StartsWith("(no SQL text", StringComparison.Ordinal))
+                                      .OrderByDescending(q => q.TotalMs)
+                                      .Take(uniqueExtra);
+        // Final sort priority:
+        //   1. Real SQL text first (no-SQL-text placeholders sink to bottom)
+        //   2. Total time descending
+        //   3. Max single execution descending
+        var topQueries = covered.Concat(byUnique)
+            .OrderBy(q => q.Text.StartsWith("(no SQL text", StringComparison.Ordinal) ? 1 : 0)
+            .ThenByDescending(q => q.TotalMs)
+            .ThenByDescending(q => q.MaxMs)
             .Select(q => new SqlQuerySummary(q.Text, q.Count, q.TotalMs, q.MaxMs,
                                              q.Count > 0 ? q.TotalMs / q.Count : 0, q.Errors))
             .ToList();
 
-        var topDbs = dbAcc
-            .OrderByDescending(kv => kv.Value.TotalMs)
-            .Take(top)
+        var topDbs = ApplyLimit(dbAcc
+            .OrderByDescending(kv => kv.Value.TotalMs), top)
             .Select(kv => new SqlDbSummary(kv.Key, kv.Value.Count, kv.Value.TotalMs,
                                            kv.Value.Count > 0 ? kv.Value.TotalMs / kv.Value.Count : 0))
             .ToList();
@@ -169,9 +184,15 @@ public sealed class SqlTraceAnalyzer
             timeline = tl;
         }
 
+        // Format total as wall-clock-friendly string; the raw ms sum can easily exceed the
+        // trace duration because SQL commands run concurrently across many threads.
+        string totalFmt = totalMs >= 3_600_000 ? $"{totalMs / 3_600_000:F1} h"
+                        : totalMs >= 60_000     ? $"{totalMs / 60_000:F1} min"
+                        : totalMs >= 1_000      ? $"{totalMs / 1_000:F1} s"
+                        : $"{totalMs:F0} ms";
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {commands.Count:N0} commands  •  {totalMs:F0} ms total  •  {errors} errors";
+                      $"  |  {commands.Count:N0} commands  •  {totalFmt} total  •  {errors} errors";
 
         return new SqlTraceData(
             info, processFilter,
@@ -351,6 +372,17 @@ public sealed class SqlTraceAnalyzer
         if (sql.Length > 150) sql = sql[..150];
         return sql.Trim();
     }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Applies a row limit: <c>n &gt; 0</c> takes exactly <c>n</c> rows;
+    /// <c>n == 0</c> returns all rows (no limit).
+    /// </summary>
+    private static IEnumerable<T> ApplyLimit<T>(IEnumerable<T> source, int n)
+        => n > 0 ? source.Take(n) : source;
 
     // ─────────────────────────────────────────────────────────────────────────
     // Accumulator types (heap-allocated once per unique key)

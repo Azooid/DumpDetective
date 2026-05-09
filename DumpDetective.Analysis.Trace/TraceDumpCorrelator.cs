@@ -24,21 +24,28 @@ public static class TraceDumpCorrelator
     /// Evaluate all cross-source rules and return ranked findings.
     /// All parameters are nullable — missing data simply means that rule cannot fire.
     /// </summary>
+    /// <param name="retainedByType">
+    /// Optional map of type name → total retained bytes, computed from a pre-built BFS
+    /// index.  When provided, Rule 1 uses retained sizes instead of shallow sizes for
+    /// heap-dominance detection, giving a more accurate picture of how much memory each
+    /// type actually holds (inclusive of all reachable objects).
+    /// </param>
     public static IReadOnlyList<CorrelationFinding> Correlate(
         DumpSnapshot              snap,
-        AllocTraceData?           alloc     = null,
-        GcTraceData?              gc        = null,
-        ContentionTraceData?      contention= null,
-        ExceptionsTraceData?      exceptions= null,
-        ThreadPoolStarvationData? starvation= null,
-        HttpTraceData?            http      = null,
-        AsyncTraceData?           async_    = null,
-        SqlTraceData?             sql       = null,
-        CpuTraceData?             cpu       = null)
+        AllocTraceData?           alloc      = null,
+        GcTraceData?              gc         = null,
+        ContentionTraceData?      contention = null,
+        ExceptionsTraceData?      exceptions = null,
+        ThreadPoolStarvationData? starvation = null,
+        HttpTraceData?            http       = null,
+        AsyncTraceData?           async_     = null,
+        SqlTraceData?             sql        = null,
+        CpuTraceData?             cpu        = null,
+        IReadOnlyDictionary<string, long>? retainedByType = null)
     {
         var findings = new List<CorrelationFinding>(10);
 
-        CheckAllocConvergesWithHeapDominance(findings, alloc, snap);
+        CheckAllocConvergesWithHeapDominance(findings, alloc, snap, retainedByType);
         CheckAsyncBacklogConfirmsStarvation(findings, starvation, async_, snap);
         CheckExceptionFloodVsLiveExceptions(findings, exceptions, snap);
         CheckGcPauseVsLohFragmentation(findings, gc, snap);
@@ -61,7 +68,8 @@ public static class TraceDumpCorrelator
     private static void CheckAllocConvergesWithHeapDominance(
         List<CorrelationFinding> findings,
         AllocTraceData?          alloc,
-        DumpSnapshot             snap)
+        DumpSnapshot             snap,
+        IReadOnlyDictionary<string, long>? retainedByType)
     {
         if (alloc is null || alloc.TopTypes.Count == 0) return;
         if (snap.TopTypes.Count == 0) return;
@@ -78,9 +86,16 @@ public static class TraceDumpCorrelator
         {
             if (!traceTopNames.Contains(heapType.Name)) continue;
 
+            // Prefer BFS-computed retained size when available; it captures all reachable
+            // objects (not just the instances themselves), giving a stronger dominance signal.
+            long shallowBytes = heapType.TotalBytes;
+            bool hasRetained  = retainedByType?.TryGetValue(heapType.Name, out long retainedBytes) == true
+                                && retainedBytes > shallowBytes;
+            long effectiveBytes = hasRetained ? retainedByType![heapType.Name] : shallowBytes;
+
             // Determine how dominant this type is on the heap
             double heapSharePct = snap.TotalHeapBytes > 0
-                ? heapType.TotalBytes * 100.0 / snap.TotalHeapBytes
+                ? effectiveBytes * 100.0 / snap.TotalHeapBytes
                 : 0;
 
             if (heapSharePct < 5.0) break; // not dominant enough to be noteworthy
@@ -91,15 +106,20 @@ public static class TraceDumpCorrelator
                 if (string.Equals(alloc.TopTypes[i].TypeName, heapType.Name, StringComparison.OrdinalIgnoreCase))
                 { traceEntry = alloc.TopTypes[i]; break; }
 
+            // Build a human-readable size label: show both shallow and retained when they differ.
+            string sizeLabel = hasRetained
+                ? $"{FormatSize(shallowBytes)} shallow / {FormatSize(effectiveBytes)} retained"
+                : FormatSize(shallowBytes);
+
             int score = heapSharePct >= 30 ? 92 : heapSharePct >= 15 ? 80 : 68;
             findings.Add(new CorrelationFinding(
                 Severity:         heapSharePct >= 30 ? FindingSeverity.Critical : FindingSeverity.Warning,
                 Category:         "Allocation / Heap",
-                Headline:         $"Allocation hot type '{ShortName(heapType.Name)}' also dominates the heap ({heapSharePct:F1}% of heap bytes)",
+                Headline:         $"Allocation hot type '{ShortName(heapType.Name)}' also dominates the heap ({heapSharePct:F1}% of heap bytes{(hasRetained ? ", retained" : "")})",
                 Detail:
                     $"The trace shows '{heapType.Name}' as a top allocating type " +
                     (traceEntry is not null ? $"(~{FormatSize(traceEntry.EstimatedBytes)} sampled). " : ". ") +
-                    $"The dump taken at the same time shows this type holds {FormatSize(heapType.TotalBytes)} " +
+                    $"The dump taken at the same time shows this type holds {sizeLabel} " +
                     $"({heapSharePct:F1}% of {FormatSize(snap.TotalHeapBytes)} total heap) " +
                     $"in {heapType.Count:N0} instances. " +
                     "Convergence of both signals is a strong indicator of accumulation — either a genuine leak " +

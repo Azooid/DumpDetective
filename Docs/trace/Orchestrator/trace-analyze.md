@@ -5,7 +5,7 @@
 
 ## What it does
 
-Opens a `.nettrace` or `.etl` trace file **once** and runs all eight trace sub-analyzers sequentially in a single `TraceLog` parse pass, producing a single combined report with a cross-cutting **Trace Summary** dashboard at the top. More efficient than running each trace command individually because `TraceLog.OpenOrConvert` is called only once and all eight `Analyze(TraceLog, ...)` overloads process the already-loaded trace.
+Opens a `.nettrace` or `.etl` trace file **once** and runs all **12 trace sub-analyzers** sequentially in a single `TraceLog` parse pass, producing a single combined report with a cross-cutting **Trace Summary** dashboard at the top. More efficient than running each trace command individually because `TraceLog.OpenOrConvert` is called only once and all 12 `Analyze(TraceLog, ...)` overloads process the already-loaded trace.
 
 The report structure:
 
@@ -20,23 +20,36 @@ The report structure:
 ```
 TraceAnalyzeCommand.Run(args)
 │
-├─ TraceLog.OpenOrConvert(tracePath)      ← single open
+├─ TraceLog.OpenOrConvert(tracePath)          ← single open
 │
-├─ CpuTraceAnalyzer            .Analyze(trace, fileName, top, processFilter, filterSystem)
-├─ AllocTraceAnalyzer          .Analyze(trace, fileName, top, processFilter)
-├─ GcTraceAnalyzer             .Analyze(trace, fileName, top, processFilter)
-├─ ContentionTraceAnalyzer     .Analyze(trace, fileName, top, processFilter)
-├─ ExceptionsTraceAnalyzer     .Analyze(trace, fileName, top, processFilter)
-├─ ThreadPoolStarvationAnalyzer.Analyze(trace, fileName, top)
-├─ JitTraceAnalyzer            .Analyze(trace, fileName, top, processFilter)
-├─ HttpTraceAnalyzer           .Analyze(trace, fileName, top, processFilter, slowMs)
+├─ [CPU & Allocation]
+│   ├─ CpuTraceAnalyzer            .Analyze(trace, fileName, top, processFilter, filterSystem)
+│   └─ AllocTraceAnalyzer          .Analyze(trace, fileName, top, processFilter)
 │
-├─ RenderTraceSummary(...)      ← cross-cutting dashboard
+├─ [GC, Exceptions & Locks]
+│   ├─ GcTraceAnalyzer             .Analyze(trace, fileName, top, processFilter)
+│   ├─ ExceptionsTraceAnalyzer     .Analyze(trace, fileName, top, processFilter)
+│   └─ ContentionTraceAnalyzer     .Analyze(trace, fileName, top, processFilter)
+│
+├─ [Threads & Concurrency]
+│   ├─ ThreadPoolStarvationAnalyzer.Analyze(trace, fileName, top)
+│   ├─ AsyncTraceAnalyzer          .Analyze(trace, fileName, top, processFilter)
+│   └─ ContextSwitchTraceAnalyzer  .Analyze(trace, fileName, top, processFilter)
+│
+├─ [JIT & HTTP]
+│   ├─ JitTraceAnalyzer            .Analyze(trace, fileName, top, processFilter)
+│   └─ HttpTraceAnalyzer           .Analyze(trace, fileName, top, processFilter, slowMs)
+│
+├─ [SQL & Serialization]
+│   ├─ SqlTraceAnalyzer            .Analyze(trace, fileName, top, processFilter, slowMs)
+│   └─ JsonSerializationTraceAnalyzer.Analyze(trace, fileName, top, processFilter)
+│
+├─ RenderTraceSummary(...)          ← cross-cutting dashboard
 ├─ RenderDiagnosticInterpretation(...)
-└─ Replay all 8 sub-reports → combined IRenderSink
+└─ Replay all 12 sub-reports → combined IRenderSink
 ```
 
-All eight analyzers operate on the same in-memory `TraceLog` — no re-parsing.
+All 12 analyzers operate on the same in-memory `TraceLog` — no re-parsing.
 
 ---
 
@@ -44,14 +57,20 @@ All eight analyzers operate on the same in-memory `TraceLog` — no re-parsing.
 
 | Group | Command | Event type consumed |
 |---|---|---|
-| CPU / Allocation | `cpu-trace` | `SampledProfile` / `PerfInfo/Sample` |
-| CPU / Allocation | `alloc-trace` | `GCAllocationTick` |
-| GC / Exceptions / Locks | `gc-trace` | `GC/Start`, `GC/Stop`, `GCHeapStats` |
-| GC / Exceptions / Locks | `exceptions-trace` | `Exception/Start`, `ExceptionThrown` |
-| GC / Exceptions / Locks | `contention-trace` | `Contention/Start`, `Contention/Stop` |
-| Threads / Concurrency | `threadpool-starvation` | `WaitHandleWaitStart`, `Adjustment` |
-| JIT / HTTP | `jit-trace` | `Method/JittingStarted`, `Method/LoadVerbose` |
-| JIT / HTTP | `http-trace` | `Microsoft-AspNetCore-Hosting`, `Microsoft-Windows-ASPNET` |
+| CPU & Allocation | `cpu-trace` | `SampledProfile` / `PerfInfo/Sample` |
+| CPU & Allocation | `alloc-trace` | `GCAllocationTick` |
+| GC, Exceptions & Locks | `gc-trace` | `GC/Start`, `GC/Stop`, `GCHeapStats` |
+| GC, Exceptions & Locks | `exceptions-trace` | `Exception/Start`, `ExceptionThrown` |
+| GC, Exceptions & Locks | `contention-trace` | `Contention/Start`, `Contention/Stop` |
+| Threads & Concurrency | `thread-pool-starvation` | `WaitHandleWaitStart`, `Adjustment` |
+| Threads & Concurrency | `async-trace` | TPL `Task/Schedule`, `Task/Execute`, `Task/Completed` |
+| Threads & Concurrency | `context-switch-trace` | Kernel `CSwitch` (ETL/PerfView only) |
+| JIT & HTTP | `jit-trace` | `Method/JittingStarted`, `Method/LoadVerbose` |
+| JIT & HTTP | `http-trace` | `Microsoft-AspNetCore-Hosting`, `Microsoft-Windows-ASPNET` |
+| SQL & Serialization | `sql-trace` | `Microsoft-AdoNet-SystemData`, `Microsoft.Data.SqlClient.EventSource` |
+| SQL & Serialization | `json-trace` | `GCAllocationTick` (JSON types) + `SampledProfile` (JSON frames) |
+
+> **Note:** `context-switch-trace` requires kernel CSwitch events — only available in `.etl` traces collected with PerfView or xperf. It produces no data when running against `.nettrace` files.
 
 ---
 
@@ -60,30 +79,32 @@ All eight analyzers operate on the same in-memory `TraceLog` — no re-parsing.
 | Option | Description |
 |---|---|
 | `<trace>` | Path to `.nettrace` or `.etl` file |
-| `-n, --top <n>` | Top N items per sub-report (default: 20) |
+| `--top <n>` | Top N items per sub-report (default: 100 for SQL; 20 for others) |
 | `--process <name>` | Filter all sub-analyzers to a specific process name |
 | `--show-system` | Include system/kernel frames in CPU analysis (default: hidden) |
-| `--slow-ms <ms>` | HTTP requests slower than this threshold are flagged (default: 1000 ms) |
+| `--slow-ms <ms>` | Slow-command threshold for HTTP and SQL (default: 1000 ms HTTP / 500 ms SQL) |
 | `-o, --output <file>` | Output path (`.html`, `.md`, `.txt`, `.json`) |
 
 ---
 
 ## Collecting a compatible trace
 
-To get data for all 8 sub-analyzers in a single collection:
+### All 12 analyzers — PerfView (ETL)
+
+PerfView ETL traces include kernel CSwitch events required by `context-switch-trace`:
 
 ```bash
-# dotnet-trace — CPU + alloc + GC + exceptions + contention + threadpool + JIT + HTTP (ASP.NET Core)
+PerfView.exe /KernelEvents:Default /ClrEvents:GC,Binder,Contention,Exception,Threading,JITSymbols,Type,GCHeapAndTypeNames,Stack,Default /JITInlining /Providers:"Microsoft-AspNetCore-Hosting,Microsoft.Data.SqlClient.EventSource,System.Data.SqlClient.EventSource,Microsoft-EntityFrameworkCore" /NoGui collect
+```
+
+### All except context-switch — dotnet-trace (.nettrace)
+
+```bash
 dotnet trace collect --profile cpu-sampling \
-  --providers 'Microsoft-Windows-DotNETRuntime:0xCC14:5,Microsoft-AspNetCore-Hosting:0xFFFF:5' \
-  -p <pid>
-
-# PerfView — all events including HTTP network capture
-PerfView.exe /ClrEvents:GC,Binder,Contention,Exception,Threading,JITSymbols,Type,GCHeapSurvivalAndMovement,GCHeapAndTypeNames,Stack,ThreadTransfer,Codesymbols,Compilation,JitTracing,Default /JITInlining /NetworkCapture /NoGui collect
-
-# dotnet-trace — minimum for all 8 analyzers
-dotnet trace collect \
-  --providers 'Microsoft-Windows-DotNETRuntime:0xCC14:5,Microsoft-DotNETRuntime-ThreadPool:0xFF:5,Microsoft-AspNetCore-Hosting:0xFFFF:5' \
+  --providers 'Microsoft-Windows-DotNETRuntime:0xCC54:5,\
+               Microsoft-AspNetCore-Hosting:0xFFFF:5,\
+               Microsoft.Data.SqlClient.EventSource:0xFF:4,\
+               System.Data.SqlClient.EventSource:0xFF:4' \
   -p <pid>
 ```
 

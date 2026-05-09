@@ -26,60 +26,69 @@ public sealed class TraceAnalyzeCommand : ICommand
 {
     private static readonly (string Heading, string[] Names)[] s_traceGroups =
     [
-        ("CPU / Allocation",          ["cpu-trace", "alloc-trace"]),
-        ("GC / Exceptions / Locks",   ["gc-trace", "exceptions-trace", "contention-trace"]),
-        ("Threads / Concurrency",     ["thread-pool-starvation", "async-trace"]),
-        ("JIT / HTTP / SQL",          ["jit-trace", "http-trace", "sql-trace"]),
+        ("CPU & Allocation",         ["cpu-trace", "alloc-trace"]),
+        ("GC, Exceptions & Locks",   ["gc-trace", "exceptions-trace", "contention-trace"]),
+        ("Threads & Concurrency",    ["thread-pool-starvation", "async-trace", "context-switch-trace"]),
+        ("JIT & HTTP",               ["jit-trace", "http-trace"]),
+        ("SQL & Serialization",      ["sql-trace", "json-trace"]),
     ];
 
-    private readonly CpuTraceAnalyzer              _cpu;
-    private readonly AllocTraceAnalyzer            _alloc;
-    private readonly GcTraceAnalyzer               _gc;
-    private readonly ContentionTraceAnalyzer       _contention;
-    private readonly ExceptionsTraceAnalyzer       _exceptions;
-    private readonly ThreadPoolStarvationAnalyzer  _starvation;
-    private readonly JitTraceAnalyzer              _jit;
-    private readonly HttpTraceAnalyzer             _http;
-    private readonly AsyncTraceAnalyzer            _async;
-    private readonly SqlTraceAnalyzer              _sql;
+    private readonly CpuTraceAnalyzer                   _cpu;
+    private readonly AllocTraceAnalyzer                 _alloc;
+    private readonly GcTraceAnalyzer                    _gc;
+    private readonly ContentionTraceAnalyzer            _contention;
+    private readonly ExceptionsTraceAnalyzer            _exceptions;
+    private readonly ThreadPoolStarvationAnalyzer       _starvation;
+    private readonly JitTraceAnalyzer                   _jit;
+    private readonly HttpTraceAnalyzer                  _http;
+    private readonly AsyncTraceAnalyzer                 _async;
+    private readonly SqlTraceAnalyzer                   _sql;
+    private readonly JsonSerializationTraceAnalyzer     _json;
+    private readonly ContextSwitchTraceAnalyzer         _cswitch;
 
-    private readonly CpuTraceReport              _cpuReport;
-    private readonly AllocTraceReport            _allocReport;
-    private readonly GcTraceReport               _gcReport;
-    private readonly ContentionTraceReport       _contentionReport;
-    private readonly ExceptionsTraceReport       _exceptionsReport;
-    private readonly ThreadPoolStarvationReport  _starvationReport;
-    private readonly JitTraceReport              _jitReport;
-    private readonly HttpTraceReport             _httpReport;
-    private readonly AsyncTraceReport            _asyncReport;
-    private readonly SqlTraceReport              _sqlReport;
+    private readonly CpuTraceReport                     _cpuReport;
+    private readonly AllocTraceReport                   _allocReport;
+    private readonly GcTraceReport                      _gcReport;
+    private readonly ContentionTraceReport              _contentionReport;
+    private readonly ExceptionsTraceReport              _exceptionsReport;
+    private readonly ThreadPoolStarvationReport         _starvationReport;
+    private readonly JitTraceReport                     _jitReport;
+    private readonly HttpTraceReport                    _httpReport;
+    private readonly AsyncTraceReport                   _asyncReport;
+    private readonly SqlTraceReport                     _sqlReport;
+    private readonly JsonSerializationTraceReport       _jsonReport;
+    private readonly ContextSwitchTraceReport           _cswitchReport;
 
     public TraceAnalyzeCommand(
-        CpuTraceAnalyzer             cpu,             CpuTraceReport              cpuReport,
-        AllocTraceAnalyzer           alloc,           AllocTraceReport            allocReport,
-        GcTraceAnalyzer              gc,              GcTraceReport               gcReport,
-        ContentionTraceAnalyzer      contention,      ContentionTraceReport       contentionReport,
-        ExceptionsTraceAnalyzer      exceptions,      ExceptionsTraceReport       exceptionsReport,
-        ThreadPoolStarvationAnalyzer starvation,      ThreadPoolStarvationReport  starvationReport,
-        JitTraceAnalyzer             jit,             JitTraceReport              jitReport,
-        HttpTraceAnalyzer            http,            HttpTraceReport             httpReport,
-        AsyncTraceAnalyzer           async_,          AsyncTraceReport            asyncReport,
-        SqlTraceAnalyzer             sql,             SqlTraceReport              sqlReport)
+        CpuTraceAnalyzer                 cpu,        CpuTraceReport                   cpuReport,
+        AllocTraceAnalyzer               alloc,      AllocTraceReport                 allocReport,
+        GcTraceAnalyzer                  gc,         GcTraceReport                    gcReport,
+        ContentionTraceAnalyzer          contention, ContentionTraceReport             contentionReport,
+        ExceptionsTraceAnalyzer          exceptions, ExceptionsTraceReport             exceptionsReport,
+        ThreadPoolStarvationAnalyzer     starvation, ThreadPoolStarvationReport        starvationReport,
+        JitTraceAnalyzer                 jit,        JitTraceReport                   jitReport,
+        HttpTraceAnalyzer                http,       HttpTraceReport                  httpReport,
+        AsyncTraceAnalyzer               async_,     AsyncTraceReport                 asyncReport,
+        SqlTraceAnalyzer                 sql,        SqlTraceReport                   sqlReport,
+        JsonSerializationTraceAnalyzer   json,       JsonSerializationTraceReport     jsonReport,
+        ContextSwitchTraceAnalyzer       cswitch,    ContextSwitchTraceReport         cswitchReport)
     {
-        _cpu = cpu;           _cpuReport = cpuReport;
-        _alloc = alloc;       _allocReport = allocReport;
-        _gc = gc;             _gcReport = gcReport;
+        _cpu        = cpu;        _cpuReport        = cpuReport;
+        _alloc      = alloc;      _allocReport      = allocReport;
+        _gc         = gc;         _gcReport         = gcReport;
         _contention = contention; _contentionReport = contentionReport;
         _exceptions = exceptions; _exceptionsReport = exceptionsReport;
         _starvation = starvation; _starvationReport = starvationReport;
-        _jit = jit;           _jitReport = jitReport;
-        _http = http;         _httpReport = httpReport;
-        _async = async_;      _asyncReport = asyncReport;
-        _sql = sql;           _sqlReport = sqlReport;
+        _jit        = jit;        _jitReport        = jitReport;
+        _http       = http;       _httpReport       = httpReport;
+        _async      = async_;     _asyncReport      = asyncReport;
+        _sql        = sql;        _sqlReport        = sqlReport;
+        _json       = json;       _jsonReport       = jsonReport;
+        _cswitch    = cswitch;    _cswitchReport    = cswitchReport;
     }
 
     public string Name               => "trace-analyze";
-    public string Description        => "Full trace analysis — opens trace once and runs all sub-analyzers (cpu, alloc, gc, contention, exceptions, thread-pool-starvation, jit, http, async, sql).";
+    public string Description        => "Full trace analysis — opens trace once and runs all sub-analyzers (cpu, alloc, gc, contention, exceptions, thread-pool-starvation, jit, http, async, sql, json).";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
 
     private const string Help = """
@@ -120,7 +129,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         if (CommandBase.TryHelp(args, Help)) return 0;
 
         var     a             = CliArgs.Parse(args);
-        int     top           = a.GetInt("top", 20);
+        int     top           = a.GetInt("top", 100);
         double  slowMs        = a.GetInt("slow-ms", 1000);
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
@@ -161,16 +170,18 @@ public sealed class TraceAnalyzeCommand : ICommand
 
             // Hold data objects for all analyzers — used by the summary dashboard,
             // Diagnostic Interpretation, and the Correlation Analysis sections.
-            CmdData.CpuTraceData?              cpuData        = null;
-            CmdData.AllocTraceData?            allocData      = null;
-            CmdData.GcTraceData?               gcData         = null;
-            CmdData.ContentionTraceData?       contentionData = null;
-            CmdData.ExceptionsTraceData?       exceptionsData = null;
-            CmdData.ThreadPoolStarvationData?  starvationData = null;
-            CmdData.JitTraceData?              jitData        = null;
-            CmdData.HttpTraceData?             httpData       = null;
-            CmdData.AsyncTraceData?            asyncData      = null;
-            CmdData.SqlTraceData?              sqlData        = null;
+            CmdData.CpuTraceData?                          cpuData        = null;
+            CmdData.AllocTraceData?                        allocData      = null;
+            CmdData.GcTraceData?                           gcData         = null;
+            CmdData.ContentionTraceData?                   contentionData = null;
+            CmdData.ExceptionsTraceData?                   exceptionsData = null;
+            CmdData.ThreadPoolStarvationData?              starvationData = null;
+            CmdData.JitTraceData?                          jitData        = null;
+            CmdData.HttpTraceData?                         httpData       = null;
+            CmdData.AsyncTraceData?                        asyncData      = null;
+            CmdData.SqlTraceData?                          sqlData        = null;
+            CmdData.JsonSerializationTraceData?            jsonData       = null;
+            CmdData.ContextSwitchTraceData?                cswitchData    = null;
 
             sink.Header("Trace Analysis",
                 $"File: {traceFileName}" +
@@ -184,7 +195,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 cpuData = _cpu.Analyze(trace!, traceFileName, top, processFilter, filterSystem);
                 _cpuReport.Render(cpuData, cap, top);
                 captured["cpu-trace"] = cap.GetDoc();
-            });
+            }, () => cpuData?.TraceInfo);
             RunAnalyzer("alloc-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -192,7 +203,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 allocData = _alloc.Analyze(trace!, traceFileName, top, processFilter);
                 _allocReport.Render(allocData, cap, top);
                 captured["alloc-trace"] = cap.GetDoc();
-            });
+            }, () => allocData?.TraceInfo);
             RunAnalyzer("gc-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -200,7 +211,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 gcData = _gc.Analyze(trace!, traceFileName, top, processFilter);
                 _gcReport.Render(gcData, cap, top);
                 captured["gc-trace"] = cap.GetDoc();
-            });
+            }, () => gcData?.TraceInfo);
             RunAnalyzer("contention-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -208,7 +219,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 contentionData = _contention.Analyze(trace!, traceFileName, top, processFilter);
                 _contentionReport.Render(contentionData, cap, top);
                 captured["contention-trace"] = cap.GetDoc();
-            });
+            }, () => contentionData?.TraceInfo);
             RunAnalyzer("exceptions-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -216,7 +227,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 exceptionsData = _exceptions.Analyze(trace!, traceFileName, top, processFilter);
                 _exceptionsReport.Render(exceptionsData, cap, top);
                 captured["exceptions-trace"] = cap.GetDoc();
-            });
+            }, () => exceptionsData?.TraceInfo);
             RunAnalyzer("thread-pool-starvation", () =>
             {
                 var cap = new CaptureSink();
@@ -224,7 +235,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 starvationData = _starvation.Analyze(trace!, traceFileName, top);
                 _starvationReport.Render(starvationData, cap, top);
                 captured["thread-pool-starvation"] = cap.GetDoc();
-            });
+            }, () => starvationData?.TraceInfo);
             RunAnalyzer("jit-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -232,7 +243,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 jitData = _jit.Analyze(trace!, traceFileName, top, processFilter);
                 _jitReport.Render(jitData, cap, top);
                 captured["jit-trace"] = cap.GetDoc();
-            });
+            }, () => jitData?.TraceInfo);
             RunAnalyzer("http-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -240,7 +251,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 httpData = _http.Analyze(trace!, traceFileName, top, processFilter, slowMs);
                 _httpReport.Render(httpData, cap, top);
                 captured["http-trace"] = cap.GetDoc();
-            });
+            }, () => httpData?.TraceInfo);
             RunAnalyzer("async-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -248,7 +259,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 asyncData = _async.Analyze(trace!, traceFileName, top, processFilter);
                 _asyncReport.Render(asyncData, cap, top);
                 captured["async-trace"] = cap.GetDoc();
-            });
+            }, () => asyncData?.TraceInfo);
             RunAnalyzer("sql-trace", () =>
             {
                 var cap = new CaptureSink();
@@ -256,7 +267,23 @@ public sealed class TraceAnalyzeCommand : ICommand
                 sqlData = _sql.Analyze(trace!, traceFileName, top, processFilter, slowMs);
                 _sqlReport.Render(sqlData, cap, top);
                 captured["sql-trace"] = cap.GetDoc();
-            });
+            }, () => sqlData?.TraceInfo);
+            RunAnalyzer("json-trace", () =>
+            {
+                var cap = new CaptureSink();
+                cap.Header("JSON Serialization", traceFileName, navLevel: 3, commandName: "json-trace");
+                jsonData = _json.Analyze(trace!, traceFileName, top, processFilter);
+                _jsonReport.Render(jsonData, cap, top);
+                captured["json-trace"] = cap.GetDoc();
+            }, () => jsonData?.TraceInfo);
+            RunAnalyzer("context-switch-trace", () =>
+            {
+                var cap = new CaptureSink();
+                cap.Header("Context Switch", traceFileName, navLevel: 3, commandName: "context-switch-trace");
+                cswitchData = _cswitch.Analyze(trace!, traceFileName, top, processFilter);
+                _cswitchReport.Render(cswitchData, cap, top);
+                captured["context-switch-trace"] = cap.GetDoc();
+            }, () => cswitchData?.TraceInfo);
 
             // ── Trace Summary Dashboard ────────────────────────────────────────
             // Rendered FIRST so the reader gets a cross-cutting health overview
@@ -317,17 +344,32 @@ public sealed class TraceAnalyzeCommand : ICommand
         }
     }
 
-    private static void RunAnalyzer(string name, Action run)
+    private static void RunAnalyzer(string name, Action run, Func<string?>? info = null)
     {
         try
         {
             CommandBase.RunStatus($"Running {name}...", _ => run());
-            AnsiConsole.MarkupLine($"  [green]✓[/] {name}");
+            string stats = SummaryStats(info?.Invoke());
+            if (stats.Length > 0)
+                AnsiConsole.MarkupLine($"  [green]✓[/] {name}  [dim]{Markup.Escape(stats)}[/]");
+            else
+                AnsiConsole.MarkupLine($"  [green]✓[/] {name}");
         }
         catch (Exception ex)
         {
             AnsiConsole.MarkupLine($"  [yellow]⚠[/] {name} failed: {Markup.Escape(ex.Message)}");
         }
+    }
+
+    /// <summary>
+    /// Strips the filename/process prefix from a TraceInfo string — takes the text
+    /// after the last "  |  " separator so only the stats portion is shown.
+    /// </summary>
+    private static string SummaryStats(string? info)
+    {
+        if (info is null) return "";
+        int idx = info.LastIndexOf("  |  ", StringComparison.Ordinal);
+        return idx >= 0 ? info[(idx + 5)..] : info;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

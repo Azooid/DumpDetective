@@ -167,16 +167,18 @@ public static class CommandRegistry
                 new AllocTraceReport()),
 
             new TraceAnalyzeCommand(
-                new CpuTraceAnalyzer(),             new CpuTraceReport(),
-                new AllocTraceAnalyzer(),           new AllocTraceReport(),
-                new GcTraceAnalyzer(),              new GcTraceReport(),
-                new ContentionTraceAnalyzer(),      new ContentionTraceReport(),
-                new ExceptionsTraceAnalyzer(),      new ExceptionsTraceReport(),
-                new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport(),
-                new JitTraceAnalyzer(),             new JitTraceReport(),
-                new HttpTraceAnalyzer(),            new HttpTraceReport(),
-                new AsyncTraceAnalyzer(),           new AsyncTraceReport(),
-                new SqlTraceAnalyzer(),             new SqlTraceReport()),
+                new CpuTraceAnalyzer(),                 new CpuTraceReport(),
+                new AllocTraceAnalyzer(),               new AllocTraceReport(),
+                new GcTraceAnalyzer(),                  new GcTraceReport(),
+                new ContentionTraceAnalyzer(),          new ContentionTraceReport(),
+                new ExceptionsTraceAnalyzer(),          new ExceptionsTraceReport(),
+                new ThreadPoolStarvationAnalyzer(),     new ThreadPoolStarvationReport(),
+                new JitTraceAnalyzer(),                 new JitTraceReport(),
+                new HttpTraceAnalyzer(),                new HttpTraceReport(),
+                new AsyncTraceAnalyzer(),               new AsyncTraceReport(),
+                new SqlTraceAnalyzer(),                 new SqlTraceReport(),
+                new JsonSerializationTraceAnalyzer(),   new JsonSerializationTraceReport(),
+                new ContextSwitchTraceAnalyzer(),       new ContextSwitchTraceReport()),
 
             new JitTraceCommand(
                 new JitTraceAnalyzer(),
@@ -194,17 +196,27 @@ public static class CommandRegistry
                 new SqlTraceAnalyzer(),
                 new SqlTraceReport()),
 
+            new JsonSerializationTraceCommand(
+                new JsonSerializationTraceAnalyzer(),
+                new JsonSerializationTraceReport()),
+
+            new ContextSwitchTraceCommand(
+                new ContextSwitchTraceAnalyzer(),
+                new ContextSwitchTraceReport()),
+
             new TraceDumpAnalyzeCommand(
-                new CpuTraceAnalyzer(),             new CpuTraceReport(),
-                new AllocTraceAnalyzer(),           new AllocTraceReport(),
-                new GcTraceAnalyzer(),              new GcTraceReport(),
-                new ContentionTraceAnalyzer(),      new ContentionTraceReport(),
-                new ExceptionsTraceAnalyzer(),      new ExceptionsTraceReport(),
-                new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport(),
-                new JitTraceAnalyzer(),             new JitTraceReport(),
-                new HttpTraceAnalyzer(),            new HttpTraceReport(),
-                new AsyncTraceAnalyzer(),           new AsyncTraceReport(),
-                new SqlTraceAnalyzer(),             new SqlTraceReport(),
+                new CpuTraceAnalyzer(),                 new CpuTraceReport(),
+                new AllocTraceAnalyzer(),               new AllocTraceReport(),
+                new GcTraceAnalyzer(),                  new GcTraceReport(),
+                new ContentionTraceAnalyzer(),          new ContentionTraceReport(),
+                new ExceptionsTraceAnalyzer(),          new ExceptionsTraceReport(),
+                new ThreadPoolStarvationAnalyzer(),     new ThreadPoolStarvationReport(),
+                new JitTraceAnalyzer(),                 new JitTraceReport(),
+                new HttpTraceAnalyzer(),                new HttpTraceReport(),
+                new AsyncTraceAnalyzer(),               new AsyncTraceReport(),
+                new SqlTraceAnalyzer(),                 new SqlTraceReport(),
+                new JsonSerializationTraceAnalyzer(),   new JsonSerializationTraceReport(),
+                new ContextSwitchTraceAnalyzer(),       new ContextSwitchTraceReport(),
                 new TraceDumpCorrelationReport()),
 
             // ── targeted / interactive ─────────────────────────────────────────
