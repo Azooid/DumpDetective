@@ -97,4 +97,47 @@ public enum TraceEventKind
     ProcessStart,               // Windows Kernel/Process/Start · Microsoft-Windows-Kernel-Process/ProcessStart
     ProcessStop,                // Windows Kernel/Process/Stop
     ThreadContextSwitch,        // Windows Kernel/Thread/CSwitch
+
+    // ── File I/O (ETL only — Microsoft-Windows-Kernel-File) ──────────────────
+    FileRead,                   // FileIO/Read
+    FileWrite,                  // FileIO/Write
+    FileCreate,                 // FileIO/Create
+    FileClose,                  // FileIO/Close
+    FileFlush,                  // FileIO/Flush
+
+    // ── Sockets — System.Net.Sockets EventSource (.NET 5+) ───────────────────
+    SocketConnectStart,
+    SocketConnectStop,
+    SocketConnectFailed,
+    SocketSendStart,
+    SocketSendStop,
+    SocketReceiveStart,
+    SocketReceiveStop,
+
+    // ── DNS — System.Net.NameResolution EventSource ───────────────────────────
+    DnsResolutionStart,
+    DnsResolutionStop,
+    DnsResolutionFailed,
+
+    // ── Kestrel — Microsoft-AspNetCore-Server-Kestrel ─────────────────────────
+    KestrelConnectionStart,
+    KestrelConnectionStop,
+    KestrelConnectionRejected,
+    KestrelRequestError,
+    KestrelConnectionQueueStart,
+    KestrelConnectionQueueStop,
+
+    // ── GC Handles — keyword 0x4000 ──────────────────────────────────────────
+    GCHandleCreated,            // GCCreateConcurrentThread / GCHandle/Created
+    GCHandleDestroyed,          // GCHandle/Destroyed
+
+    // ── ASP.NET Core pipeline — Microsoft.AspNetCore.* ───────────────────────
+    AspNetCoreRouteMatched,
+    AspNetCoreAuthStart,
+    AspNetCoreAuthStop,
+    AspNetCoreAuthFailed,
+
+    // ── OpenTelemetry / DiagnosticSource Activity ─────────────────────────────
+    ActivityStart,              // System.Diagnostics.DiagnosticSource/Activity1/Start
+    ActivityStop,               // System.Diagnostics.DiagnosticSource/Activity1/Stop
 }

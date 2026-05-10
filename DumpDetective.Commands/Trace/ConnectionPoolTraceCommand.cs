@@ -1,0 +1,84 @@
+using DumpDetective.Analysis.Trace.Analyzers;
+using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Utilities;
+using DumpDetective.Reporting;
+using DumpDetective.Reporting.Reports;
+using DumpDetective.Reporting.Sinks;
+using Spectre.Console;
+
+namespace DumpDetective.Commands.Trace;
+
+public sealed class ConnectionPoolTraceCommand : ICommand
+{
+    private readonly ConnectionPoolTraceAnalyzer _analyzer;
+    private readonly ConnectionPoolTraceReport   _report;
+
+    public ConnectionPoolTraceCommand(ConnectionPoolTraceAnalyzer analyzer, ConnectionPoolTraceReport report)
+    {
+        _analyzer = analyzer;
+        _report   = report;
+    }
+
+    public string Name               => "connection-pool-trace";
+    public string Description        => "Database connection pool analysis — open/close tracking, leak detection, and peak concurrency from SqlClient events.";
+    public bool   IncludeInFullAnalyze => false;
+
+    private const string Help = """
+        Usage: DumpDetective connection-pool-trace <trace-file> [options]
+
+        Tracks SqlConnection Open/Close events to detect:
+          • Leaked connections (opens without matching close)
+          • Peak concurrent connections
+          • Per-database connection churn
+
+        Collect with:
+          dotnet-trace: --providers 'Microsoft.Data.SqlClient.EventSource:0xFF:5,System.Data.SqlClient.EventSource:0xFF:5'
+
+        Options:
+          --top <N>            Max databases to show (default: 20)
+          --process <name>     Filter to process name
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
+          -h, --help           Show this help
+        """;
+
+    public int Run(string[] args)
+    {
+        if (CommandBase.TryHelp(args, Help)) return 0;
+
+        var     a             = CliArgs.Parse(args);
+        int     top           = a.GetInt("top", 20);
+        string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
+        string? processFilter = a.GetOption("process");
+
+        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
+        try
+        {
+            if (!CommandBase.SuppressVerbose)
+                AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
+
+            Core.Models.CommandData.ConnectionPoolTraceData? data = null;
+            CommandBase.RunStatus("Parsing connection pool events...", _ =>
+                data = _analyzer.Analyze(tracePath!, top, processFilter));
+
+            sink.Header("Connection Pool Trace", Path.GetFileName(tracePath!), navLevel: 2, commandName: "connection-pool-trace");
+            _report.Render(data!, sink, top);
+            GcTraceCommand.PrintOutputPath(outputPaths);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+    }
+
+    public void Render(DumpContext ctx, IRenderSink sink) =>
+        sink.Alert(AlertLevel.Warning,
+            "connection-pool-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
+}

@@ -1,0 +1,84 @@
+using DumpDetective.Analysis.Trace.Analyzers;
+using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Utilities;
+using DumpDetective.Reporting;
+using DumpDetective.Reporting.Reports;
+using DumpDetective.Reporting.Sinks;
+using Spectre.Console;
+
+namespace DumpDetective.Commands.Trace;
+
+public sealed class DnsTraceCommand : ICommand
+{
+    private readonly DnsTraceAnalyzer _analyzer;
+    private readonly DnsTraceReport   _report;
+
+    public DnsTraceCommand(DnsTraceAnalyzer analyzer, DnsTraceReport report)
+    {
+        _analyzer = analyzer;
+        _report   = report;
+    }
+
+    public string Name               => "dns-trace";
+    public string Description        => "DNS resolution analysis — measures lookup latency, failure storms, and top hostnames from System.Net.NameResolution events.";
+    public bool   IncludeInFullAnalyze => false;
+
+    private const string Help = """
+        Usage: DumpDetective dns-trace <trace-file> [options]
+
+        Analyzes System.Net.NameResolution EventSource events to detect:
+          • DNS resolution failures
+          • Slow lookups (>100 ms)
+          • Repeatedly resolved hostnames (cache miss patterns)
+
+        Collect with:
+          dotnet-trace: --providers 'System.Net.NameResolution:0xFF:5'
+
+        Options:
+          --top <N>            Max hostnames to show (default: 20)
+          --process <name>     Filter to process name
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
+          -h, --help           Show this help
+        """;
+
+    public int Run(string[] args)
+    {
+        if (CommandBase.TryHelp(args, Help)) return 0;
+
+        var     a             = CliArgs.Parse(args);
+        int     top           = a.GetInt("top", 20);
+        string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
+        string? processFilter = a.GetOption("process");
+
+        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
+        try
+        {
+            if (!CommandBase.SuppressVerbose)
+                AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
+
+            Core.Models.CommandData.DnsTraceData? data = null;
+            CommandBase.RunStatus("Parsing DNS resolution events...", _ =>
+                data = _analyzer.Analyze(tracePath!, top, processFilter));
+
+            sink.Header("DNS Trace", Path.GetFileName(tracePath!), navLevel: 2, commandName: "dns-trace");
+            _report.Render(data!, sink, top);
+            GcTraceCommand.PrintOutputPath(outputPaths);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+    }
+
+    public void Render(DumpContext ctx, IRenderSink sink) =>
+        sink.Alert(AlertLevel.Warning,
+            "dns-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
+}

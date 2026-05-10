@@ -56,6 +56,15 @@ public sealed class HttpTraceReport
             ("P99 latency", Math.Min(data.P99RequestMs, 5000), "ms"),
         ], barMax: 5000.0);
 
+        // If requests were captured but all latencies are zero, the start/stop events
+        // could not be correlated (e.g. IIS classic with ASP.NET Core provider, or
+        // provider logged only Kestrel stop events without matching starts).
+        if (data.TotalRequests > 0 && data.MaxRequestMs < 0.1)
+            sink.Alert(AlertLevel.Info,
+                $"{data.TotalRequests:N0} requests found but all latencies are 0.0 ms — start/stop event correlation failed.",
+                "This typically means only one side of the request event pair (Start or Stop) was captured. " +
+                "Re-collect with both start and stop events enabled, or use a provider that includes both (e.g. Microsoft-Windows-ASPNET:0xFFFF:5 for IIS classic).");
+
         // Alerts
         double errorPct = data.TotalRequests > 0 ? data.ErrorCount * 100.0 / data.TotalRequests : 0;
         if (errorPct >= 10)

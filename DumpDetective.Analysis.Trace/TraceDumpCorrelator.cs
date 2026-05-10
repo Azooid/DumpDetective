@@ -32,18 +32,25 @@ public static class TraceDumpCorrelator
     /// </param>
     public static IReadOnlyList<CorrelationFinding> Correlate(
         DumpSnapshot              snap,
-        AllocTraceData?           alloc      = null,
-        GcTraceData?              gc         = null,
-        ContentionTraceData?      contention = null,
-        ExceptionsTraceData?      exceptions = null,
-        ThreadPoolStarvationData? starvation = null,
-        HttpTraceData?            http       = null,
-        AsyncTraceData?           async_     = null,
-        SqlTraceData?             sql        = null,
-        CpuTraceData?             cpu        = null,
+        AllocTraceData?           alloc       = null,
+        GcTraceData?              gc          = null,
+        ContentionTraceData?      contention  = null,
+        ExceptionsTraceData?      exceptions  = null,
+        ThreadPoolStarvationData? starvation  = null,
+        HttpTraceData?            http        = null,
+        AsyncTraceData?           async_      = null,
+        SqlTraceData?             sql         = null,
+        CpuTraceData?             cpu         = null,
+        FinalizerTraceData?       finalizer   = null,
+        AllocationBurstData?      allocBurst  = null,
+        LohTraceData?             loh         = null,
+        ConnectionPoolTraceData?  connPool    = null,
+        DeadlockPatternData?      deadlock    = null,
+        RetryStormData?           retryStorm  = null,
+        HandleLeakTraceData?      handleLeak  = null,
         IReadOnlyDictionary<string, long>? retainedByType = null)
     {
-        var findings = new List<CorrelationFinding>(10);
+        var findings = new List<CorrelationFinding>(16);
 
         CheckAllocConvergesWithHeapDominance(findings, alloc, snap, retainedByType);
         CheckAsyncBacklogConfirmsStarvation(findings, starvation, async_, snap);
@@ -55,6 +62,13 @@ public static class TraceDumpCorrelator
         CheckFinalizerQueueBacklog(findings, alloc, snap);
         CheckHttpLatencyVsAsyncBacklog(findings, http, snap);
         CheckCpuSaturationVsThreadPool(findings, cpu, snap);
+        // New rules using Tier 1 / Tier 2 analyzer data
+        CheckFinalizerTraceVsQueueDepth(findings, finalizer, snap);
+        CheckAllocBurstVsHeapGrowth(findings, allocBurst, snap);
+        CheckLohTraceVsLohFragmentation(findings, loh, snap);
+        CheckConnPoolTraceVsDumpConnections(findings, connPool, snap);
+        CheckDeadlockTraceVsBlockedThreads(findings, deadlock, snap);
+        CheckHandleLeakTraceVsPinnedHandles(findings, handleLeak, snap);
 
         findings.Sort(static (a, b) => b.Score.CompareTo(a.Score));
         return findings;
@@ -487,4 +501,259 @@ public static class TraceDumpCorrelator
     }
 
     private static string FormatSize(long bytes) => DumpHelpers.FormatSize(bytes);
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rule 11 — Trace finalizer bursts confirm dump finalizer queue depth
+    // Trace: GC suspension with finalizer activity  ↔  Dump: deep finalizer queue
+    // More specific than Rule 8 (which used raw alloc bytes as a proxy).
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void CheckFinalizerTraceVsQueueDepth(
+        List<CorrelationFinding> findings,
+        FinalizerTraceData?      finalizer,
+        DumpSnapshot             snap)
+    {
+        if (finalizer is null || !finalizer.HasData || finalizer.GcCountWithFinalizers < 3) return;
+        if (snap.FinalizerQueueDepth < 50) return;
+
+        int score = snap.FinalizerQueueDepth >= 500 && finalizer.MaxFinalizerBurstMs >= 100 ? 90
+                  : snap.FinalizerQueueDepth >= 200 || finalizer.MaxFinalizerBurstMs >= 50  ? 76
+                  : 62;
+        string topFin = snap.TopFinalizerTypes.Count > 0
+            ? $" Dominant finalizable type: '{ShortName(snap.TopFinalizerTypes[0].Name)}' ({snap.TopFinalizerTypes[0].Count}×)."
+            : "";
+        string traceTopType = finalizer.TopFinalizerTypes.Count > 0
+            ? $" Trace top type: '{ShortName(finalizer.TopFinalizerTypes[0].TypeName)}' ({finalizer.TopFinalizerTypes[0].Count} finalization events)."
+            : "";
+
+        findings.Add(new CorrelationFinding(
+            Severity:         snap.FinalizerQueueDepth >= 500 ? FindingSeverity.Critical : FindingSeverity.Warning,
+            Category:         "GC / Finalizer",
+            Headline:         $"Finalizer bursts in trace ({finalizer.GcCountWithFinalizers} GCs with finalizer activity, max burst {finalizer.MaxFinalizerBurstMs:F0} ms) confirmed by {snap.FinalizerQueueDepth:N0}-deep queue in dump",
+            Detail:
+                $"The trace recorded finalizer activity during {finalizer.GcCountWithFinalizers} GC collections " +
+                $"(max burst {finalizer.MaxFinalizerBurstMs:F1} ms, avg {finalizer.AvgFinalizerBurstMs:F1} ms).{traceTopType} " +
+                $"The dump shows {snap.FinalizerQueueDepth:N0} objects still waiting for finalization.{topFin} " +
+                "Both sources confirm that finalizable objects are accumulating faster than the single-threaded finalizer can drain them. " +
+                "Objects surviving to the finalizer queue are promoted to Gen 2 at minimum, causing heap pressure.",
+            Advice:
+                "1. Run 'finalizer-queue' on the dump for the exact types in queue — they are the primary targets.\n" +
+                "2. Ensure all finalizable types also implement IDisposable and call GC.SuppressFinalize(this) in Dispose().\n" +
+                "3. Search for missing using statements or try/finally blocks around disposable objects.\n" +
+                "4. Consider replacing direct resource ownership with SafeHandle subclasses — they finalize more efficiently.",
+            Score:            score,
+            ContributingAreas:["finalizer-trace", "dump"]));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rule 12 — Allocation burst rate in trace + heap size in dump
+    // Trace: short-window allocation spikes  ↔  Dump: large total heap / Gen 2 dominant
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void CheckAllocBurstVsHeapGrowth(
+        List<CorrelationFinding> findings,
+        AllocationBurstData?     allocBurst,
+        DumpSnapshot             snap)
+    {
+        if (allocBurst is null || !allocBurst.HasData || allocBurst.BurstCount < 2) return;
+        if (snap.TotalHeapBytes < 200L * 1024 * 1024) return; // < 200 MB — not alarming
+
+        // Gen 2 dominance suggests objects are surviving long enough to indicate accumulation
+        bool gen2Dominant = snap.Gen2Bytes > snap.TotalHeapBytes / 2;
+
+        int score = allocBurst.BurstCount >= 10 && gen2Dominant ? 82
+                  : allocBurst.BurstCount >= 5 || snap.TotalHeapBytes > 1L * 1024 * 1024 * 1024 ? 68
+                  : 55;
+
+        string topType = allocBurst.BurstPeriods.Count > 0 ? $" Top burst type: '{ShortName(allocBurst.BurstPeriods[0].TopType)}'." : "";
+
+        findings.Add(new CorrelationFinding(
+            Severity:         gen2Dominant && allocBurst.BurstCount >= 5 ? FindingSeverity.Warning : FindingSeverity.Info,
+            Category:         "Allocation / Heap",
+            Headline:         $"{allocBurst.BurstCount} allocation bursts in trace (peak {allocBurst.PeakBurstRateKbPerSec:F0} KB/s) + {FormatSize(snap.TotalHeapBytes)} heap in dump{(gen2Dominant ? " (Gen 2 dominant)" : "")}",
+            Detail:
+                $"The trace detected {allocBurst.BurstCount} allocation burst window(s) with a peak rate of {allocBurst.PeakBurstRateKbPerSec:F0} KB/s " +
+                $"(avg {allocBurst.AvgAllocationRateKbPerSec:F0} KB/s).{topType} " +
+                $"The dump shows a total heap of {FormatSize(snap.TotalHeapBytes)} " +
+                (gen2Dominant ? $"with Gen 2 holding {FormatSize(snap.Gen2Bytes)} ({snap.Gen2Bytes * 100L / snap.TotalHeapBytes:F0}% of total). " : ". ") +
+                "Repeated short-duration allocation spikes followed by a large Gen 2 heap suggests that burst-allocated objects are " +
+                "surviving GC collections and accumulating — either because they are referenced longer than expected or because " +
+                "the GC cannot reclaim them fast enough during the bursts.",
+            Advice:
+                "1. Run 'heap-stats' on the dump to find the types that now dominate Gen 2.\n" +
+                "2. Compare the top burst type in the trace against the top Gen 2 types in the dump.\n" +
+                "3. Run 'gc-roots' on dominant Gen 2 instances to understand what is keeping them alive.\n" +
+                "4. Check whether the bursts in the trace correlate with specific user operations — reproduce and profile allocations.",
+            Score:            score,
+            ContributingAreas:["alloc-burst-trace", "dump"]));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rule 13 — LOH allocations in trace + LOH fragmentation in dump
+    // Trace: direct LOH allocation events  ↔  Dump: LOH fragmentation pct
+    // Complements Rule 4 (which fired on GC pause avg + LOH frag).
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void CheckLohTraceVsLohFragmentation(
+        List<CorrelationFinding> findings,
+        LohTraceData?            loh,
+        DumpSnapshot             snap)
+    {
+        if (loh is null || !loh.HasData || loh.PeakLohBytes < 50L * 1024 * 1024) return;
+        if (snap.LohFragmentationPct < 15.0 || snap.LohBytes < 50L * 1024 * 1024) return;
+
+        int score = loh.IsTrendingUp && snap.LohFragmentationPct >= 40 ? 87
+                  : loh.LohGrowthBytes > 0 || snap.LohFragmentationPct >= 25  ? 74
+                  : 60;
+
+        string trendText = loh.IsTrendingUp
+            ? $" LOH was trending upward (+{FormatSize(loh.LohGrowthBytes)}) during the trace."
+            : $" LOH peak was {FormatSize(loh.PeakLohBytes)}.";
+
+        findings.Add(new CorrelationFinding(
+            Severity:         snap.LohFragmentationPct >= 40 ? FindingSeverity.Critical : FindingSeverity.Warning,
+            Category:         "GC / LOH",
+            Headline:         $"LOH peak {FormatSize(loh.PeakLohBytes)} in trace{(loh.IsTrendingUp ? " (trending up)" : "")} + dump LOH {snap.LohFragmentationPct:F1}% fragmented ({FormatSize(snap.LohFreeBytes)} wasted)",
+            Detail:
+                $"The trace recorded an LOH peak of {FormatSize(loh.PeakLohBytes)} " +
+                $"across {loh.TotalGcCount:N0} GC collections ({loh.Gen2GcsWithLohGrowth} Gen 2 collections with LOH growth).{trendText} " +
+                $"The dump shows the LOH is {snap.LohFragmentationPct:F1}% fragmented: " +
+                $"{FormatSize(snap.LohLiveBytes)} live in {FormatSize(snap.LohBytes)} committed ({FormatSize(snap.LohFreeBytes)} free holes). " +
+                "Because the GC does not compact the LOH by default, free holes between live large objects persist and grow. " +
+                "Continued LOH growth into a fragmented heap raises Gen 2 GC frequency and increases pause times.",
+            Advice:
+                "1. Run 'large-objects' on the dump to see which types currently occupy the LOH.\n" +
+                "2. Run 'heap-fragmentation' on the dump for the full LOH free-hole analysis.\n" +
+                "3. Pool large byte arrays: ArrayPool<byte>.Shared avoids LOH pressure entirely for buffers.\n" +
+                "4. Set GCSettings.LargeObjectHeapCompactionMode = CompactionMode.CompactOnce before a known allocation spike.",
+            Score:            score,
+            ContributingAreas:["loh-trace", "dump"]));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rule 14 — Trace connection pool events + dump live connection count
+    // Trace: pool stress (leaks, high open count)  ↔  Dump: ConnectionCount
+    // More direct than Rule 6 (which used slow SQL as the trace-side signal).
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void CheckConnPoolTraceVsDumpConnections(
+        List<CorrelationFinding> findings,
+        ConnectionPoolTraceData? connPool,
+        DumpSnapshot             snap)
+    {
+        if (connPool is null || !connPool.HasData) return;
+        bool traceSignal = connPool.LeakedConnections > 0 || connPool.PeakOpenConnections >= 20;
+        if (!traceSignal) return;
+        if (snap.ConnectionCount < 10) return;
+
+        int score = connPool.LeakedConnections > 0 && snap.ConnectionCount >= 30 ? 88
+                  : connPool.PeakOpenConnections >= 50 || snap.ConnectionCount >= 50 ? 75
+                  : 62;
+        string leakText = connPool.LeakedConnections > 0
+            ? $" The trace detected {connPool.LeakedConnections} likely leaked connection(s) (opened but never closed)."
+            : "";
+
+        findings.Add(new CorrelationFinding(
+            Severity:         connPool.LeakedConnections > 0 ? FindingSeverity.Critical : FindingSeverity.Warning,
+            Category:         "DB / Connection Pool",
+            Headline:         $"Connection pool trace: peak {connPool.PeakOpenConnections} open, {connPool.LeakedConnections} leaked — dump confirms {snap.ConnectionCount} live connection objects",
+            Detail:
+                $"The trace shows a peak of {connPool.PeakOpenConnections} simultaneously open database connections " +
+                $"({connPool.TotalOpens:N0} opens, {connPool.TotalCloses:N0} closes).{leakText} " +
+                $"The dump corroborates this: {snap.ConnectionCount} live database connection objects were found on the managed heap. " +
+                "Connections that are opened but not closed promptly exhaust the pool (default max 100), causing new requests to " +
+                "queue for an available slot — increasing latency and eventually throwing SqlException if the pool is full.",
+            Advice:
+                "1. Run 'connection-pool' on the dump to see the state of each live connection object.\n" +
+                "2. Search the codebase for SqlConnection / NpgsqlConnection / DbConnection instantiation " +
+                "without a using statement.\n" +
+                "3. In the trace ('connection-pool-trace'), find the database with the worst open/close ratio.\n" +
+                "4. Add connection pool metrics (PerfCounters or EventSource) to detect exhaustion in production.",
+            Score:            score,
+            ContributingAreas:["connection-pool-trace", "dump"]));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rule 15 — Deadlock pattern in trace + blocked threads in dump
+    // Trace: overlapping lock wait chains  ↔  Dump: high blocked thread count
+    // More specific than Rule 5 (contention + blocked threads).
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void CheckDeadlockTraceVsBlockedThreads(
+        List<CorrelationFinding> findings,
+        DeadlockPatternData?     deadlock,
+        DumpSnapshot             snap)
+    {
+        if (deadlock is null || !deadlock.HasData || deadlock.WaitChains.Count == 0) return;
+        if (snap.BlockedThreadCount < 3) return;
+
+        double blockedPct = snap.AliveThreadCount > 0
+            ? snap.BlockedThreadCount * 100.0 / snap.AliveThreadCount : 0;
+
+        int score = deadlock.WaitChains.Count >= 2 && blockedPct >= 50 ? 96
+                  : deadlock.WaitChains.Count >= 1 && blockedPct >= 25  ? 85
+                  : 72;
+
+        string chainSummary = deadlock.WaitChains.Count > 0
+            ? $" Longest overlap: threads {deadlock.WaitChains[0].Thread1Id} ↔ {deadlock.WaitChains[0].Thread2Id} ({deadlock.WaitChains[0].OverlapMs:F0} ms overlap)."
+            : "";
+
+        findings.Add(new CorrelationFinding(
+            Severity:         FindingSeverity.Critical,
+            Category:         "Threading / Deadlock",
+            Headline:         $"{deadlock.WaitChains.Count} overlapping lock wait chain(s) in trace + {snap.BlockedThreadCount}/{snap.AliveThreadCount} threads blocked in dump — likely deadlock",
+            Detail:
+                $"The trace detected {deadlock.WaitChains.Count} overlapping lock-wait chain(s) where threads were waiting on each other.{chainSummary} " +
+                $"The dump captured at the same time confirms {snap.BlockedThreadCount} of {snap.AliveThreadCount} threads " +
+                $"({blockedPct:F0}%) are in a blocked state. " +
+                "An overlapping wait chain in the trace (Thread A waiting for Thread B while B waits for A) combined with " +
+                "threads still blocked in the dump is a very high-confidence signal of a real or near-deadlock.",
+            Advice:
+                "1. Run 'deadlock-detection' on the dump immediately — it identifies the exact threads and lock objects involved.\n" +
+                "2. Run 'thread-analysis' on the dump to inspect the call stacks of the blocked threads.\n" +
+                $"3. In the trace ('deadlock-trace'), review the wait chain: thread {(deadlock.WaitChains.Count > 0 ? deadlock.WaitChains[0].Thread1Id.ToString() : "?")} vs {(deadlock.WaitChains.Count > 0 ? deadlock.WaitChains[0].Thread2Id.ToString() : "?")} — find the lock acquisition order.\n" +
+                "4. Apply consistent lock ordering across all code paths, or use lock-free data structures.",
+            Score:            score,
+            ContributingAreas:["deadlock-trace", "dump"]));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Rule 16 — Handle leak trend in trace + elevated handle count in dump
+    // Trace: net GC handle growth  ↔  Dump: TotalHandleCount / PinnedHandleCount
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void CheckHandleLeakTraceVsPinnedHandles(
+        List<CorrelationFinding> findings,
+        HandleLeakTraceData?     handleLeak,
+        DumpSnapshot             snap)
+    {
+        if (handleLeak is null || !handleLeak.HasData || !handleLeak.IsGrowing) return;
+        bool dumpSignal = snap.PinnedHandleCount >= 50 || snap.TotalHandleCount >= 200;
+        if (!dumpSignal) return;
+
+        int score = handleLeak.NetGrowth >= 200 && snap.PinnedHandleCount >= 200 ? 86
+                  : handleLeak.NetGrowth >= 100 || snap.TotalHandleCount >= 500   ? 73
+                  : 60;
+
+        string growthKinds = handleLeak.TypeBreakdown.Count > 0
+            ? string.Join(", ", handleLeak.TypeBreakdown
+                .Where(k => k.NetGrowth > 0)
+                .Take(3)
+                .Select(k => $"{k.HandleKind} (+{k.NetGrowth})"))
+            : "";
+
+        findings.Add(new CorrelationFinding(
+            Severity:         handleLeak.NetGrowth >= 200 ? FindingSeverity.Critical : FindingSeverity.Warning,
+            Category:         "GC Handles / Pinning",
+            Headline:         $"GC handle growth in trace (+{handleLeak.NetGrowth} net, {handleLeak.TotalCreated:N0} created vs {handleLeak.TotalDestroyed:N0} destroyed) confirmed by {snap.TotalHandleCount:N0} handles in dump",
+            Detail:
+                $"The trace shows net GC handle growth of +{handleLeak.NetGrowth} handles " +
+                $"({handleLeak.TotalCreated:N0} created, {handleLeak.TotalDestroyed:N0} destroyed). " +
+                (growthKinds.Length > 0 ? $"Growing kinds: {growthKinds}. " : "") +
+                $"The dump shows {snap.TotalHandleCount:N0} total GC handles " +
+                $"({snap.PinnedHandleCount:N0} pinned, {snap.WeakHandleCount:N0} weak, {snap.StrongHandleCount:N0} strong). " +
+                "Handles that are created but not destroyed accumulate and prevent the GC from collecting the referenced objects. " +
+                "Pinned handles additionally fragment the heap, inflating GC pause times.",
+            Advice:
+                "1. Run 'handle-table' on the dump to see the full breakdown of GC handle types and their root paths.\n" +
+                "2. Run 'pinned-objects' on the dump — investigate any long-lived pinned objects that are not I/O buffers.\n" +
+                "3. In the trace ('handle-leak-trace'), compare the net-growing handle kinds against known P/Invoke code paths.\n" +
+                "4. Every GCHandle.Alloc must have a corresponding Free — wrap them in a SafeHandle or using scope.",
+            Score:            score,
+            ContributingAreas:["handle-leak-trace", "dump"]));
+    }
 }

@@ -43,10 +43,13 @@ public static class EventNormalizer
         {
             'a' => ClassifyA(name),
             'c' => ClassifyC(name),
+            'd' => ClassifyD(name),
             'e' => ClassifyE(name),
+            'f' => ClassifyF(name),
             'g' => ClassifyG(name),
             'h' => ClassifyH(name),
             'j' => ClassifyJ(name),
+            'k' => ClassifyK(name),
             'm' => ClassifyM(name),
             'p' => ClassifyP(name),
             's' => ClassifyS(name),
@@ -61,6 +64,7 @@ public static class EventNormalizer
     // GC/AllocationTick  (via "AllocationTick")
     // AwaiterContinuation
     // ThreadPoolWorkerThreadAdjustment/Adjustment
+    // Microsoft.AspNetCore.* pipeline (routing, auth)
     private static TraceEventKind ClassifyA(string n)
     {
         // AspNetTrace/AspNetReq/Start  →  HttpRequestStart
@@ -69,6 +73,22 @@ public static class EventNormalizer
             if (EndsWith(n, "/Start") || EndsWith(n, "Start")) return TraceEventKind.HttpRequestStart;
             if (EndsWith(n, "/Stop")  || EndsWith(n, "Stop"))  return TraceEventKind.HttpRequestStop;
         }
+        // ASP.NET Core pipeline events (routing, auth, diagnostics)
+        if (Contains(n, "AspNetCore") || Contains(n, "Microsoft.AspNetCore"))
+        {
+            if (Contains(n, "RouteMatch") || Contains(n, "Routing"))               return TraceEventKind.AspNetCoreRouteMatched;
+            if (Contains(n, "Authentication") || Contains(n, "Auth"))
+            {
+                if (EndsWith(n, "Start")) return TraceEventKind.AspNetCoreAuthStart;
+                if (EndsWith(n, "Stop"))  return TraceEventKind.AspNetCoreAuthStop;
+                if (Contains(n, "Fail") || Contains(n, "Challenge"))               return TraceEventKind.AspNetCoreAuthFailed;
+            }
+        }
+        // Activity start/stop from System.Diagnostics.DiagnosticSource (via 'a' in "Activity")
+        if (Contains(n, "Activity1/Start") || Contains(n, "ActivityStart"))
+            return TraceEventKind.ActivityStart;
+        if (Contains(n, "Activity1/Stop") || Contains(n, "ActivityStop"))
+            return TraceEventKind.ActivityStop;
         if (Contains(n, "AllocationTick")) return TraceEventKind.GCAllocationTick;
         if (Contains(n, "Adjustment"))     return TraceEventKind.ThreadPoolAdjustment;
         if (Contains(n, "Awaiter") || Contains(n, "ContinuationScheduled") || Contains(n, "ScheduleContinuation"))
@@ -90,6 +110,25 @@ public static class EventNormalizer
         return TraceEventKind.Unknown;
     }
 
+    // ── D ────────────────────────────────────────────────────────────────────
+    // System.Net.NameResolution EventSource/DnsNameResolution/Start|Stop|Failed
+    // System.Diagnostics.DiagnosticSource/Activity1/Start|Stop
+    private static TraceEventKind ClassifyD(string n)
+    {
+        if (Contains(n, "DnsNameResolution") || Contains(n, "NameResolution") || Contains(n, "DnsResolut"))
+        {
+            if (EndsWith(n, "Start") || Contains(n, "Start")) return TraceEventKind.DnsResolutionStart;
+            if (EndsWith(n, "Stop")  || Contains(n, "Stop"))  return TraceEventKind.DnsResolutionStop;
+            if (Contains(n, "Fail"))                           return TraceEventKind.DnsResolutionFailed;
+        }
+        if (Contains(n, "DiagnosticSource") || Contains(n, "Activity"))
+        {
+            if (Contains(n, "Start")) return TraceEventKind.ActivityStart;
+            if (Contains(n, "Stop"))  return TraceEventKind.ActivityStop;
+        }
+        return TraceEventKind.Unknown;
+    }
+
     // ── E ────────────────────────────────────────────────────────────────────
     // Microsoft-Windows-DotNETRuntime/Exception/Start
     // Microsoft-Windows-DotNETRuntime/ExceptionCatch/Start|Stop
@@ -105,11 +144,34 @@ public static class EventNormalizer
         return TraceEventKind.Unknown;
     }
 
+    // ── F ────────────────────────────────────────────────────────────────────
+    // Microsoft-Windows-Kernel-File provider (ETL only)
+    // FileIO/Read|Write|Create|Close|Flush
+    private static TraceEventKind ClassifyF(string n)
+    {
+        if (Contains(n, "FileIO") || Contains(n, "File/") || Contains(n, "KernelFile"))
+        {
+            if (Contains(n, "Read"))   return TraceEventKind.FileRead;
+            if (Contains(n, "Write"))  return TraceEventKind.FileWrite;
+            if (Contains(n, "Create")) return TraceEventKind.FileCreate;
+            if (Contains(n, "Close"))  return TraceEventKind.FileClose;
+            if (Contains(n, "Flush"))  return TraceEventKind.FileFlush;
+        }
+        return TraceEventKind.Unknown;
+    }
+
     // ── G ────────────────────────────────────────────────────────────────────
     // Microsoft-Windows-DotNETRuntime/GC/Start|Stop|SuspendEEStart|SuspendEEStop|
     //   RestartEEStart|RestartEEStop|HeapStats|AllocationTick|FinalizeObject
+    //   GCHandle/Created|Destroyed
     private static TraceEventKind ClassifyG(string n)
     {
+        // GCHandle events — must check before generic GC* matching
+        if (Contains(n, "GCHandle") || Contains(n, "GCCreateConcurrent"))
+        {
+            if (Contains(n, "Created") || Contains(n, "Create"))   return TraceEventKind.GCHandleCreated;
+            if (Contains(n, "Destroyed") || Contains(n, "Destroy")) return TraceEventKind.GCHandleDestroyed;
+        }
         // Order matters: more-specific checks before generic GCStart/Stop
         if (Contains(n, "SuspendEEStop")  || Contains(n, "GC/SuspendEEStop"))  return TraceEventKind.GCSuspendEEStop;
         if (Contains(n, "SuspendEEStart") || Contains(n, "GC/SuspendEEStart")) return TraceEventKind.GCSuspendEEStart;
@@ -137,6 +199,28 @@ public static class EventNormalizer
             return TraceEventKind.HttpRequestStart;
         if (Contains(n, "Request/Stop") || Contains(n, "RequestStop") || Contains(n, "EndRequest"))
             return TraceEventKind.HttpRequestStop;
+        return TraceEventKind.Unknown;
+    }
+
+    // ── K ────────────────────────────────────────────────────────────────────
+    // Microsoft-AspNetCore-Server-Kestrel EventSource
+    private static TraceEventKind ClassifyK(string n)
+    {
+        if (Contains(n, "Kestrel"))
+        {
+            if (Contains(n, "ConnectionStart") || (Contains(n, "Connection") && EndsWith(n, "Start")))
+                return TraceEventKind.KestrelConnectionStart;
+            if (Contains(n, "ConnectionStop") || (Contains(n, "Connection") && EndsWith(n, "Stop")))
+                return TraceEventKind.KestrelConnectionStop;
+            if (Contains(n, "Reject") || Contains(n, "ConnectionRejected"))
+                return TraceEventKind.KestrelConnectionRejected;
+            if (Contains(n, "RequestError") || (Contains(n, "Request") && Contains(n, "Error")))
+                return TraceEventKind.KestrelRequestError;
+            if (Contains(n, "QueueStart") || (Contains(n, "Queue") && EndsWith(n, "Start")))
+                return TraceEventKind.KestrelConnectionQueueStart;
+            if (Contains(n, "QueueStop")  || (Contains(n, "Queue") && EndsWith(n, "Stop")))
+                return TraceEventKind.KestrelConnectionQueueStop;
+        }
         return TraceEventKind.Unknown;
     }
 
@@ -251,6 +335,26 @@ public static class EventNormalizer
             if (Contains(n, "Close")) return TraceEventKind.SqlConnectionClose;
         }
 
+        // Socket events — System.Net.Sockets EventSource
+        if (Contains(n, "Socket"))
+        {
+            if (Contains(n, "Connect"))
+            {
+                if (EndsWith(n, "Start")) return TraceEventKind.SocketConnectStart;
+                if (EndsWith(n, "Stop"))  return TraceEventKind.SocketConnectStop;
+                if (Contains(n, "Fail"))  return TraceEventKind.SocketConnectFailed;
+            }
+            if (Contains(n, "Send"))
+            {
+                if (EndsWith(n, "Start")) return TraceEventKind.SocketSendStart;
+                if (EndsWith(n, "Stop"))  return TraceEventKind.SocketSendStop;
+            }
+            if (Contains(n, "Receive"))
+            {
+                if (EndsWith(n, "Start")) return TraceEventKind.SocketReceiveStart;
+                if (EndsWith(n, "Stop"))  return TraceEventKind.SocketReceiveStop;
+            }
+        }
         if (Contains(n, "ScheduleContinuation")) return TraceEventKind.AwaiterContinuation;
         return TraceEventKind.Unknown;
     }

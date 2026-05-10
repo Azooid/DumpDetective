@@ -1,0 +1,80 @@
+using DumpDetective.Analysis.Trace.Analyzers;
+using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Utilities;
+using DumpDetective.Reporting;
+using DumpDetective.Reporting.Reports;
+using DumpDetective.Reporting.Sinks;
+using Spectre.Console;
+
+namespace DumpDetective.Commands.Trace;
+
+public sealed class AllocationBurstCommand : ICommand
+{
+    private readonly AllocationBurstAnalyzer _analyzer;
+    private readonly AllocationBurstReport   _report;
+
+    public AllocationBurstCommand(AllocationBurstAnalyzer analyzer, AllocationBurstReport report)
+    {
+        _analyzer = analyzer;
+        _report   = report;
+    }
+
+    public string Name               => "alloc-burst-trace";
+    public string Description        => "Allocation burst detection — identifies 500 ms windows with 3× or more the median allocation rate.";
+    public bool   IncludeInFullAnalyze => false;
+
+    private const string Help = """
+        Usage: DumpDetective alloc-burst-trace <trace-file> [options]
+
+        Detects allocation bursts from GCAllocationTick events.
+        A burst = any 500 ms window with 3× the rolling median allocation rate.
+
+        Collect with:
+          dotnet-trace: --providers 'Microsoft-Windows-DotNETRuntime:0x1:4'
+
+        Options:
+          --process <name>     Filter to process name
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
+          -h, --help           Show this help
+        """;
+
+    public int Run(string[] args)
+    {
+        if (CommandBase.TryHelp(args, Help)) return 0;
+
+        var     a             = CliArgs.Parse(args);
+        string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
+        string? processFilter = a.GetOption("process");
+
+        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
+        try
+        {
+            if (!CommandBase.SuppressVerbose)
+                AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
+
+            Core.Models.CommandData.AllocationBurstData? data = null;
+            CommandBase.RunStatus("Detecting allocation bursts...", _ =>
+                data = _analyzer.Analyze(tracePath!, 20, processFilter));
+
+            sink.Header("Allocation Burst Trace", Path.GetFileName(tracePath!), navLevel: 2, commandName: "alloc-burst-trace");
+            _report.Render(data!, sink);
+            GcTraceCommand.PrintOutputPath(outputPaths);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+    }
+
+    public void Render(DumpContext ctx, IRenderSink sink) =>
+        sink.Alert(AlertLevel.Warning,
+            "alloc-burst-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
+}

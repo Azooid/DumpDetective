@@ -1,0 +1,82 @@
+using DumpDetective.Analysis.Trace.Analyzers;
+using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Utilities;
+using DumpDetective.Reporting;
+using DumpDetective.Reporting.Reports;
+using DumpDetective.Reporting.Sinks;
+using Spectre.Console;
+
+namespace DumpDetective.Commands.Trace;
+
+public sealed class RetryStormCommand : ICommand
+{
+    private readonly RetryStormAnalyzer _analyzer;
+    private readonly RetryStormReport   _report;
+
+    public RetryStormCommand(RetryStormAnalyzer analyzer, RetryStormReport report)
+    {
+        _analyzer = analyzer;
+        _report   = report;
+    }
+
+    public string Name               => "retry-storm-trace";
+    public string Description        => "Retry storm detection — identifies bursts of transient retry-pattern exceptions from exception events.";
+    public bool   IncludeInFullAnalyze => false;
+
+    private const string Help = """
+        Usage: DumpDetective retry-storm-trace <trace-file> [options]
+
+        Filters exception events matching retry patterns (Timeout, Transient, HttpRequest,
+        SocketException, Polly, CircuitBreaker, etc.) to detect retry storms.
+
+        Collect with:
+          dotnet-trace: --providers 'Microsoft-Windows-DotNETRuntime:0x8000:5' (ExceptionKeyword)
+
+        Options:
+          --top <N>            Max burst periods to show (default: 20)
+          --process <name>     Filter to process name
+          -o, --output <file>  Write report to file (.html / .md / .txt / .json)
+          -h, --help           Show this help
+        """;
+
+    public int Run(string[] args)
+    {
+        if (CommandBase.TryHelp(args, Help)) return 0;
+
+        var     a             = CliArgs.Parse(args);
+        int     top           = a.GetInt("top", 20);
+        string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
+        string? processFilter = a.GetOption("process");
+
+        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
+        try
+        {
+            if (!CommandBase.SuppressVerbose)
+                AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
+
+            Core.Models.CommandData.RetryStormData? data = null;
+            CommandBase.RunStatus("Detecting retry storm patterns...", _ =>
+                data = _analyzer.Analyze(tracePath!, top, processFilter));
+
+            sink.Header("Retry Storm Trace", Path.GetFileName(tracePath!), navLevel: 2, commandName: "retry-storm-trace");
+            _report.Render(data!, sink, top);
+            GcTraceCommand.PrintOutputPath(outputPaths);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            AnsiConsole.MarkupLine($"[bold red]✗ Error:[/] {Markup.Escape(ex.Message)}");
+            return 1;
+        }
+    }
+
+    public void Render(DumpContext ctx, IRenderSink sink) =>
+        sink.Alert(AlertLevel.Warning,
+            "retry-storm-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
+}

@@ -185,7 +185,9 @@ public sealed class JitTraceAnalyzer
         if (name.Length == 0) return "";
 
         string full = ns.Length > 0 ? $"{ns}.{name}" : name;
-        if (sig.Length > 0 && sig.Length < 80) full = $"{full}{sig}";
+        // MethodSignature from TraceEvent starts with the return type, e.g. "instance void  (params)".
+        // Append with a single space so the display reads "MethodName instance void  (...)".
+        if (sig.Length > 0 && sig.Length < 80) full = $"{full} {sig.TrimStart()}";
         return full;
     }
 

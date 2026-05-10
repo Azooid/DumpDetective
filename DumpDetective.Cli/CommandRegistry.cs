@@ -178,7 +178,24 @@ public static class CommandRegistry
                 new AsyncTraceAnalyzer(),               new AsyncTraceReport(),
                 new SqlTraceAnalyzer(),                 new SqlTraceReport(),
                 new JsonSerializationTraceAnalyzer(),   new JsonSerializationTraceReport(),
-                new ContextSwitchTraceAnalyzer(),       new ContextSwitchTraceReport()),
+                new ContextSwitchTraceAnalyzer(),       new ContextSwitchTraceReport(),
+                new FinalizerTraceAnalyzer(),           new FinalizerTraceReport(),
+                new ConnectionPoolTraceAnalyzer(),      new ConnectionPoolTraceReport(),
+                new AllocationBurstAnalyzer(),          new AllocationBurstReport(),
+                new DeadlockPatternAnalyzer(),          new DeadlockPatternReport(),
+                new LohTraceAnalyzer(),                 new LohTraceReport(),
+                new RetryStormAnalyzer(),               new RetryStormReport(),
+                new ProcessLifecycleAnalyzer(),         new ProcessLifecycleReport(),
+                new TaskSchedulerTraceAnalyzer(),       new TaskSchedulerTraceReport(),
+                new FileIoTraceAnalyzer(),              new FileIoTraceReport(),
+                new SocketTraceAnalyzer(),              new SocketTraceReport(),
+                new DnsTraceAnalyzer(),                 new DnsTraceReport(),
+                new KestrelTraceAnalyzer(),             new KestrelTraceReport(),
+                new HandleLeakTraceAnalyzer(),          new HandleLeakTraceReport(),
+                new AspNetCorePipelineAnalyzer(),       new AspNetCorePipelineReport(),
+                new OpenTelemetryTraceAnalyzer(),       new OpenTelemetryTraceReport(),
+                new AnomalyDetectionAnalyzer(),         new AnomalyDetectionReport(),
+                new RootCauseChainAnalyzer(),           new RootCauseChainReport()),
 
             new JitTraceCommand(
                 new JitTraceAnalyzer(),
@@ -204,6 +221,98 @@ public static class CommandRegistry
                 new ContextSwitchTraceAnalyzer(),
                 new ContextSwitchTraceReport()),
 
+            // ── Tier 1: New GC / Memory / Concurrency analyzers ──────────────
+            new FinalizerTraceCommand(
+                new FinalizerTraceAnalyzer(),
+                new FinalizerTraceReport()),
+
+            new AllocationBurstCommand(
+                new AllocationBurstAnalyzer(),
+                new AllocationBurstReport()),
+
+            new DeadlockPatternCommand(
+                new DeadlockPatternAnalyzer(),
+                new DeadlockPatternReport()),
+
+            new LohTraceCommand(
+                new LohTraceAnalyzer(),
+                new LohTraceReport()),
+
+            new ConnectionPoolTraceCommand(
+                new ConnectionPoolTraceAnalyzer(),
+                new ConnectionPoolTraceReport()),
+
+            new RetryStormCommand(
+                new RetryStormAnalyzer(),
+                new RetryStormReport()),
+
+            new ProcessLifecycleCommand(
+                new ProcessLifecycleAnalyzer(),
+                new ProcessLifecycleReport()),
+
+            new TaskSchedulerTraceCommand(
+                new TaskSchedulerTraceAnalyzer(),
+                new TaskSchedulerTraceReport()),
+
+            // ── Tier 2: Network / IO / ASP.NET / Intelligence analyzers ──────
+            new FileIoTraceCommand(
+                new FileIoTraceAnalyzer(),
+                new FileIoTraceReport()),
+
+            new SocketTraceCommand(
+                new SocketTraceAnalyzer(),
+                new SocketTraceReport()),
+
+            new DnsTraceCommand(
+                new DnsTraceAnalyzer(),
+                new DnsTraceReport()),
+
+            new KestrelTraceCommand(
+                new KestrelTraceAnalyzer(),
+                new KestrelTraceReport()),
+
+            new HandleLeakTraceCommand(
+                new HandleLeakTraceAnalyzer(),
+                new HandleLeakTraceReport()),
+
+            new AspNetCorePipelineCommand(
+                new AspNetCorePipelineAnalyzer(),
+                new AspNetCorePipelineReport()),
+
+            new OpenTelemetryTraceCommand(
+                new OpenTelemetryTraceAnalyzer(),
+                new OpenTelemetryTraceReport()),
+
+            // ── Intelligence: composite analyzers (run last, depend on others) ──
+            new AnomalyDetectionCommand(
+                new CpuTraceAnalyzer(),
+                new GcTraceAnalyzer(),
+                new AllocationBurstAnalyzer(),
+                new ContentionTraceAnalyzer(),
+                new ExceptionsTraceAnalyzer(),
+                new AnomalyDetectionAnalyzer(),
+                new AnomalyDetectionReport()),
+
+            new RootCauseTraceCommand(
+                new CpuTraceAnalyzer(),
+                new AllocTraceAnalyzer(),
+                new GcTraceAnalyzer(),
+                new ContentionTraceAnalyzer(),
+                new ExceptionsTraceAnalyzer(),
+                new ThreadPoolStarvationAnalyzer(),
+                new JitTraceAnalyzer(),
+                new HttpTraceAnalyzer(),
+                new AsyncTraceAnalyzer(),
+                new SqlTraceAnalyzer(),
+                new FinalizerTraceAnalyzer(),
+                new ConnectionPoolTraceAnalyzer(),
+                new AllocationBurstAnalyzer(),
+                new DeadlockPatternAnalyzer(),
+                new LohTraceAnalyzer(),
+                new RetryStormAnalyzer(),
+                new RootCauseChainAnalyzer(),
+                new RootCauseChainReport()),
+
             new TraceDumpAnalyzeCommand(
                 new CpuTraceAnalyzer(),                 new CpuTraceReport(),
                 new AllocTraceAnalyzer(),               new AllocTraceReport(),
@@ -217,6 +326,23 @@ public static class CommandRegistry
                 new SqlTraceAnalyzer(),                 new SqlTraceReport(),
                 new JsonSerializationTraceAnalyzer(),   new JsonSerializationTraceReport(),
                 new ContextSwitchTraceAnalyzer(),       new ContextSwitchTraceReport(),
+                new FinalizerTraceAnalyzer(),           new FinalizerTraceReport(),
+                new ConnectionPoolTraceAnalyzer(),      new ConnectionPoolTraceReport(),
+                new AllocationBurstAnalyzer(),          new AllocationBurstReport(),
+                new DeadlockPatternAnalyzer(),          new DeadlockPatternReport(),
+                new LohTraceAnalyzer(),                 new LohTraceReport(),
+                new RetryStormAnalyzer(),               new RetryStormReport(),
+                new ProcessLifecycleAnalyzer(),         new ProcessLifecycleReport(),
+                new TaskSchedulerTraceAnalyzer(),       new TaskSchedulerTraceReport(),
+                new FileIoTraceAnalyzer(),              new FileIoTraceReport(),
+                new SocketTraceAnalyzer(),              new SocketTraceReport(),
+                new DnsTraceAnalyzer(),                 new DnsTraceReport(),
+                new KestrelTraceAnalyzer(),             new KestrelTraceReport(),
+                new HandleLeakTraceAnalyzer(),          new HandleLeakTraceReport(),
+                new AspNetCorePipelineAnalyzer(),       new AspNetCorePipelineReport(),
+                new OpenTelemetryTraceAnalyzer(),       new OpenTelemetryTraceReport(),
+                new AnomalyDetectionAnalyzer(),         new AnomalyDetectionReport(),
+                new RootCauseChainAnalyzer(),           new RootCauseChainReport(),
                 new TraceDumpCorrelationReport()),
 
             // ── targeted / interactive ─────────────────────────────────────────

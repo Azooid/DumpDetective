@@ -82,8 +82,8 @@ public sealed class ThreadPoolStarvationReport
             a.Timestamp, a.NewCount.ToString("N0"), a.ReasonName,
             a.AverageThroughput > 0 ? $"{a.AverageThroughput:F2}" : "—",
         }).ToList();
-        sink.Table(["Timestamp", "New Thread Count", "Reason", "Avg Throughput"], rows,
-            "Starvation in Reason column = hill-climate injected new threads to break stall");
+        sink.Table(["Timestamp", "New Thread Count", "Reason", "Throughput (items/s)"], rows,
+            "Starvation in Reason column = hill-climbing algorithm injected new threads to break stall");
     }
 
     private static void RenderEventDistribution(IRenderSink sink, ThreadPoolStarvationData data, int top)

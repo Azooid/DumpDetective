@@ -51,7 +51,7 @@ public sealed class GcTraceReport
                           Value: (double)g.Count))
             .ToList();
         if (genCountSegs.Count > 0)
-            sink.DonutChart(genCountSegs, "GC count by generation", $"{data.TotalGcs}\nGCs");
+            sink.DonutChart(genCountSegs, "GC count distribution by generation (not pause time)", $"{data.TotalGcs}\nGCs");
 
         // Total pause by generation — stacked bar
         var genPauseSegs = data.GenSummary
