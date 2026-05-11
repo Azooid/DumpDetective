@@ -7,7 +7,6 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using DumpDetective.Analysis.Trace;
-using DumpDetective.Analysis.Trace.Analyzers;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Spectre.Console;
 using CmdData = DumpDetective.Core.Models.CommandData;
@@ -29,7 +28,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         ("CPU & Allocation",         ["cpu-trace", "alloc-trace", "alloc-burst-trace"]),
         ("GC & Memory",              ["gc-trace", "finalizer-trace", "loh-trace"]),
         ("Exceptions & Locks",       ["exceptions-trace", "contention-trace", "deadlock-trace", "retry-storm-trace"]),
-        ("Threads & Concurrency",    ["thread-pool-starvation", "async-trace", "context-switch-trace", "task-scheduler-trace"]),
+        ("Threads & Concurrency",    ["threadpool-starvation", "async-trace", "context-switch-trace", "task-scheduler-trace"]),
         ("JIT & HTTP",               ["jit-trace", "http-trace", "kestrel-trace", "aspnetcore-pipeline-trace"]),
         ("SQL & Network",            ["sql-trace", "json-trace", "connection-pool-trace", "socket-trace", "dns-trace"]),
         ("Infrastructure",           ["process-lifecycle-trace", "file-io-trace", "handle-leak-trace"]),
@@ -37,126 +36,11 @@ public sealed class TraceAnalyzeCommand : ICommand
         ("Intelligence",             ["anomaly-trace", "root-cause-trace"]),
     ];
 
-    private readonly CpuTraceAnalyzer                   _cpu;
-    private readonly AllocTraceAnalyzer                 _alloc;
-    private readonly GcTraceAnalyzer                    _gc;
-    private readonly ContentionTraceAnalyzer            _contention;
-    private readonly ExceptionsTraceAnalyzer            _exceptions;
-    private readonly ThreadPoolStarvationAnalyzer       _starvation;
-    private readonly JitTraceAnalyzer                   _jit;
-    private readonly HttpTraceAnalyzer                  _http;
-    private readonly AsyncTraceAnalyzer                 _async;
-    private readonly SqlTraceAnalyzer                   _sql;
-    private readonly JsonSerializationTraceAnalyzer     _json;
-    private readonly ContextSwitchTraceAnalyzer         _cswitch;
+    private readonly IReadOnlyList<ITraceSubAnalyzer> _subAnalyzers;
 
-    private readonly CpuTraceReport                     _cpuReport;
-    private readonly AllocTraceReport                   _allocReport;
-    private readonly GcTraceReport                      _gcReport;
-    private readonly ContentionTraceReport              _contentionReport;
-    private readonly ExceptionsTraceReport              _exceptionsReport;
-    private readonly ThreadPoolStarvationReport         _starvationReport;
-    private readonly JitTraceReport                     _jitReport;
-    private readonly HttpTraceReport                    _httpReport;
-    private readonly AsyncTraceReport                   _asyncReport;
-    private readonly SqlTraceReport                     _sqlReport;
-    private readonly JsonSerializationTraceReport       _jsonReport;
-    private readonly ContextSwitchTraceReport           _cswitchReport;
-    private readonly FinalizerTraceAnalyzer             _finalizer;
-    private readonly ConnectionPoolTraceAnalyzer        _connPool;
-    private readonly AllocationBurstAnalyzer            _allocBurst;
-    private readonly DeadlockPatternAnalyzer            _deadlock;
-    private readonly LohTraceAnalyzer                   _loh;
-    private readonly RetryStormAnalyzer                 _retryStorm;
-    private readonly ProcessLifecycleAnalyzer           _processLife;
-    private readonly TaskSchedulerTraceAnalyzer         _taskSched;
-    private readonly FileIoTraceAnalyzer                _fileIo;
-    private readonly SocketTraceAnalyzer                _socket;
-    private readonly DnsTraceAnalyzer                   _dns;
-    private readonly KestrelTraceAnalyzer               _kestrel;
-    private readonly HandleLeakTraceAnalyzer            _handleLeak;
-    private readonly AspNetCorePipelineAnalyzer         _aspnet;
-    private readonly OpenTelemetryTraceAnalyzer         _otel;
-    private readonly AnomalyDetectionAnalyzer           _anomaly;
-    private readonly RootCauseChainAnalyzer             _rootCause;
-    private readonly FinalizerTraceReport               _finalizerReport;
-    private readonly ConnectionPoolTraceReport          _connPoolReport;
-    private readonly AllocationBurstReport              _allocBurstReport;
-    private readonly DeadlockPatternReport              _deadlockReport;
-    private readonly LohTraceReport                     _lohReport;
-    private readonly RetryStormReport                   _retryStormReport;
-    private readonly ProcessLifecycleReport             _processLifeReport;
-    private readonly TaskSchedulerTraceReport           _taskSchedReport;
-    private readonly FileIoTraceReport                  _fileIoReport;
-    private readonly SocketTraceReport                  _socketReport;
-    private readonly DnsTraceReport                     _dnsReport;
-    private readonly KestrelTraceReport                 _kestrelReport;
-    private readonly HandleLeakTraceReport              _handleLeakReport;
-    private readonly AspNetCorePipelineReport           _aspnetReport;
-    private readonly OpenTelemetryTraceReport           _otelReport;
-    private readonly AnomalyDetectionReport             _anomalyReport;
-    private readonly RootCauseChainReport               _rootCauseReport;
-
-    public TraceAnalyzeCommand(
-        CpuTraceAnalyzer                 cpu,        CpuTraceReport                   cpuReport,
-        AllocTraceAnalyzer               alloc,      AllocTraceReport                 allocReport,
-        GcTraceAnalyzer                  gc,         GcTraceReport                    gcReport,
-        ContentionTraceAnalyzer          contention, ContentionTraceReport             contentionReport,
-        ExceptionsTraceAnalyzer          exceptions, ExceptionsTraceReport             exceptionsReport,
-        ThreadPoolStarvationAnalyzer     starvation, ThreadPoolStarvationReport        starvationReport,
-        JitTraceAnalyzer                 jit,        JitTraceReport                   jitReport,
-        HttpTraceAnalyzer                http,       HttpTraceReport                  httpReport,
-        AsyncTraceAnalyzer               async_,     AsyncTraceReport                 asyncReport,
-        SqlTraceAnalyzer                 sql,        SqlTraceReport                   sqlReport,
-        JsonSerializationTraceAnalyzer   json,       JsonSerializationTraceReport     jsonReport,
-        ContextSwitchTraceAnalyzer       cswitch,    ContextSwitchTraceReport         cswitchReport,
-        FinalizerTraceAnalyzer           finalizer,      FinalizerTraceReport             finalizerReport,
-        ConnectionPoolTraceAnalyzer      connPool,       ConnectionPoolTraceReport        connPoolReport,
-        AllocationBurstAnalyzer          allocBurst,     AllocationBurstReport            allocBurstReport,
-        DeadlockPatternAnalyzer          deadlock,       DeadlockPatternReport            deadlockReport,
-        LohTraceAnalyzer                 loh,            LohTraceReport                   lohReport,
-        RetryStormAnalyzer               retryStorm,     RetryStormReport                 retryStormReport,
-        ProcessLifecycleAnalyzer         processLife,    ProcessLifecycleReport           processLifeReport,
-        TaskSchedulerTraceAnalyzer       taskSched,      TaskSchedulerTraceReport         taskSchedReport,
-        FileIoTraceAnalyzer              fileIo,         FileIoTraceReport                fileIoReport,
-        SocketTraceAnalyzer              socket,         SocketTraceReport                socketReport,
-        DnsTraceAnalyzer                 dns,            DnsTraceReport                   dnsReport,
-        KestrelTraceAnalyzer             kestrel,        KestrelTraceReport               kestrelReport,
-        HandleLeakTraceAnalyzer          handleLeak,     HandleLeakTraceReport            handleLeakReport,
-        AspNetCorePipelineAnalyzer       aspnet,         AspNetCorePipelineReport         aspnetReport,
-        OpenTelemetryTraceAnalyzer       otel,           OpenTelemetryTraceReport         otelReport,
-        AnomalyDetectionAnalyzer         anomaly,        AnomalyDetectionReport           anomalyReport,
-        RootCauseChainAnalyzer           rootCause,      RootCauseChainReport             rootCauseReport)
+    public TraceAnalyzeCommand(IReadOnlyList<ITraceSubAnalyzer> subAnalyzers)
     {
-        _cpu        = cpu;        _cpuReport        = cpuReport;
-        _alloc      = alloc;      _allocReport      = allocReport;
-        _gc         = gc;         _gcReport         = gcReport;
-        _contention = contention; _contentionReport = contentionReport;
-        _exceptions = exceptions; _exceptionsReport = exceptionsReport;
-        _starvation = starvation; _starvationReport = starvationReport;
-        _jit        = jit;        _jitReport        = jitReport;
-        _http       = http;       _httpReport       = httpReport;
-        _async      = async_;     _asyncReport      = asyncReport;
-        _sql        = sql;        _sqlReport        = sqlReport;
-        _json       = json;       _jsonReport       = jsonReport;
-        _cswitch    = cswitch;    _cswitchReport    = cswitchReport;
-        _finalizer    = finalizer;    _finalizerReport    = finalizerReport;
-        _connPool     = connPool;     _connPoolReport     = connPoolReport;
-        _allocBurst   = allocBurst;   _allocBurstReport   = allocBurstReport;
-        _deadlock     = deadlock;     _deadlockReport     = deadlockReport;
-        _loh          = loh;          _lohReport          = lohReport;
-        _retryStorm   = retryStorm;   _retryStormReport   = retryStormReport;
-        _processLife  = processLife;  _processLifeReport  = processLifeReport;
-        _taskSched    = taskSched;    _taskSchedReport    = taskSchedReport;
-        _fileIo       = fileIo;       _fileIoReport       = fileIoReport;
-        _socket       = socket;       _socketReport       = socketReport;
-        _dns          = dns;          _dnsReport          = dnsReport;
-        _kestrel      = kestrel;      _kestrelReport      = kestrelReport;
-        _handleLeak   = handleLeak;   _handleLeakReport   = handleLeakReport;
-        _aspnet       = aspnet;       _aspnetReport       = aspnetReport;
-        _otel         = otel;         _otelReport         = otelReport;
-        _anomaly      = anomaly;      _anomalyReport      = anomalyReport;
-        _rootCause    = rootCause;    _rootCauseReport    = rootCauseReport;
+        _subAnalyzers = subAnalyzers;
     }
 
     public string Name               => "trace-analyze";
@@ -186,6 +70,7 @@ public sealed class TraceAnalyzeCommand : ICommand
           -n, --top <N>            Top N items per section (default: 20)
           --process <name>         Filter to a specific process name
           --show-system            Include system/kernel frames in CPU tree (default: hidden)
+          --show-unresolved        Include unresolved frames in CPU tree (default: hidden)
           --slow-ms <ms>           HTTP slow-request threshold in ms (default: 1000)
           -o, --output <file>      Write report to file (.html / .md / .txt / .json)
           -h, --help               Show this help
@@ -206,6 +91,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
         bool    filterSystem  = !a.HasFlag("show-system");
+        bool    filterUnresolved = !a.HasFlag("show-unresolved");
 
         if (tracePath is null)
         {
@@ -239,270 +125,35 @@ public sealed class TraceAnalyzeCommand : ICommand
                 : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
             using var sink = SinkFactory.CreateMulti(outputPaths);
             var captured = new Dictionary<string, ReportDoc>(StringComparer.OrdinalIgnoreCase);
-
-            // Hold data objects for all analyzers — used by the summary dashboard,
-            // Diagnostic Interpretation, and the Correlation Analysis sections.
-            CmdData.CpuTraceData?                          cpuData        = null;
-            CmdData.AllocTraceData?                        allocData      = null;
-            CmdData.GcTraceData?                           gcData         = null;
-            CmdData.ContentionTraceData?                   contentionData = null;
-            CmdData.ExceptionsTraceData?                   exceptionsData = null;
-            CmdData.ThreadPoolStarvationData?              starvationData = null;
-            CmdData.JitTraceData?                          jitData        = null;
-            CmdData.HttpTraceData?                         httpData       = null;
-            CmdData.AsyncTraceData?                        asyncData      = null;
-            CmdData.SqlTraceData?                          sqlData        = null;
-            CmdData.JsonSerializationTraceData?            jsonData       = null;
-            CmdData.ContextSwitchTraceData?                cswitchData    = null;
-            CmdData.FinalizerTraceData?                    finalizerData   = null;
-            CmdData.ConnectionPoolTraceData?               connPoolData    = null;
-            CmdData.AllocationBurstData?                   allocBurstData  = null;
-            CmdData.DeadlockPatternData?                   deadlockData    = null;
-            CmdData.LohTraceData?                          lohData         = null;
-            CmdData.RetryStormData?                        retryStormData  = null;
-            CmdData.ProcessLifecycleData?                  processLifeData = null;
-            CmdData.TaskSchedulerTraceData?                taskSchedData   = null;
-            CmdData.FileIoTraceData?                       fileIoData      = null;
-            CmdData.SocketTraceData?                       socketData      = null;
-            CmdData.DnsTraceData?                          dnsData         = null;
-            CmdData.KestrelTraceData?                      kestrelData     = null;
-            CmdData.HandleLeakTraceData?                   handleLeakData  = null;
-            CmdData.AspNetCorePipelineData?                aspnetData      = null;
-            CmdData.OpenTelemetryTraceData?                otelData        = null;
-            CmdData.AnomalyDetectionData?                  anomalyData     = null;
-            CmdData.RootCauseChainData?                    rootCauseData   = null;
+            var results  = new Dictionary<string, object?>(StringComparer.OrdinalIgnoreCase);
+            var runParams = new TraceRunParams(top, processFilter, filterSystem, filterUnresolved, slowMs);
 
             sink.Header("Trace Analysis",
                 $"File: {traceFileName}" +
                 (processFilter is not null ? $" | Process: {processFilter}" : ""),
                 navLevel: 1);
 
-            RunAnalyzer("cpu-trace", () =>
+            // ── Phase 1: run all sub-analyzers ──────────────────────────────────
+            foreach (var sub in _subAnalyzers)
             {
-                var cap = new CaptureSink();
-                cap.Header("CPU Trace", traceFileName, navLevel: 3, commandName: "cpu-trace");
-                cpuData = _cpu.Analyze(trace!, traceFileName, top, processFilter, filterSystem);
-                _cpuReport.Render(cpuData, cap, top);
-                captured["cpu-trace"] = cap.GetDoc();
-            }, () => cpuData?.TraceInfo);
-            RunAnalyzer("alloc-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Allocation Trace", traceFileName, navLevel: 3, commandName: "alloc-trace");
-                allocData = _alloc.Analyze(trace!, traceFileName, top, processFilter);
-                _allocReport.Render(allocData, cap, top);
-                captured["alloc-trace"] = cap.GetDoc();
-            }, () => allocData?.TraceInfo);
-            RunAnalyzer("gc-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("GC Trace", traceFileName, navLevel: 3, commandName: "gc-trace");
-                gcData = _gc.Analyze(trace!, traceFileName, top, processFilter);
-                _gcReport.Render(gcData, cap, top);
-                captured["gc-trace"] = cap.GetDoc();
-            }, () => gcData?.TraceInfo);
-            RunAnalyzer("contention-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Contention Trace", traceFileName, navLevel: 3, commandName: "contention-trace");
-                contentionData = _contention.Analyze(trace!, traceFileName, top, processFilter);
-                _contentionReport.Render(contentionData, cap, top);
-                captured["contention-trace"] = cap.GetDoc();
-            }, () => contentionData?.TraceInfo);
-            RunAnalyzer("exceptions-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Exceptions Trace", traceFileName, navLevel: 3, commandName: "exceptions-trace");
-                exceptionsData = _exceptions.Analyze(trace!, traceFileName, top, processFilter);
-                _exceptionsReport.Render(exceptionsData, cap, top);
-                captured["exceptions-trace"] = cap.GetDoc();
-            }, () => exceptionsData?.TraceInfo);
-            RunAnalyzer("thread-pool-starvation", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Thread Pool Starvation", traceFileName, navLevel: 3, commandName: "thread-pool-starvation");
-                starvationData = _starvation.Analyze(trace!, traceFileName, top);
-                _starvationReport.Render(starvationData, cap, top);
-                captured["thread-pool-starvation"] = cap.GetDoc();
-            }, () => starvationData?.TraceInfo);
-            RunAnalyzer("jit-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("JIT Trace", traceFileName, navLevel: 3, commandName: "jit-trace");
-                jitData = _jit.Analyze(trace!, traceFileName, top, processFilter);
-                _jitReport.Render(jitData, cap, top);
-                captured["jit-trace"] = cap.GetDoc();
-            }, () => jitData?.TraceInfo);
-            RunAnalyzer("http-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("HTTP Trace", traceFileName, navLevel: 3, commandName: "http-trace");
-                httpData = _http.Analyze(trace!, traceFileName, top, processFilter, slowMs);
-                _httpReport.Render(httpData, cap, top);
-                captured["http-trace"] = cap.GetDoc();
-            }, () => httpData?.TraceInfo);
-            RunAnalyzer("async-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Async / Task Trace", traceFileName, navLevel: 3, commandName: "async-trace");
-                asyncData = _async.Analyze(trace!, traceFileName, top, processFilter);
-                _asyncReport.Render(asyncData, cap, top);
-                captured["async-trace"] = cap.GetDoc();
-            }, () => asyncData?.TraceInfo);
-            RunAnalyzer("sql-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("SQL / EF Trace", traceFileName, navLevel: 3, commandName: "sql-trace");
-                sqlData = _sql.Analyze(trace!, traceFileName, top, processFilter, slowMs);
-                _sqlReport.Render(sqlData, cap, top);
-                captured["sql-trace"] = cap.GetDoc();
-            }, () => sqlData?.TraceInfo);
-            RunAnalyzer("json-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("JSON Serialization", traceFileName, navLevel: 3, commandName: "json-trace");
-                jsonData = _json.Analyze(trace!, traceFileName, top, processFilter);
-                _jsonReport.Render(jsonData, cap, top);
-                captured["json-trace"] = cap.GetDoc();
-            }, () => jsonData?.TraceInfo);
-            RunAnalyzer("context-switch-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Context Switch", traceFileName, navLevel: 3, commandName: "context-switch-trace");
-                cswitchData = _cswitch.Analyze(trace!, traceFileName, top, processFilter);
-                _cswitchReport.Render(cswitchData, cap, top);
-                captured["context-switch-trace"] = cap.GetDoc();
-            }, () => cswitchData?.TraceInfo);
-            RunAnalyzer("finalizer-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Finalizer Trace", traceFileName, navLevel: 3, commandName: "finalizer-trace");
-                finalizerData = _finalizer.Analyze(trace!, traceFileName, top, processFilter);
-                _finalizerReport.Render(finalizerData, cap, top);
-                captured["finalizer-trace"] = cap.GetDoc();
-            }, () => finalizerData?.TraceInfo);
-            RunAnalyzer("connection-pool-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Connection Pool Trace", traceFileName, navLevel: 3, commandName: "connection-pool-trace");
-                connPoolData = _connPool.Analyze(trace!, traceFileName, top, processFilter);
-                _connPoolReport.Render(connPoolData, cap, top);
-                captured["connection-pool-trace"] = cap.GetDoc();
-            }, () => connPoolData?.TraceInfo);
-            RunAnalyzer("alloc-burst-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Allocation Bursts", traceFileName, navLevel: 3, commandName: "alloc-burst-trace");
-                allocBurstData = _allocBurst.Analyze(trace!, traceFileName, top, processFilter);
-                _allocBurstReport.Render(allocBurstData, cap, top);
-                captured["alloc-burst-trace"] = cap.GetDoc();
-            }, () => allocBurstData?.TraceInfo);
-            RunAnalyzer("deadlock-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Deadlock Detection", traceFileName, navLevel: 3, commandName: "deadlock-trace");
-                deadlockData = _deadlock.Analyze(trace!, traceFileName, top, processFilter);
-                _deadlockReport.Render(deadlockData, cap, top);
-                captured["deadlock-trace"] = cap.GetDoc();
-            }, () => deadlockData?.TraceInfo);
-            RunAnalyzer("loh-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("LOH Allocation Trace", traceFileName, navLevel: 3, commandName: "loh-trace");
-                lohData = _loh.Analyze(trace!, traceFileName, top, processFilter);
-                _lohReport.Render(lohData, cap, top);
-                captured["loh-trace"] = cap.GetDoc();
-            }, () => lohData?.TraceInfo);
-            RunAnalyzer("retry-storm-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Retry Storm", traceFileName, navLevel: 3, commandName: "retry-storm-trace");
-                retryStormData = _retryStorm.Analyze(trace!, traceFileName, top, processFilter);
-                _retryStormReport.Render(retryStormData, cap, top);
-                captured["retry-storm-trace"] = cap.GetDoc();
-            }, () => retryStormData?.TraceInfo);
-            RunAnalyzer("process-lifecycle-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Process Lifecycle", traceFileName, navLevel: 3, commandName: "process-lifecycle-trace");
-                processLifeData = _processLife.Analyze(trace!, traceFileName, top, processFilter);
-                _processLifeReport.Render(processLifeData, cap, top);
-                captured["process-lifecycle-trace"] = cap.GetDoc();
-            }, () => processLifeData?.TraceInfo);
-            RunAnalyzer("task-scheduler-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Task Scheduler Trace", traceFileName, navLevel: 3, commandName: "task-scheduler-trace");
-                taskSchedData = _taskSched.Analyze(trace!, traceFileName, top, processFilter);
-                _taskSchedReport.Render(taskSchedData, cap, top);
-                captured["task-scheduler-trace"] = cap.GetDoc();
-            }, () => taskSchedData?.TraceInfo);
-            RunAnalyzer("file-io-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("File I/O Trace", traceFileName, navLevel: 3, commandName: "file-io-trace");
-                fileIoData = _fileIo.Analyze(trace!, traceFileName, top, processFilter);
-                _fileIoReport.Render(fileIoData, cap, top);
-                captured["file-io-trace"] = cap.GetDoc();
-            }, () => fileIoData?.TraceInfo);
-            RunAnalyzer("socket-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Socket Trace", traceFileName, navLevel: 3, commandName: "socket-trace");
-                socketData = _socket.Analyze(trace!, traceFileName, top, processFilter);
-                _socketReport.Render(socketData, cap, top);
-                captured["socket-trace"] = cap.GetDoc();
-            }, () => socketData?.TraceInfo);
-            RunAnalyzer("dns-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("DNS Trace", traceFileName, navLevel: 3, commandName: "dns-trace");
-                dnsData = _dns.Analyze(trace!, traceFileName, top, processFilter);
-                _dnsReport.Render(dnsData, cap, top);
-                captured["dns-trace"] = cap.GetDoc();
-            }, () => dnsData?.TraceInfo);
-            RunAnalyzer("kestrel-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Kestrel Trace", traceFileName, navLevel: 3, commandName: "kestrel-trace");
-                kestrelData = _kestrel.Analyze(trace!, traceFileName, top, processFilter);
-                _kestrelReport.Render(kestrelData, cap, top);
-                captured["kestrel-trace"] = cap.GetDoc();
-            }, () => kestrelData?.TraceInfo);
-            RunAnalyzer("handle-leak-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Handle Leak Trace", traceFileName, navLevel: 3, commandName: "handle-leak-trace");
-                handleLeakData = _handleLeak.Analyze(trace!, traceFileName, top, processFilter);
-                _handleLeakReport.Render(handleLeakData, cap, top);
-                captured["handle-leak-trace"] = cap.GetDoc();
-            }, () => handleLeakData?.TraceInfo);
-            RunAnalyzer("aspnetcore-pipeline-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("ASP.NET Core Pipeline", traceFileName, navLevel: 3, commandName: "aspnetcore-pipeline-trace");
-                aspnetData = _aspnet.Analyze(trace!, traceFileName, top, processFilter);
-                _aspnetReport.Render(aspnetData, cap, top);
-                captured["aspnetcore-pipeline-trace"] = cap.GetDoc();
-            }, () => aspnetData?.TraceInfo);
-            RunAnalyzer("otel-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("OpenTelemetry Trace", traceFileName, navLevel: 3, commandName: "otel-trace");
-                otelData = _otel.Analyze(trace!, traceFileName, top, processFilter);
-                _otelReport.Render(otelData, cap, top);
-                captured["otel-trace"] = cap.GetDoc();
-            }, () => otelData?.TraceInfo);
-            RunAnalyzer("anomaly-trace", () =>
-            {
-                var cap = new CaptureSink();
-                cap.Header("Anomaly Detection", traceFileName, navLevel: 3, commandName: "anomaly-trace");
-                anomalyData = _anomaly.Analyze(traceFileName, processFilter,
-                    cpu: cpuData, gc: gcData, alloc: allocBurstData,
-                    contention: contentionData, exceptions: exceptionsData);
-                _anomalyReport.Render(anomalyData, cap, top);
-                captured["anomaly-trace"] = cap.GetDoc();
-            }, () => anomalyData?.TraceInfo);
+                if (sub.HasCorrelationPhase) continue;
+                string? traceInfo = null;
+                RunAnalyzer(sub.Key,
+                    () => traceInfo = sub.Run(trace!, traceFileName, runParams, captured, results),
+                    () => traceInfo);
+            }
+
+            // ── Phase 2: data extraction for cross-cutting sections ──────────────
+            var cpuData        = results.GetValueOrDefault("cpu-trace")              as CmdData.CpuTraceData;
+            var allocData      = results.GetValueOrDefault("alloc-trace")            as CmdData.AllocTraceData;
+            var gcData         = results.GetValueOrDefault("gc-trace")               as CmdData.GcTraceData;
+            var contentionData = results.GetValueOrDefault("contention-trace")       as CmdData.ContentionTraceData;
+            var exceptionsData = results.GetValueOrDefault("exceptions-trace")       as CmdData.ExceptionsTraceData;
+            var starvationData = results.GetValueOrDefault("thread-pool-starvation") as CmdData.ThreadPoolStarvationData;
+            var jitData        = results.GetValueOrDefault("jit-trace")              as CmdData.JitTraceData;
+            var httpData       = results.GetValueOrDefault("http-trace")             as CmdData.HttpTraceData;
+            var asyncData      = results.GetValueOrDefault("async-trace")            as CmdData.AsyncTraceData;
+            var sqlData        = results.GetValueOrDefault("sql-trace")              as CmdData.SqlTraceData;
 
             // ── Trace Summary Dashboard ────────────────────────────────────────
             // Rendered FIRST so the reader gets a cross-cutting health overview
@@ -529,38 +180,15 @@ public sealed class TraceAnalyzeCommand : ICommand
             // Sourced from the CPU semantic pipeline which has the richest signal.
             RenderDiagnosticInterpretation(sink, cpuData);
 
-            // ── Root Cause Analysis ───────────────────────────────────────────
-            // Synthesizes causal chains from all analyzer outputs + correlations.
-            RunAnalyzer("root-cause-trace", () =>
+            // ── Phase 3: root-cause (runs after correlations) ──────────────────
+            foreach (var sub in _subAnalyzers)
             {
-                var cap = new CaptureSink();
-                cap.Header("Root Cause Analysis", traceFileName, navLevel: 3, commandName: "root-cause-trace");
-                rootCauseData = _rootCause.Analyze(traceFileName,
-                    correlations:  correlations,
-                    cpu:           cpuData,
-                    alloc:         allocData,
-                    gc:            gcData,
-                    contention:    contentionData,
-                    exceptions:    exceptionsData,
-                    starvation:    starvationData,
-                    jit:           jitData,
-                    http:          httpData,
-                    async_:        asyncData,
-                    sql:           sqlData,
-                    finalizer:     finalizerData,
-                    connPool:      connPoolData,
-                    allocBurst:    allocBurstData,
-                    deadlock:      deadlockData,
-                    loh:           lohData,
-                    retryStorm:    retryStormData,
-                    taskScheduler: taskSchedData,
-                    fileIo:        fileIoData,
-                    socket:        socketData,
-                    dns:           dnsData,
-                    anomaly:       anomalyData);
-                _rootCauseReport.Render(rootCauseData, cap, top);
-                captured["root-cause-trace"] = cap.GetDoc();
-            }, () => rootCauseData?.TraceInfo);
+                if (!sub.HasCorrelationPhase) continue;
+                string? traceInfo = null;
+                RunAnalyzer(sub.Key,
+                    () => traceInfo = sub.OnCorrelationAvailable(traceFileName, correlations, captured, results, top),
+                    () => traceInfo);
+            }
 
             // Grouped replay improves report navigation visibility while preserving
             // analyzer run order above.

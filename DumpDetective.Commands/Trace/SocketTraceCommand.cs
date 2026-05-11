@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class SocketTraceCommand : ICommand
+public sealed class SocketTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly SocketTraceAnalyzer _analyzer;
     private readonly SocketTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class SocketTraceCommand : ICommand
     public string Name               => "socket-trace";
     public string Description        => "Socket connect analysis — measures connection latency, failures, and top remote hosts from System.Net.Sockets events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Socket Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective socket-trace <trace-file> [options]

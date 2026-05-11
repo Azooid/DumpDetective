@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class DeadlockPatternCommand : ICommand
+public sealed class DeadlockPatternCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly DeadlockPatternAnalyzer _analyzer;
     private readonly DeadlockPatternReport   _report;
@@ -23,6 +25,19 @@ public sealed class DeadlockPatternCommand : ICommand
     public string Name               => "deadlock-trace";
     public string Description        => "Deadlock pattern detection — heuristic detection of mutually-blocked thread pairs from contention and wait events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Deadlock Detection";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective deadlock-trace <trace-file> [options]

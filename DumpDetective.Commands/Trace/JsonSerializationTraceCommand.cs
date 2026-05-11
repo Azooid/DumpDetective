@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class JsonSerializationTraceCommand : ICommand
+public sealed class JsonSerializationTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly JsonSerializationTraceAnalyzer _analyzer;
     private readonly JsonSerializationTraceReport   _report;
@@ -24,6 +26,19 @@ public sealed class JsonSerializationTraceCommand : ICommand
     public string Name               => "json-trace";
     public string Description        => "JSON serialization cost analysis — CPU time and allocation pressure from System.Text.Json, Newtonsoft.Json, and DataContract JSON.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Key                  => Name;
+    public string SectionTitle         => "JSON Serialization";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective json-trace <trace-file> [options]

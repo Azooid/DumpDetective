@@ -48,6 +48,9 @@ public sealed class LohTraceReport
                 "Identify large allocations with 'alloc-trace' or a heap dump.");
 
         if (data.LohSizeTimeline is { Count: > 2 } tl)
-            sink.Sparkline(tl, "LOH size over time (MB)", " MB");
+        {
+            var tlMb = tl.Select(b => b / 1024.0 / 1024.0).ToList();
+            sink.Sparkline(tlMb, "LOH size over time (MB)", " MB");
+        }
     }
 }

@@ -16,13 +16,13 @@ namespace DumpDetective.Analysis.Trace.Analyzers;
 public sealed class CpuTraceAnalyzer
 {
     public CpuTraceData Analyze(string tracePath, int top = 20, string? processFilter = null,
-                                  bool filterSystem = true)
+                                  bool filterSystem = true, bool filterUnresolved = true)
     {
         try
         {
             using var trace = TraceLog.OpenOrConvert(tracePath,
                 new TraceLogOptions { ConversionLog = TextWriter.Null });
-            return Analyze(trace, Path.GetFileName(tracePath), top, processFilter, filterSystem);
+            return Analyze(trace, Path.GetFileName(tracePath), top, processFilter, filterSystem, filterUnresolved);
         }
         catch (Exception ex)
         {
@@ -32,7 +32,8 @@ public sealed class CpuTraceAnalyzer
     }
 
     public CpuTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                 string? processFilter = null, bool filterSystem = true)
+                                 string? processFilter = null, bool filterSystem = true,
+                                 bool filterUnresolved = true)
     {
         // Mutable trie node used during collection
         var root = new MutableNode("<root>", "");
@@ -48,6 +49,10 @@ public sealed class CpuTraceAnalyzer
         string topProcessName = "";
         int processSampleCount = 0;
         var processNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        // Counts samples where ≥1 frame could not be resolved to a method name.
+        // Covers: (a) ManagedModule frames (CLR rundown absent) and
+        //         (b) completely unresolved frames (no module, no method — PerfView shows as <<? !?>>) .
+        int unresolvedSamples = 0;
 
         try
         {
@@ -92,17 +97,48 @@ public sealed class CpuTraceAnalyzer
                 // as Caller chain, leaf at the top).
                 var frames = new List<(string Method, string Module)>(32);
                 var cs = callStack;
+                bool hasUnresolvedManaged = false;
                 while (cs != null)
                 {
                     var addr = cs.CodeAddress;
-                    // FullMethodName returns "" (empty, not null) for unresolved native frames
-                    string method = string.IsNullOrEmpty(addr.FullMethodName)
-                        ? interner.Intern(addr.ModuleName ?? "?")
-                        : interner.InternTruncated(addr.FullMethodName);
-                    string module = interner.Intern(addr.ModuleName ?? "");
+                    string rawModule = addr.ModuleName ?? "";
+                    string module    = interner.Intern(rawModule);
+                    string method;
+                    if (string.IsNullOrEmpty(addr.FullMethodName))
+                    {
+                        // "ManagedModule" is TraceLog's synthetic module name for managed JIT code
+                        // that couldn't be resolved (CLR rundown events not present in the trace).
+                        // Using a distinct placeholder keeps these frames visible in the call tree
+                        // instead of silently dropping them via the method==module noisy-frame filter.
+                        if (rawModule.Equals("ManagedModule", StringComparison.OrdinalIgnoreCase))
+                        {
+                            // Managed JIT code — CLR rundown events were not captured.
+                            // Angle brackets avoid the [Assembly.Qualifier] stripping in CleanIlMethod.
+                            method = interner.Intern("<managed, no symbols>");
+                            hasUnresolvedManaged = true;
+                        }
+                        else if (string.IsNullOrEmpty(rawModule))
+                        {
+                            // Completely unresolved: no module info at all.
+                            // PerfView shows these as <<? !?>>. They represent real CPU time
+                            // (often the bulk of samples in traces without symbol resolution).
+                            // Angle brackets avoid the [Assembly.Qualifier] stripping in CleanIlMethod.
+                            method = interner.Intern("<unresolved>");
+                            hasUnresolvedManaged = true;
+                        }
+                        else
+                        {
+                            method = interner.Intern(rawModule);  // native stub: method=module → noisy (descended through)
+                        }
+                    }
+                    else
+                    {
+                        method = interner.InternTruncated(addr.FullMethodName);
+                    }
                     frames.Add((method, module));
                     cs = cs.Caller;
                 }
+                if (hasUnresolvedManaged) unresolvedSamples++;
 
                 // frames[0] = leaf (executing), frames[^1] = root caller
                 // Reverse so we insert root→leaf into the trie
@@ -138,7 +174,8 @@ public sealed class CpuTraceAnalyzer
 
         var topMethods = allNodes
             .Where(n => (n.ExclusiveSamples > 0 || n.InclusiveSamples > 0)
-                     && (!filterSystem || !IsSystemModule(n.Module))
+                     && (!filterSystem    || !IsSystemModule(n.Module))
+                     && (!filterUnresolved || !IsUnresolvedPlaceholder(n.Method))
                      && n.Method != n.Module)  // skip unresolved native stubs (method == module fallback)
             .OrderByDescending(n => n.ExclusiveSamples)
             .Take(top)
@@ -152,10 +189,10 @@ public sealed class CpuTraceAnalyzer
             .ToList();
 
         // ── Build immutable call tree (top-level children of root) ────────────
-        var callTree = EffectiveRoots(root.Children, filterSystem)
+        var callTree = EffectiveRoots(root.Children, filterSystem, filterUnresolved)
             .OrderByDescending(c => c.InclusiveSamples)
             .Take(top)
-            .Select(n => Freeze(n, totalSamples, filterSystem: filterSystem))
+            .Select(n => Freeze(n, totalSamples, filterSystem: filterSystem, filterUnresolved: filterUnresolved))
             .ToList();
 
         // ── Hot path: follow highest-inclusive child at each level ────────────
@@ -171,7 +208,7 @@ public sealed class CpuTraceAnalyzer
         // This correctly allows legitimate repeats (e.g. WrapEntityServiceAction called
         // multiple times for nested APM spans) while stopping the pipeline re-entry loop.
         var hotPath = new List<CallTreeNode>();
-        var hotCur = EffectiveRoots(root.Children, filterSystem)
+        var hotCur = EffectiveRoots(root.Children, filterSystem, filterUnresolved)
             .OrderByDescending(c => c.InclusiveSamples)
             .FirstOrDefault();
 
@@ -179,7 +216,7 @@ public sealed class CpuTraceAnalyzer
         {
             hotPath.Add(Freeze(hotCur, totalSamples, childrenDepth: 0));
             int curSamples = hotCur.InclusiveSamples;
-            hotCur = EffectiveRoots(hotCur.Children, filterSystem)
+            hotCur = EffectiveRoots(hotCur.Children, filterSystem, filterUnresolved)
                 .OrderByDescending(c => c.InclusiveSamples)
                 .FirstOrDefault(c => c.InclusiveSamples * 100.0 / totalSamples >= 0.5
                                && c.InclusiveSamples <= curSamples);  // must not go UP — that's a cycle
@@ -241,17 +278,18 @@ public sealed class CpuTraceAnalyzer
 
         return new CpuTraceData(info, totalSamples, intervalMs, processFilter,
             topMethods, hotPath, collapsedCallTree, stats,
-            semanticFindings, hotChains, categoryScores, samplesTimeline);
+            semanticFindings, hotChains, categoryScores, samplesTimeline,
+            unresolvedSamples);
     }
 
     private static CallTreeNode Freeze(MutableNode n, int total, int childrenDepth = 5,
-                                       bool filterSystem = false)
+                                       bool filterSystem = false, bool filterUnresolved = true)
     {
         var children = childrenDepth > 0
-            ? EffectiveRoots(n.Children, filterSystem)
+            ? EffectiveRoots(n.Children, filterSystem, filterUnresolved)
                 .OrderByDescending(c => c.InclusiveSamples)
                 .Take(20)
-                .Select(c => Freeze(c, total, childrenDepth - 1, filterSystem))
+                .Select(c => Freeze(c, total, childrenDepth - 1, filterSystem, filterUnresolved))
                 .ToList()
             : (IReadOnlyList<CallTreeNode>)[];
 
@@ -265,27 +303,28 @@ public sealed class CpuTraceAnalyzer
             Children:         children);
     }
 
-    // A frame is "noisy" (uninformative) when:
-    //   • filterSystem=true and it belongs to a known OS/IIS module, OR
-    //   • method == module  → unresolved native stub (FullMethodName was empty, fell back to module name)
-    //   • method == "?"     → completely unresolved (no module, no symbol)
-    // Noisy frames are descended through so their children bubble up — we never just drop
-    // the subtree.  The method==module / "?" check fires even when filterSystem=false
-    // because those frames carry zero diagnostic value.
-    private static bool IsNoisyFrame(MutableNode n, bool filterSystem) =>
-        (filterSystem && IsSystemModule(n.Module)) ||
-        n.Method == n.Module ||   // unresolved stub: FullMethodName="" → fallback to module name
-        n.Method == "?";          // completely unresolved (no module symbol)
+    // A frame is "noisy" (uninformative) when any of the following apply:
+    //   • filterSystem=true  and it belongs to a known OS/IIS module
+    //   • filterUnresolved=true  and the method is a <unresolved> / <managed,no symbols> placeholder
+    //   • method == module   → unresolved native stub (FullMethodName="" → fell back to module name)
+    // Noisy frames are descended through so their children bubble up — the subtree is never dropped.
+    private static bool IsNoisyFrame(MutableNode n, bool filterSystem, bool filterUnresolved = true) =>
+        (filterSystem    && IsSystemModule(n.Module)) ||
+        (filterUnresolved && IsUnresolvedPlaceholder(n.Method)) ||
+        n.Method == n.Module;  // unresolved native stub: FullMethodName="" → fallback to module name
+
+    private static bool IsUnresolvedPlaceholder(string method) =>
+        method == "<unresolved>" || method == "<managed, no symbols>";
 
     private static IEnumerable<MutableNode> EffectiveRoots(
-        IEnumerable<MutableNode> nodes, bool filterSystem)
+        IEnumerable<MutableNode> nodes, bool filterSystem, bool filterUnresolved = true)
     {
         foreach (var n in nodes)
         {
-            if (!IsNoisyFrame(n, filterSystem))
+            if (!IsNoisyFrame(n, filterSystem, filterUnresolved))
                 yield return n;
             else
-                foreach (var c in EffectiveRoots(n.Children, filterSystem))
+                foreach (var c in EffectiveRoots(n.Children, filterSystem, filterUnresolved))
                     yield return c;
         }
     }

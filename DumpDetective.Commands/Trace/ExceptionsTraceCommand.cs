@@ -6,9 +6,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class ExceptionsTraceCommand : ICommand
+public sealed class ExceptionsTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly ExceptionsTraceAnalyzer _analyzer;
     private readonly ExceptionsTraceReport   _report;
@@ -22,6 +24,19 @@ public sealed class ExceptionsTraceCommand : ICommand
     public string Name               => "exceptions-trace";
     public string Description        => "First-chance exception analysis from a .nettrace or .etl trace (exception flood detection, top types, call sites).";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Exceptions Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective exceptions-trace <trace-file> [options]

@@ -72,6 +72,33 @@ public sealed class CpuTraceReport
             return;
         }
 
+        // Warn when a large fraction of samples are unresolved.
+        // Case A — ManagedModule: CLR rundown events absent, managed methods unattributed.
+        // Case B — [unresolved]:  no module info at all (PerfView <<<?!?>>>); bulk of samples in
+        //          traces collected without proper ETW providers. This is the dominant case when
+        //          the call tree looks empty despite a high sample count.
+        if (data.UnresolvedSamples > 0 && data.TotalSamples > 0)
+        {
+            double unresolvedPct = data.UnresolvedSamples * 100.0 / data.TotalSamples;
+            if (unresolvedPct >= 5.0)
+            {
+                sink.Alert(AlertLevel.Warning,
+                    $"Symbol resolution incomplete: {unresolvedPct:F1}% of samples " +
+                    $"({data.UnresolvedSamples:N0} / {data.TotalSamples:N0}) could not be attributed " +
+                    "to a named method. These appear in the call tree as '\u003cunresolved\u003e' or " +
+                    "'\u003cmanaged, no symbols\u003e' and dominate the exclusive-CPU column.",
+                    "The trace is missing CLR rundown events and/or kernel symbol data. " +
+                    "Re-collect with one of the commands below to get full attribution:",
+                    "dotnet-trace (managed + rundown):\n" +
+                    "  dotnet-trace collect --profile cpu-sampling --clrevents default+rundown\n\n" +
+                    "PerfView (full symbol resolution):\n" +
+                    "  PerfView.exe /ClrEvents:Stack,Default,Rundown /NoGui collect\n\n" +
+                    "xperf / WPR:\n" +
+                    "  wpr -start CPU -start DotNet\n" +
+                    "  wpr -stop trace.etl");
+            }
+        }
+
         RenderHotPath(sink, data);
         RenderTopMethods(sink, data, top);
         RenderCallTree(sink, data, top);

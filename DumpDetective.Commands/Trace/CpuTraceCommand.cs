@@ -6,9 +6,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class CpuTraceCommand : ICommand
+public sealed class CpuTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly CpuTraceAnalyzer _analyzer;
     private readonly CpuTraceReport   _report;
@@ -22,6 +24,19 @@ public sealed class CpuTraceCommand : ICommand
     public string Name               => "cpu-trace";
     public string Description        => "CPU hot-path analysis from a .nettrace or .etl trace file (call tree + hot path, VS-style).";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Key                  => Name;
+    public string SectionTitle         => "CPU Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, p.FilterSystem, p.FilterUnresolved);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective cpu-trace <trace-file> [options]
@@ -43,6 +58,7 @@ public sealed class CpuTraceCommand : ICommand
           -n, --top <N>            Top N methods / call roots to display (default: 20)
           --process <name|pid>     Filter to a specific process name or PID
           --show-system            Include system/kernel frames (ntoskrnl, webengine4, iiscore, etc.)
+          --show-unresolved        Include unresolved frames (<unresolved>, <managed, no symbols>)
                                    By default these frames are hidden.
           -o, --output <file>      Write report to file (.html / .md / .txt / .json)
           -h, --help               Show this help
@@ -62,6 +78,7 @@ public sealed class CpuTraceCommand : ICommand
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
         bool filterSystem     = !a.HasFlag("show-system");
+        bool filterUnresolved = !a.HasFlag("show-unresolved");
 
         if (tracePath is null)
         {
@@ -93,7 +110,7 @@ public sealed class CpuTraceCommand : ICommand
 
             CpuTraceData? data = null;
             CommandBase.RunStatus($"Parsing CPU samples...", update =>
-                data = _analyzer.Analyze(tracePath, top, processFilter, filterSystem));
+                data = _analyzer.Analyze(tracePath, top, processFilter, filterSystem, filterUnresolved));
 
             _report.Render(data!, sink, top);
 

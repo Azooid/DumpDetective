@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class FileIoTraceCommand : ICommand
+public sealed class FileIoTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly FileIoTraceAnalyzer _analyzer;
     private readonly FileIoTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class FileIoTraceCommand : ICommand
     public string Name               => "file-io-trace";
     public string Description        => "File I/O analysis — detects slow synchronous reads/writes and high-throughput files from kernel file events (ETL only).";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "File I/O Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective file-io-trace <trace-file.etl> [options]

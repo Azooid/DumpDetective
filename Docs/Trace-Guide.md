@@ -50,7 +50,7 @@ DumpDetective sql-trace perf.etl --process w3wp --slow-ms 500 --output sql-repor
 DumpDetective async-trace app.nettrace --output async-report.html
 DumpDetective jit-trace app.nettrace --output jit-report.html
 DumpDetective http-trace perf.etl --process w3wp --slow-ms 500 --output http-report.html
-DumpDetective thread-pool-starvation perf.etl --top 50 --output starvation.html
+DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
 ```
 
 ---
@@ -58,19 +58,38 @@ DumpDetective thread-pool-starvation perf.etl --top 50 --output starvation.html
 ## Command Index
 
 | Command | Category | Description | Detail |
-|---|---|---|---|
-| `trace-analyze` | Combined | Combined report from all ten analyzers in one pass | [→](trace/Orchestrator/trace-analyze.md) |
+|---|---|---|
+| `trace-analyze` | Combined | Combined report from all 29 sub-analyzers in one pass | [→](trace/Orchestrator/trace-analyze.md) |
 | `trace-dump-analyze` | Combined / Cross-source | Trace + dump combined analysis with cross-source correlation | [→](trace/Orchestrator/trace-dump-analyze.md) |
 | `cpu-trace` | CPU / Allocation | CPU hot path, top methods, call tree, semantic pattern detection | [→](trace/CPU-Allocation/cpu-trace.md) |
 | `alloc-trace` | CPU / Allocation | Top allocating types and call sites | [→](trace/CPU-Allocation/alloc-trace.md) |
+| `alloc-burst-trace` | CPU / Allocation | Allocation burst detection | — |
 | `gc-trace` | GC / Exceptions / Locks | GC pause stats, trigger reasons, heap sizes | [→](trace/GC-Exceptions-Locks/gc-trace.md) |
+| `finalizer-trace` | GC / Exceptions / Locks | Finalizer queue bursts and growth | — |
+| `loh-trace` | GC / Exceptions / Locks | LOH allocation hotspots | — |
 | `contention-trace` | GC / Exceptions / Locks | Lock contention hotspots by total wait time | [→](trace/GC-Exceptions-Locks/contention-trace.md) |
 | `exceptions-trace` | GC / Exceptions / Locks | Exception volume, top types, flood detection | [→](trace/GC-Exceptions-Locks/exceptions-trace.md) |
-| `thread-pool-starvation` | Threads / Concurrency | ThreadPool starvation signal detection | [→](trace/Threads-Concurrency/threadpool-starvation.md) |
+| `deadlock-trace` | GC / Exceptions / Locks | Deadlock pattern detection | — |
+| `retry-storm-trace` | GC / Exceptions / Locks | Retry storm detection | — |
+| `threadpool-starvation` | Threads / Concurrency | ThreadPool starvation signal detection | [→](trace/Threads-Concurrency/threadpool-starvation.md) |
 | `async-trace` | Threads / Concurrency | Async Task scheduling, sync-over-async hotspots, continuation sites | [→](trace/Threads-Concurrency/async-trace.md) |
-| `jit-trace` | JIT / HTTP / SQL | JIT compilation time, slowest methods, top modules | [→](trace/JIT-HTTP/jit-trace.md) |
-| `http-trace` | JIT / HTTP / SQL | HTTP request latency, top endpoints, error rates | [→](trace/JIT-HTTP/http-trace.md) |
-| `sql-trace` | JIT / HTTP / SQL | SQL/EF query latency, slow queries, database summaries | [→](trace/JIT-HTTP/sql-trace.md) |
+| `context-switch-trace` | Threads / Concurrency | Kernel context-switch analysis (ETL only) | [→](trace/Threads-Concurrency/context-switch-trace.md) |
+| `task-scheduler-trace` | Threads / Concurrency | Task scheduler events and custom schedulers | — |
+| `jit-trace` | JIT / HTTP | JIT compilation time, slowest methods, top modules | [→](trace/JIT-HTTP/jit-trace.md) |
+| `http-trace` | JIT / HTTP | HTTP request latency, top endpoints, error rates | [→](trace/JIT-HTTP/http-trace.md) |
+| `kestrel-trace` | JIT / HTTP | Kestrel connection and request-processing events | — |
+| `aspnetcore-pipeline-trace` | JIT / HTTP | ASP.NET Core middleware pipeline timing | — |
+| `sql-trace` | SQL / Network | SQL/EF query latency, slow queries, database summaries | [→](trace/SQL-Serialization/sql-trace.md) |
+| `json-trace` | SQL / Network | JSON serialization CPU cost and allocation pressure | [→](trace/SQL-Serialization/json-trace.md) |
+| `connection-pool-trace` | SQL / Network | DB connection pool checkout/return events | — |
+| `socket-trace` | SQL / Network | Socket send/receive volume and latency | — |
+| `dns-trace` | SQL / Network | DNS resolution latency and failure rates | — |
+| `process-lifecycle-trace` | Infrastructure | Process start/stop events and lifetime | — |
+| `file-io-trace` | Infrastructure | File I/O volume and latency | — |
+| `handle-leak-trace` | Infrastructure | Handle allocation for leak detection | — |
+| `otel-trace` | Observability | OpenTelemetry span events and overhead | — |
+| `anomaly-trace` | Intelligence | Z-score anomaly detection across all metric timelines | — |
+| `root-cause-trace` | Intelligence | Root cause chain synthesis across all sub-analyzers | — |
 
 ---
 
@@ -78,7 +97,7 @@ DumpDetective thread-pool-starvation perf.etl --top 50 --output starvation.html
 
 ### `trace-analyze`
 
-Runs all ten sub-analyzers (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `thread-pool-starvation`, `jit-trace`, `http-trace`, `async-trace`, `sql-trace`) in a single pass over the trace file and produces a combined report. The report opens with a **Trace Summary** dashboard giving a cross-cutting health overview and pattern detector findings before the per-analyzer chapters. Start here before running focused commands.
+Runs all 29 sub-analyzers (`cpu-trace`, `alloc-trace`, `alloc-burst-trace`, `gc-trace`, `finalizer-trace`, `loh-trace`, `contention-trace`, `exceptions-trace`, `deadlock-trace`, `retry-storm-trace`, `threadpool-starvation`, `async-trace`, `context-switch-trace`, `task-scheduler-trace`, `jit-trace`, `http-trace`, `kestrel-trace`, `aspnetcore-pipeline-trace`, `sql-trace`, `json-trace`, `connection-pool-trace`, `socket-trace`, `dns-trace`, `process-lifecycle-trace`, `file-io-trace`, `handle-leak-trace`, `otel-trace`, `anomaly-trace`, `root-cause-trace`) in a single pass over the trace file and produces a combined report. The report opens with a **Trace Summary** dashboard giving a cross-cutting health overview and pattern detector findings before the per-analyzer chapters. Start here before running focused commands.
 
 ```bash
 DumpDetective trace-analyze app.nettrace
@@ -93,7 +112,7 @@ Options: `--top <n>`, `--process <name>`, `--show-system`, `--slow-ms <ms>`, `-o
 
 ### `trace-dump-analyze`
 
-Opens a trace file AND a memory dump captured during the same incident window, runs all ten trace sub-analyzers plus a lightweight dump heap walk, then runs `TraceDumpCorrelator` to surface **cross-source findings** — patterns that require both sources to detect. The cross-source section appears at the top of the report as the highest-confidence signal.
+Opens a trace file AND a memory dump captured during the same incident window, runs all 29 trace sub-analyzers plus a lightweight dump heap walk, then runs `TraceDumpCorrelator` to surface **cross-source findings** — patterns that require both sources to detect. The cross-source section appears at the top of the report as the highest-confidence signal.
 
 **How to capture both files:**
 
@@ -205,13 +224,13 @@ Options: `--top <n>`, `--process <name>`, `-o <file>` — [full details →](tra
 
 ## Threads and Concurrency Commands
 
-### `thread-pool-starvation`
+### `threadpool-starvation`
 
-Parsing `WaitHandleWaitStart` events (threads blocking on wait handles) and ThreadPool hill-climbing `Adjustment` events. Counts starvation-reason adjustments, tracks peak and final worker thread counts, and groups wait-handle events by thread and source kind (`MonitorWait`, `MonitorEnter`, `WaitOne`, `WaitAny`, `WaitAll`). Warmup-only adjustments are filtered out to reduce noise.
+Parses `WaitHandleWaitStart` events and ThreadPool hill-climbing `Adjustment` events. Counts starvation-reason adjustments, tracks peak and final worker thread counts, and groups wait-handle events by thread and source kind (`MonitorWait`, `MonitorEnter`, `WaitOne`, `WaitAny`, `WaitAll`). Warmup-only adjustments are filtered out to reduce noise.
 
 ```bash
-DumpDetective thread-pool-starvation perf.nettrace --top 50 --output starvation.html
-DumpDetective thread-pool-starvation perf.etl --top 50 --output starvation.html
+DumpDetective threadpool-starvation perf.nettrace --top 50 --output starvation.html
+DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
 ```
 
 Options: `--top <n>`, `-o <file>` — [full details →](trace/Threads-Concurrency/threadpool-starvation.md)
@@ -390,13 +409,37 @@ DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
 
 | Command | Category | Description | Detail |
 |---|---|---|---|
-| `trace-analyze` | Orchestration | Combined report from all six analyzers | [→](trace/Orchestrator/trace-analyze.md) |
-| `cpu-trace` | CPU / Allocation | CPU hot path, top methods, call tree | [→](trace/CPU-Allocation/cpu-trace.md) |
+| `trace-analyze` | Orchestrator | Combined report from all 29 sub-analyzers in one pass | [→](trace/Orchestrator/trace-analyze.md) |
+| `trace-dump-analyze` | Orchestrator / Cross-source | Trace + dump combined analysis with cross-source correlation | [→](trace/Orchestrator/trace-dump-analyze.md) |
+| `cpu-trace` | CPU / Allocation | CPU hot path, top methods, call tree, semantic pattern detection | [→](trace/CPU-Allocation/cpu-trace.md) |
 | `alloc-trace` | CPU / Allocation | Top allocating types and call sites | [→](trace/CPU-Allocation/alloc-trace.md) |
+| `alloc-burst-trace` | CPU / Allocation | Allocation burst detection — bursts of rapid consecutive allocations | — |
 | `gc-trace` | GC / Exceptions / Locks | GC pause stats, trigger reasons, heap sizes | [→](trace/GC-Exceptions-Locks/gc-trace.md) |
+| `finalizer-trace` | GC / Exceptions / Locks | Finalizer queue analysis — bursts, queue growth, top finalizer types | — |
+| `loh-trace` | GC / Exceptions / Locks | LOH allocation hotspots — types and call sites for large allocations | — |
 | `contention-trace` | GC / Exceptions / Locks | Lock contention hotspots by total wait time | [→](trace/GC-Exceptions-Locks/contention-trace.md) |
 | `exceptions-trace` | GC / Exceptions / Locks | Exception volume, top types, flood detection | [→](trace/GC-Exceptions-Locks/exceptions-trace.md) |
+| `deadlock-trace` | GC / Exceptions / Locks | Deadlock pattern detection from lock events | — |
+| `retry-storm-trace` | GC / Exceptions / Locks | Retry storm detection — rapid repeated retries from transient faults | — |
 | `threadpool-starvation` | Threads / Concurrency | ThreadPool starvation signal detection | [→](trace/Threads-Concurrency/threadpool-starvation.md) |
+| `async-trace` | Threads / Concurrency | Async Task scheduling, sync-over-async hotspots, continuation sites | [→](trace/Threads-Concurrency/async-trace.md) |
+| `context-switch-trace` | Threads / Concurrency | Kernel context-switch analysis (ETL only) | [→](trace/Threads-Concurrency/context-switch-trace.md) |
+| `task-scheduler-trace` | Threads / Concurrency | Task scheduler events — custom schedulers, task queueing overhead | — |
+| `jit-trace` | JIT / HTTP | JIT compilation time, slowest methods, top modules | [→](trace/JIT-HTTP/jit-trace.md) |
+| `http-trace` | JIT / HTTP | HTTP request latency, top endpoints, error rates | [→](trace/JIT-HTTP/http-trace.md) |
+| `kestrel-trace` | JIT / HTTP | Kestrel connection and request-processing events | — |
+| `aspnetcore-pipeline-trace` | JIT / HTTP | ASP.NET Core middleware pipeline timing per endpoint | — |
+| `sql-trace` | SQL / Network | SQL/EF query latency, slow queries, database summaries | [→](trace/SQL-Serialization/sql-trace.md) |
+| `json-trace` | SQL / Network | JSON serialization CPU cost and allocation pressure | [→](trace/SQL-Serialization/json-trace.md) |
+| `connection-pool-trace` | SQL / Network | DB connection pool checkout/return events | — |
+| `socket-trace` | SQL / Network | Socket send/receive byte counts and latency | — |
+| `dns-trace` | SQL / Network | DNS resolution events — latency and failure rates | — |
+| `process-lifecycle-trace` | Infrastructure | Process start/stop events, exit codes, lifetime | — |
+| `file-io-trace` | Infrastructure | File I/O read/write volume and latency | — |
+| `handle-leak-trace` | Infrastructure | Handle allocation events for potential leak detection | — |
+| `otel-trace` | Observability | OpenTelemetry span events and instrumentation overhead | — |
+| `anomaly-trace` | Intelligence | Statistical z-score anomaly detection across all metric timelines | — |
+| `root-cause-trace` | Intelligence | Root cause chain synthesis across all trace sub-analyzers | — |
 
 ---
 
@@ -404,7 +447,7 @@ DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
 
 ### `trace-analyze`
 
-Runs all six sub-analyzers (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`) in a single pass over the trace file and produces a combined report. Start here before running focused commands.
+Runs all 29 sub-analyzers in a single pass over the trace file and produces a combined report.
 
 ```bash
 DumpDetective trace-analyze app.nettrace

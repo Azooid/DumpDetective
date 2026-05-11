@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class FinalizerTraceCommand : ICommand
+public sealed class FinalizerTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly FinalizerTraceAnalyzer _analyzer;
     private readonly FinalizerTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class FinalizerTraceCommand : ICommand
     public string Name               => "finalizer-trace";
     public string Description        => "Finalizer queue analysis — detects finalization bursts, queue growth, and top finalizer types from GC events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Finalizer Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective finalizer-trace <trace-file> [options]

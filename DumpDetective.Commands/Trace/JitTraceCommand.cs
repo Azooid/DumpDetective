@@ -6,9 +6,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class JitTraceCommand : ICommand
+public sealed class JitTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly JitTraceAnalyzer _analyzer;
     private readonly JitTraceReport   _report;
@@ -22,6 +24,19 @@ public sealed class JitTraceCommand : ICommand
     public string Name               => "jit-trace";
     public string Description        => "JIT compilation analysis from a .nettrace or .etl trace (methods compiled, JIT time, hot modules).";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "JIT Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective jit-trace <trace-file> [options]

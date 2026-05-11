@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class LohTraceCommand : ICommand
+public sealed class LohTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly LohTraceAnalyzer _analyzer;
     private readonly LohTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class LohTraceCommand : ICommand
     public string Name               => "loh-trace";
     public string Description        => "LOH trend analysis — tracks Large Object Heap growth across GC collections to detect fragmentation.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "LOH Allocation Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective loh-trace <trace-file> [options]

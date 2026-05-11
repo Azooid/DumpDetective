@@ -6,9 +6,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class HttpTraceCommand : ICommand
+public sealed class HttpTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly HttpTraceAnalyzer _analyzer;
     private readonly HttpTraceReport   _report;
@@ -22,6 +24,19 @@ public sealed class HttpTraceCommand : ICommand
     public string Name               => "http-trace";
     public string Description        => "HTTP request analysis from a .nettrace or .etl trace (latency, error rate, slow requests, top endpoints).";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "HTTP Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, p.SlowMs);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective http-trace <trace-file> [options]

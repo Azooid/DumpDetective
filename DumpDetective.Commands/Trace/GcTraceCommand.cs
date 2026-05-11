@@ -6,9 +6,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class GcTraceCommand : ICommand
+public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly GcTraceAnalyzer _analyzer;
     private readonly GcTraceReport   _report;
@@ -22,6 +24,19 @@ public sealed class GcTraceCommand : ICommand
     public string Name               => "gc-trace";
     public string Description        => "GC pause analysis from a .nettrace or .etl trace (pause times, trigger reasons, heap sizes per collection).";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "GC Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective gc-trace <trace-file> [options]

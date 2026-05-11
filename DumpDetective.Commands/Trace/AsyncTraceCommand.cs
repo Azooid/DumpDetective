@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class AsyncTraceCommand : ICommand
+public sealed class AsyncTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly AsyncTraceAnalyzer _analyzer;
     private readonly AsyncTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class AsyncTraceCommand : ICommand
     public string Name               => "async-trace";
     public string Description        => "Async/Task analysis — detects sync-over-async patterns, long-running continuations, and Task scheduling pressure.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Async / Task Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective async-trace <trace-file> [options]

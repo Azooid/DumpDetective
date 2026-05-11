@@ -33,7 +33,7 @@ internal static class HelpPrinter
         ("CPU & Allocation",              ["cpu-trace", "alloc-trace", "alloc-burst-trace"]),
         ("GC & Memory",                   ["gc-trace", "finalizer-trace", "loh-trace"]),
         ("Exceptions & Locks",            ["exceptions-trace", "contention-trace", "deadlock-trace", "retry-storm-trace"]),
-        ("Threads & Concurrency",         ["thread-pool-starvation", "async-trace", "context-switch-trace", "task-scheduler-trace"]),
+        ("Threads & Concurrency",         ["threadpool-starvation", "async-trace", "context-switch-trace", "task-scheduler-trace"]),
         ("JIT & HTTP",                    ["jit-trace", "http-trace", "kestrel-trace", "aspnetcore-pipeline-trace"]),
         ("SQL & Network",                 ["sql-trace", "json-trace", "connection-pool-trace", "socket-trace", "dns-trace"]),
         ("Infrastructure",                ["process-lifecycle-trace", "file-io-trace", "handle-leak-trace"]),

@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class KestrelTraceCommand : ICommand
+public sealed class KestrelTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly KestrelTraceAnalyzer _analyzer;
     private readonly KestrelTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class KestrelTraceCommand : ICommand
     public string Name               => "kestrel-trace";
     public string Description        => "Kestrel analysis — detects connection rejections, queue pressure, and request errors from Kestrel events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Kestrel Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective kestrel-trace <trace-file> [options]

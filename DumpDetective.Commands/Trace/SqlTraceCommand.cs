@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class SqlTraceCommand : ICommand
+public sealed class SqlTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly SqlTraceAnalyzer _analyzer;
     private readonly SqlTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class SqlTraceCommand : ICommand
     public string Name               => "sql-trace";
     public string Description        => "SQL/database command analysis — query durations, slow queries, error rates from SqlClient and EF Core event sources.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "SQL / EF Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, p.SlowMs);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective sql-trace <trace-file> [options]

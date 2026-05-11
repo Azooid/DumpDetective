@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class AllocationBurstCommand : ICommand
+public sealed class AllocationBurstCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly AllocationBurstAnalyzer _analyzer;
     private readonly AllocationBurstReport   _report;
@@ -23,6 +25,19 @@ public sealed class AllocationBurstCommand : ICommand
     public string Name               => "alloc-burst-trace";
     public string Description        => "Allocation burst detection — identifies 500 ms windows with 3× or more the median allocation rate.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Allocation Bursts";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective alloc-burst-trace <trace-file> [options]

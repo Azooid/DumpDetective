@@ -6,6 +6,7 @@ using DumpDetective.Core.Utilities;
 using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
+using DumpDetective.Core.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 using Spectre.Console;
 using CmdData = DumpDetective.Core.Models.CommandData;
@@ -16,7 +17,7 @@ namespace DumpDetective.Commands.Trace;
 /// Runs all trace analyzers and synthesizes ranked causal chains from their outputs
 /// plus CorrelationEngine findings.
 /// </summary>
-public sealed class RootCauseTraceCommand : ICommand
+public sealed class RootCauseTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly CpuTraceAnalyzer            _cpu;
     private readonly AllocTraceAnalyzer          _alloc;
@@ -80,6 +81,46 @@ public sealed class RootCauseTraceCommand : ICommand
     public string Name               => "root-cause-trace";
     public string Description        => "Root cause chain synthesis — runs all trace analyzers and derives ranked causal chains with actionable remediation advice.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Root Cause Analysis";
+    public bool   HasCorrelationPhase  => true;
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results) => null;
+
+    public string? OnCorrelationAvailable(string traceFileName, IReadOnlyList<CorrelationFinding> findings,
+                                          Dictionary<string, ReportDoc> captured,
+                                          Dictionary<string, object?> results, int top)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _rootCause.Analyze(traceFileName,
+            correlations:  findings,
+            cpu:           results.GetValueOrDefault("cpu-trace")              as CpuTraceData,
+            alloc:         results.GetValueOrDefault("alloc-trace")            as AllocTraceData,
+            gc:            results.GetValueOrDefault("gc-trace")               as GcTraceData,
+            contention:    results.GetValueOrDefault("contention-trace")       as ContentionTraceData,
+            exceptions:    results.GetValueOrDefault("exceptions-trace")       as ExceptionsTraceData,
+            starvation:    results.GetValueOrDefault("threadpool-starvation")  as ThreadPoolStarvationData,
+            jit:           results.GetValueOrDefault("jit-trace")              as JitTraceData,
+            http:          results.GetValueOrDefault("http-trace")             as HttpTraceData,
+            async_:        results.GetValueOrDefault("async-trace")            as AsyncTraceData,
+            sql:           results.GetValueOrDefault("sql-trace")              as SqlTraceData,
+            finalizer:     results.GetValueOrDefault("finalizer-trace")        as FinalizerTraceData,
+            connPool:      results.GetValueOrDefault("connection-pool-trace")  as ConnectionPoolTraceData,
+            allocBurst:    results.GetValueOrDefault("alloc-burst-trace")      as AllocationBurstData,
+            deadlock:      results.GetValueOrDefault("deadlock-trace")         as DeadlockPatternData,
+            loh:           results.GetValueOrDefault("loh-trace")              as LohTraceData,
+            retryStorm:    results.GetValueOrDefault("retry-storm-trace")      as RetryStormData,
+            taskScheduler: results.GetValueOrDefault("task-scheduler-trace")   as TaskSchedulerTraceData,
+            fileIo:        results.GetValueOrDefault("file-io-trace")          as FileIoTraceData,
+            socket:        results.GetValueOrDefault("socket-trace")           as SocketTraceData,
+            dns:           results.GetValueOrDefault("dns-trace")              as DnsTraceData,
+            anomaly:       results.GetValueOrDefault("anomaly-trace")          as AnomalyDetectionData);
+        _report.Render(d, sink, top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective root-cause-trace <trace-file> [options]

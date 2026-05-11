@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class ConnectionPoolTraceCommand : ICommand
+public sealed class ConnectionPoolTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly ConnectionPoolTraceAnalyzer _analyzer;
     private readonly ConnectionPoolTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class ConnectionPoolTraceCommand : ICommand
     public string Name               => "connection-pool-trace";
     public string Description        => "Database connection pool analysis — open/close tracking, leak detection, and peak concurrency from SqlClient events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Connection Pool Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective connection-pool-trace <trace-file> [options]

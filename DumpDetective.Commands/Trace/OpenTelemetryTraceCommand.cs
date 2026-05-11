@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class OpenTelemetryTraceCommand : ICommand
+public sealed class OpenTelemetryTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly OpenTelemetryTraceAnalyzer _analyzer;
     private readonly OpenTelemetryTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class OpenTelemetryTraceCommand : ICommand
     public string Name               => "otel-trace";
     public string Description        => "OpenTelemetry Activity analysis — measures span latency, error rates, and top operations from DiagnosticSource events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "OpenTelemetry Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective otel-trace <trace-file> [options]

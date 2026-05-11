@@ -8,9 +8,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class AllocTraceCommand : ICommand
+public sealed class AllocTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly AllocTraceAnalyzer _analyzer;
     private readonly AllocTraceReport   _report;
@@ -24,6 +26,30 @@ public sealed class AllocTraceCommand : ICommand
     public string Name               => "alloc-trace";
     public string Description        => "Allocation hotspot analysis from a .nettrace or .etl trace (GCAllocationTick — top allocating types and call sites).";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Allocation Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
+
+    public void OnDumpAvailable(string traceFileName, DumpSnapshot snap,
+                                Dictionary<string, ReportDoc> captured,
+                                Dictionary<string, object?> results, int top)
+    {
+        if (results.GetValueOrDefault(Name) is not AllocTraceData d) return;
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        _report.Render(d, sink, top, snap.TopTypes, snap.TotalHeapBytes);
+        captured[Name] = sink.GetDoc();
+    }
 
     private const string Help = """
         Usage: DumpDetective alloc-trace <trace-file> [options]

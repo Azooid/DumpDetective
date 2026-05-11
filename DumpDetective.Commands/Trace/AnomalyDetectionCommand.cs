@@ -15,7 +15,7 @@ namespace DumpDetective.Commands.Trace;
 /// Runs prerequisite analyzers (cpu, gc, alloc-burst, contention, exceptions)
 /// then feeds their timelines into AnomalyDetectionAnalyzer for z-score analysis.
 /// </summary>
-public sealed class AnomalyDetectionCommand : ICommand
+public sealed class AnomalyDetectionCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly CpuTraceAnalyzer          _cpu;
     private readonly GcTraceAnalyzer           _gc;
@@ -46,6 +46,24 @@ public sealed class AnomalyDetectionCommand : ICommand
     public string Name               => "anomaly-trace";
     public string Description        => "Statistical anomaly detection — z-score analysis over CPU, GC, allocation, contention, and exception rate timelines.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "Anomaly Detection";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _anomaly.Analyze(traceFileName, p.ProcessFilter,
+            cpu:        results.GetValueOrDefault("cpu-trace")         as CpuTraceData,
+            gc:         results.GetValueOrDefault("gc-trace")          as GcTraceData,
+            alloc:      results.GetValueOrDefault("alloc-burst-trace") as AllocationBurstData,
+            contention: results.GetValueOrDefault("contention-trace")  as ContentionTraceData,
+            exceptions: results.GetValueOrDefault("exceptions-trace")  as ExceptionsTraceData);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective anomaly-trace <trace-file> [options]

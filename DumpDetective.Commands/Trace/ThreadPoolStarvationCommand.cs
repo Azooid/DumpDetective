@@ -1,8 +1,10 @@
 using DumpDetective.Core.Utilities;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class ThreadPoolStarvationCommand : ICommand
+public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly ThreadPoolStarvationAnalyzer _analyzer;
     private readonly ThreadPoolStarvationReport   _report;
@@ -18,6 +20,19 @@ public sealed class ThreadPoolStarvationCommand : ICommand
     public string Name               => "threadpool-starvation";
     public string Description        => "Detect thread-pool starvation by parsing a .nettrace or .etl trace file.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Key                  => Name;
+    public string SectionTitle         => "Thread Pool Starvation";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective threadpool-starvation <trace-file> [options]

@@ -7,9 +7,11 @@ using DumpDetective.Reporting.Reports;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class DnsTraceCommand : ICommand
+public sealed class DnsTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly DnsTraceAnalyzer _analyzer;
     private readonly DnsTraceReport   _report;
@@ -23,6 +25,19 @@ public sealed class DnsTraceCommand : ICommand
     public string Name               => "dns-trace";
     public string Description        => "DNS resolution analysis — measures lookup latency, failure storms, and top hostnames from System.Net.NameResolution events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Key                  => Name;
+    public string SectionTitle         => "DNS Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective dns-trace <trace-file> [options]
