@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -25,15 +25,24 @@ public sealed class ExceptionsTraceAnalyzer
     }
 
     public ExceptionsTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null)
+                                        string? processFilter = null, Action<string>? progress = null)
     {
         var byType  = new Dictionary<string, TypeAcc>(StringComparer.Ordinal);
         var events  = new List<ExceptionEvent>();
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{events.Count:N0} exceptions  \u2022  {byType.Count} unique types");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

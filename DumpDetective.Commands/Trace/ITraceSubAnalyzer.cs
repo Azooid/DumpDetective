@@ -43,7 +43,8 @@ public interface ITraceSubAnalyzer
     /// <returns>The <c>TraceInfo</c> string for console display, or <see langword="null"/>.</returns>
     string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
                 Dictionary<string, ReportDoc> captured,
-                Dictionary<string, object?> results);
+                Dictionary<string, object?> results,
+                Action<string>? progress = null);
 
     /// <summary>
     /// Called after the dump heap walk. Default: no-op.

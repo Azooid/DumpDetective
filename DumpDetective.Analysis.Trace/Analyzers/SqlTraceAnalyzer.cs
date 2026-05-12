@@ -42,18 +42,28 @@ public sealed class SqlTraceAnalyzer
     }
 
     public SqlTraceData Analyze(TraceLog trace, string traceFileName, int top = 100,
-                                string? processFilter = null, double slowMs = 500)
+                                string? processFilter = null, double slowMs = 500,
+                                Action<string>? progress = null)
     {
         // Pending commands: correlation ID (or ThreadID) → start info
         var pending  = new Dictionary<string, (double StartMs, string Command, string Db)>(StringComparer.Ordinal);
         var commands = new List<SqlCommandEntry>();
         var queryAcc = new Dictionary<string, QueryAcc>(StringComparer.OrdinalIgnoreCase);
         var dbAcc    = new Dictionary<string, DbAcc>(StringComparer.OrdinalIgnoreCase);
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{commands.Count:N0} SQL commands");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

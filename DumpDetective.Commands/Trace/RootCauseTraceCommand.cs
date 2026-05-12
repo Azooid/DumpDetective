@@ -86,7 +86,8 @@ public sealed class RootCauseTraceCommand : ICommand, ITraceSubAnalyzer
     public bool   HasCorrelationPhase  => true;
 
     public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
-                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results) => null;
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null) => null;
 
     public string? OnCorrelationAvailable(string traceFileName, IReadOnlyList<CorrelationFinding> findings,
                                           Dictionary<string, ReportDoc> captured,
@@ -151,7 +152,7 @@ public sealed class RootCauseTraceCommand : ICommand, ITraceSubAnalyzer
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
 
-        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+        if (!GcTraceCommand.ValidateTrace(ref tracePath, Help)) return 1;
 
         var outputPaths = a.EffectiveOutputPaths.Count > 0
             ? a.EffectiveOutputPaths
@@ -164,9 +165,8 @@ public sealed class RootCauseTraceCommand : ICommand, ITraceSubAnalyzer
             if (!CommandBase.SuppressVerbose)
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
 
-            CommandBase.RunStatus("Opening trace file...", _ =>
-                trace = TraceLog.OpenOrConvert(tracePath!,
-                    new TraceLogOptions { ConversionLog = TextWriter.Null }));
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
 
             string fileName = Path.GetFileName(tracePath!);
 

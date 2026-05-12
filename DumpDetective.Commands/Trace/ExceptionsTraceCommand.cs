@@ -28,11 +28,12 @@ public sealed class ExceptionsTraceCommand : ICommand, ITraceSubAnalyzer
     public string SectionTitle         => "Exceptions Trace";
 
     public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
-                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
     {
         var sink = new CaptureSink();
         sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
-        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, progress);
         _report.Render(d, sink, p.Top);
         captured[Name] = sink.GetDoc(); results[Name] = d;
         return d.TraceInfo;
@@ -72,7 +73,7 @@ public sealed class ExceptionsTraceCommand : ICommand, ITraceSubAnalyzer
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
 
-        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+        if (!GcTraceCommand.ValidateTrace(ref tracePath, Help)) return 1;
 
         var outputPaths = a.EffectiveOutputPaths.Count > 0
             ? a.EffectiveOutputPaths
@@ -84,8 +85,19 @@ public sealed class ExceptionsTraceCommand : ICommand, ITraceSubAnalyzer
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
 
             ExceptionsTraceData? data = null;
-            CommandBase.RunStatus("Parsing exception events...", _ =>
-                data = _analyzer.Analyze(tracePath!, top, processFilter));
+            TraceLog? trace = null;
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
+
+            try
+            {
+                CommandBase.RunStatus(Name, update =>
+                    data = _analyzer.Analyze(trace!, Path.GetFileName(tracePath!), top, processFilter, s => update($"{Name}  {s}")));
+            }
+            finally
+            {
+                trace?.Dispose();
+            }
 
             _report.Render(data!, sink, top);
             GcTraceCommand.PrintOutputPath(outputPaths);

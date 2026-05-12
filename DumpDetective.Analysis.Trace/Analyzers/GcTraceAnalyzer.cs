@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -25,16 +25,25 @@ public sealed class GcTraceAnalyzer
     }
 
     public GcTraceData Analyze(TraceLog trace, string traceFileName, int top = 30,
-                                string? processFilter = null)
+                                string? processFilter = null, Action<string>? progress = null)
     {
         var pending  = new Dictionary<int, PendingGc>();
         var complete = new List<GcEvent>();
         long lastHeapTotal = 0;  // heap size from most recent GCHeapStats (pre-GC baseline)
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{complete.Count:N0} GCs  \u2022  {lastHeapTotal / 1_048_576:N0} MB heap");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

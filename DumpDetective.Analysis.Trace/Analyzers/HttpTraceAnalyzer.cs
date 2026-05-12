@@ -32,16 +32,37 @@ public sealed class HttpTraceAnalyzer
 
     public HttpTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
                                   string? processFilter = null,
-                                  double slowThresholdMs = DefaultSlowThresholdMs)
+                                  double slowThresholdMs = DefaultSlowThresholdMs,
+                                  Action<string>? progress = null)
     {
-        // Track in-flight requests by (activityId / correlationId) → start info
-        var inFlight  = new Dictionary<string, RequestStart>(StringComparer.Ordinal);
-        var completed = new List<HttpRequestEntry>();
+        // Separate tracking per ETW provider to prevent double-counting.
+        //
+        // Both Microsoft-Windows-ASPNET and AspNetTrace/AspNetReq fire for EVERY IIS request.
+        // They share the same ETW ActivityID, so merging them into one dict causes start-
+        // overwrite collisions and orphaned stops, breaking both counts and durations.
+        //
+        // Strategy:
+        //   inFlightIis   / completedIis   ← Microsoft-Windows-ASPNET (canonical IIS provider)
+        //   inFlightOther / completedOther ← AspNetTrace/AspNetReq, ASP.NET Core, FrameworkEventSource
+        // At the end prefer IIS results; fall back to Other when IIS events are absent.
+        var inFlightIis   = new Dictionary<string, RequestStart>(StringComparer.OrdinalIgnoreCase);
+        var inFlightOther = new Dictionary<string, RequestStart>(StringComparer.OrdinalIgnoreCase);
+        var completedIis   = new List<HttpRequestEntry>();
+        var completedOther = new List<HttpRequestEntry>();
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{completedIis.Count + completedOther.Count:N0} requests");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !(ev.ProcessName ?? "").Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -49,14 +70,23 @@ public sealed class HttpTraceAnalyzer
                 string evName = ev.EventName ?? "";
 
                 // ── ASP.NET Core: Microsoft-AspNetCore-Hosting ───────────────────────────────
+                // Matches:
+                //   Microsoft-AspNetCore-Hosting/RequestStart|RequestStop  (ETW EventSource events)
+                //   Microsoft-AspNetCore-Hosting/Request/Start|Stop        (opcode variant)
+                //   Microsoft-AspNetCore-Hosting/HttpRequestIn/Start|Stop  (activity bridge, very common)
+                //   Microsoft-AspNetCore-Hosting/HttpIncoming/Start|Stop   (older activity name)
                 bool isAspNetCoreStart =
                     evName.IndexOf("AspNetCore", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    (evName.EndsWith("RequestStart",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Request/Start", StringComparison.OrdinalIgnoreCase));
+                    (evName.EndsWith("RequestStart",   StringComparison.OrdinalIgnoreCase) ||
+                     evName.EndsWith("Request/Start",  StringComparison.OrdinalIgnoreCase) ||
+                     evName.EndsWith("RequestIn/Start",StringComparison.OrdinalIgnoreCase) ||
+                     evName.EndsWith("Incoming/Start", StringComparison.OrdinalIgnoreCase));
                 bool isAspNetCoreStop =
                     evName.IndexOf("AspNetCore", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    (evName.EndsWith("RequestStop",   StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Request/Stop",  StringComparison.OrdinalIgnoreCase));
+                    (evName.EndsWith("RequestStop",    StringComparison.OrdinalIgnoreCase) ||
+                     evName.EndsWith("Request/Stop",   StringComparison.OrdinalIgnoreCase) ||
+                     evName.EndsWith("RequestIn/Stop", StringComparison.OrdinalIgnoreCase) ||
+                     evName.EndsWith("Incoming/Stop",  StringComparison.OrdinalIgnoreCase));
 
                 // ── Classic ASP.NET (System.Web / IIS): Microsoft-Windows-ASPNET  ─────────────
                 // Seen in traces as: Microsoft-Windows-ASPNET/Request/Start|Stop
@@ -98,49 +128,93 @@ public sealed class HttpTraceAnalyzer
 
                 if (!isStart && !isStop) continue;
 
-                // Correlation key: use activityId if present, otherwise thread-based
-                string correlationKey = ev.ActivityID.ToString();
-                if (correlationKey == "00000000-0000-0000-0000-000000000000")
-                    correlationKey = $"thread-{ev.ThreadID}";
+                // Route to the correct tracking dict.
+                // isAspNetStart/Stop = Microsoft-Windows-ASPNET (IIS canonical provider)
+                bool useIis = isAspNetStart || isAspNetStop;
+                var activeInFlight  = useIis ? inFlightIis  : inFlightOther;
+                var activeCompleted = useIis ? completedIis : completedOther;
+
+                // ── Correlation key ──────────────────────────────────────────────────────────
+                // Each provider uses a different payload field to identify the request:
+                //   Microsoft-Windows-ASPNET   → RequestId   (win:GUID)
+                //   AspNetTrace/AspNetReq      → ContextId   (win:GUID)
+                //   Microsoft-AspNetCore-Hosting (activity) → requestId (string)
+                // Fallback: ActivityID from the ETW event header (non-zero), then thread ID.
+                string correlationKey;
+                if (useIis)
+                {
+                    // IIS provider: RequestId payload is the per-request GUID
+                    correlationKey = SafeStr(ev, "RequestId");
+                }
+                else if (isAspNetTraceStart || isAspNetTraceStop)
+                {
+                    // AspNetTrace managed provider: ContextId payload
+                    correlationKey = SafeStr(ev, "ContextId");
+                    if (correlationKey.Length == 0) correlationKey = SafeStr(ev, "contextId");
+                }
+                else
+                {
+                    // ASP.NET Core EventSource / FrameworkEventSource
+                    correlationKey = SafeStr(ev, "requestId");
+                    if (correlationKey.Length == 0) correlationKey = SafeStr(ev, "RequestId");
+                }
+                // Final fallback: ETW ActivityID (header), then thread
+                if (correlationKey.Length == 0)
+                    correlationKey = ev.ActivityID != Guid.Empty
+                        ? ev.ActivityID.ToString()
+                        : $"thread-{ev.ThreadID}";
 
                 if (isStart)
                 {
-                    // Method: ASP.NET Core uses "Method", classic ASP.NET/AspNetReq use "HttpMethod" or none
-                    string method = SafeStr(ev, "Method");
+                    // Method: IIS uses PascalCase; ASP.NET Core EventSource uses camelCase
+                    string method = useIis ? SafeStr(ev, "RequestMethod") : SafeStr(ev, "requestMethod");
+                    if (method.Length == 0) method = SafeStr(ev, "Method");
                     if (method.Length == 0) method = SafeStr(ev, "HttpMethod");
                     if (method.Length == 0) method = SafeStr(ev, "Verb");
                     if (method.Length == 0) method = "GET";
-                    // Path: ASP.NET Core "Path", classic "RequestPath", AspNetReq "Path" or "RequestPath" or "Url"
-                    string path = SafeStr(ev, "Path");
+                    // Path: IIS uses PascalCase; ASP.NET Core EventSource uses camelCase
+                    string path = useIis ? SafeStr(ev, "RequestPath") : SafeStr(ev, "requestPath");
+                    if (path.Length == 0) path = SafeStr(ev, "Path");
                     if (path.Length == 0) path = SafeStr(ev, "RequestPath");
                     if (path.Length == 0) path = SafeStr(ev, "Url");
                     if (path.Length == 0) path = SafeStr(ev, "RequestUrl");
                     if (path.Length == 0) path = "/";
-                    inFlight[correlationKey] = new RequestStart(method, path,
+                    activeInFlight[correlationKey] = new RequestStart(method, path,
                         ev.TimeStampRelativeMSec, ev.ThreadID);
                     continue;
                 }
 
                 // isStop
-                if (!inFlight.TryGetValue(correlationKey, out var req))
+                if (!activeInFlight.TryGetValue(correlationKey, out var req))
                 {
-                    // Orphaned stop — no matching start. Still record with unknown duration.
-                    string path2 = SafeStr(ev, "Path");
+                    // Orphaned stop — request started before trace began, or correlation mismatch.
+                    // Still record so the count is accurate.
+                    string path2 = useIis ? SafeStr(ev, "RequestPath") : SafeStr(ev, "requestPath");
+                    if (path2.Length == 0) path2 = SafeStr(ev, "Path");
                     if (path2.Length == 0) path2 = SafeStr(ev, "RequestPath");
                     if (path2.Length == 0) path2 = "/";
-                    int   statusCode2 = SafeInt(ev, "StatusCode");
-                    if (statusCode2 == 0) statusCode2 = 200;
-                    completed.Add(new HttpRequestEntry("?", path2, statusCode2, 0,
+                    int sc2 = SafeInt(ev, "StatusCode");
+                    if (sc2 == 0) sc2 = SafeInt(ev, "statusCode");
+                    if (sc2 == 0) sc2 = 200;
+                    long ticks2 = SafeLong(ev, "elapsed");
+                    double dur2 = ticks2 > 0 ? ticks2 / (double)TimeSpan.TicksPerMillisecond : 0;
+                    activeCompleted.Add(new HttpRequestEntry("?", path2, sc2, dur2,
                         ev.TimeStampRelativeMSec, ev.ThreadID));
                     continue;
                 }
 
-                inFlight.Remove(correlationKey);
-                double durationMs = ev.TimeStampRelativeMSec - req.StartMs;
-                int    statusCode = SafeInt(ev, "StatusCode");
+                activeInFlight.Remove(correlationKey);
+                // ASP.NET Core stop events carry an "elapsed" field (TimeSpan ticks = 100-ns units);
+                // prefer it over computing from timestamps for accuracy across async hops.
+                long elapsedTicks = SafeLong(ev, "elapsed");
+                double durationMs = elapsedTicks > 0
+                    ? elapsedTicks / (double)TimeSpan.TicksPerMillisecond
+                    : Math.Max(0, ev.TimeStampRelativeMSec - req.StartMs);
+                int statusCode = SafeInt(ev, "StatusCode");
+                if (statusCode == 0) statusCode = SafeInt(ev, "statusCode");
                 if (statusCode == 0) statusCode = 200;
 
-                completed.Add(new HttpRequestEntry(req.Method, req.Path, statusCode,
+                activeCompleted.Add(new HttpRequestEntry(req.Method, req.Path, statusCode,
                     durationMs, req.StartMs, ev.ThreadID));
             }
         }
@@ -148,6 +222,11 @@ public sealed class HttpTraceAnalyzer
         {
             return Empty($"Parse error: {ex.Message}", processFilter, slowThresholdMs);
         }
+
+        // Prefer IIS-sourced events (Microsoft-Windows-ASPNET) when present; they are the
+        // canonical IIS provider and give reliable RequestId-based correlation. Fall back
+        // to the other providers only when no IIS events were seen in this trace.
+        var completed = completedIis.Count > 0 ? completedIis : completedOther;
 
         if (completed.Count == 0)
         {
@@ -238,6 +317,16 @@ public sealed class HttpTraceAnalyzer
             return raw is not null ? Convert.ToInt32(raw) : 0;
         }
         catch { return 0; }
+    }
+
+    private static long SafeLong(TraceEvent ev, string field)
+    {
+        try
+        {
+            var raw = ev.PayloadByName(field);
+            return raw is not null ? Convert.ToInt64(raw) : 0L;
+        }
+        catch { return 0L; }
     }
 
     private static HttpTraceData Empty(string info, string? process, double slowMs) =>

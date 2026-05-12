@@ -25,7 +25,7 @@ public sealed class JitTraceAnalyzer
     }
 
     public JitTraceData Analyze(TraceLog trace, string traceFileName, int top = 30,
-                                 string? processFilter = null)
+                                 string? processFilter = null, Action<string>? progress = null)
     {
         // Track in-progress compilations keyed by (threadId, methodId) to match start→stop pairs
         // We also track a flat record per method name for aggregation.
@@ -33,11 +33,20 @@ public sealed class JitTraceAnalyzer
         var byMethod  = new Dictionary<string, MethodAcc>(StringComparer.Ordinal);
         var byModule  = new Dictionary<string, ModuleAcc>(StringComparer.OrdinalIgnoreCase);
         bool timingAvailable = false;
+        long evTotal = trace.EventCount;
+        long evProcessed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                evProcessed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{byMethod.Count:N0} methods JIT'd");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !(ev.ProcessName ?? "").Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

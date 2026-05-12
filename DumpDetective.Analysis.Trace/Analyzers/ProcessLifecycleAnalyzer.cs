@@ -28,18 +28,27 @@ public sealed class ProcessLifecycleAnalyzer
     }
 
     public ProcessLifecycleData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                         string? processFilter = null)
+                                         string? processFilter = null, Action<string>? progress = null)
     {
         var events = new List<ProcessEvent>();
         // Track last stop per process name for restart detection
         var lastStop = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
 
         int restarts = 0, abnormal = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{events.Count:N0} process events");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 string evName = ev.EventName ?? "";
                 bool isStart =
                     evName.EndsWith("Process/Start",  StringComparison.OrdinalIgnoreCase) ||

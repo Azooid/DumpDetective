@@ -45,7 +45,8 @@ public sealed class ContextSwitchTraceAnalyzer
     }
 
     public ContextSwitchTraceData Analyze(TraceLog trace, string traceFileName,
-                                           int top = 30, string? processFilter = null)
+                                           int top = 30, string? processFilter = null,
+                                           Action<string>? progress = null)
     {
         // ── Per-thread accumulators ─────────────────────────────────────────
         // Keyed by OLD thread ID (the thread being switched away from)
@@ -74,10 +75,20 @@ public sealed class ContextSwitchTraceAnalyzer
         // Wait reason aggregate (OldThreadState=5 only)
         var waitReasons = new Dictionary<int, long>(64);
 
+        long evTotal = trace.EventCount;
+        long evProcessed = 0;
+        long lastProgressMs = 0;
+
         try
         {
             foreach (var ev in trace.Events)
             {
+                evProcessed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{totalSwitches:N0} ctx switches");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 // Only process CSwitch events
                 string evName = ev.EventName ?? "";
                 bool isCSwitch =

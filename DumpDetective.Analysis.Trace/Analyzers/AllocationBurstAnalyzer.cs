@@ -27,15 +27,26 @@ public sealed class AllocationBurstAnalyzer
     }
 
     public AllocationBurstData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null)
+                                        string? processFilter = null, Action<string>? progress = null)
     {
         // 500 ms buckets: key = (int)(ms / 500)
         var buckets = new Dictionary<int, BucketAcc>();
+
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
+        int tickCount = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{tickCount:N0} alloc ticks");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
@@ -46,6 +57,7 @@ public sealed class AllocationBurstAnalyzer
                     evName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase);
                 if (!isTick) continue;
 
+                tickCount++;
                 long bytes = 0;
                 try { bytes = (long)Convert.ChangeType(ev.PayloadByName("AllocationAmount"), typeof(long)); } catch { }
                 if (bytes <= 0) bytes = 100 * 1024; // default ~100 KB per tick

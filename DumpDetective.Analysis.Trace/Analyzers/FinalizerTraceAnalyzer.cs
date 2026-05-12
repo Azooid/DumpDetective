@@ -26,7 +26,7 @@ public sealed class FinalizerTraceAnalyzer
     }
 
     public FinalizerTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                       string? processFilter = null)
+                                       string? processFilter = null, Action<string>? progress = null)
     {
         // Track finalizer events per type
         var byType = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
@@ -41,11 +41,20 @@ public sealed class FinalizerTraceAnalyzer
         var perSecond = new Dictionary<int, int>();
 
         int totalEvents = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{totalEvents:N0} finalizer events  \u2022  {byType.Count} types");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models;
+using DumpDetective.Core.Models;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Utilities;
@@ -33,7 +33,7 @@ public sealed class CpuTraceAnalyzer
 
     public CpuTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
                                  string? processFilter = null, bool filterSystem = true,
-                                 bool filterUnresolved = true)
+                                 bool filterUnresolved = true, Action<string>? progress = null)
     {
         // Mutable trie node used during collection
         var root = new MutableNode("<root>", "");
@@ -54,6 +54,10 @@ public sealed class CpuTraceAnalyzer
         //         (b) completely unresolved frames (no module, no method — PerfView shows as <<? !?>>) .
         int unresolvedSamples = 0;
 
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
+
         try
         {
             foreach (var ev in trace.Events)
@@ -61,6 +65,12 @@ public sealed class CpuTraceAnalyzer
                 // CPU sample events appear as "PerfInfo/Sample" (kernel ETW) or
                 // "Microsoft-Windows-DotNETRuntime/SampledProfile" (CLR ETW) or
                 // similar names in EventPipe .nettrace.
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{totalSamples:N0} CPU samples");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 string evName = ev.EventName ?? "";
                 bool isCpuSample =
                     evName.IndexOf("SampledProfile",    StringComparison.OrdinalIgnoreCase) >= 0 ||

@@ -29,7 +29,7 @@ public sealed class OpenTelemetryTraceAnalyzer
     }
 
     public OpenTelemetryTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                           string? processFilter = null)
+                                           string? processFilter = null, Action<string>? progress = null)
     {
         var pending     = new Dictionary<string, (double StartMs, string Op, bool IsError)>(StringComparer.Ordinal);
         var byOp        = new Dictionary<string, OpAcc>(StringComparer.OrdinalIgnoreCase);
@@ -37,11 +37,20 @@ public sealed class OpenTelemetryTraceAnalyzer
         var errTimeline = new Dictionary<int, int>();
 
         int total = 0, totalErrors = 0;
+        long evTotal = trace.EventCount;
+        long evProcessed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                evProcessed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{total:N0} activities");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

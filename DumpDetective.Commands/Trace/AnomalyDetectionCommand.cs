@@ -50,7 +50,8 @@ public sealed class AnomalyDetectionCommand : ICommand, ITraceSubAnalyzer
     public string SectionTitle         => "Anomaly Detection";
 
     public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
-                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
     {
         var sink = new CaptureSink();
         sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
@@ -90,7 +91,7 @@ public sealed class AnomalyDetectionCommand : ICommand, ITraceSubAnalyzer
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
 
-        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+        if (!GcTraceCommand.ValidateTrace(ref tracePath, Help)) return 1;
 
         var outputPaths = a.EffectiveOutputPaths.Count > 0
             ? a.EffectiveOutputPaths
@@ -103,9 +104,8 @@ public sealed class AnomalyDetectionCommand : ICommand, ITraceSubAnalyzer
             if (!CommandBase.SuppressVerbose)
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
 
-            CommandBase.RunStatus("Opening trace file...", _ =>
-                trace = TraceLog.OpenOrConvert(tracePath!,
-                    new TraceLogOptions { ConversionLog = TextWriter.Null }));
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
 
             string fileName = Path.GetFileName(tracePath!);
 

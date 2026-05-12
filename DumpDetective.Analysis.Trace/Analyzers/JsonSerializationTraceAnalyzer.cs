@@ -80,7 +80,8 @@ public sealed class JsonSerializationTraceAnalyzer
     }
 
     public JsonSerializationTraceData Analyze(TraceLog trace, string traceFileName,
-                                               int top = 20, string? processFilter = null)
+                                               int top = 20, string? processFilter = null,
+                                               Action<string>? progress = null)
     {
         // Accumulators keyed by type name (alloc) or frame (CPU)
         var allocByType    = new Dictionary<string, AllocAcc>(StringComparer.Ordinal);
@@ -95,10 +96,21 @@ public sealed class JsonSerializationTraceAnalyzer
         int totalCpuSamples = 0;
         int jsonCpuSamples  = 0;
 
+        long total     = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
+
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{totalAllocTicks:N0} alloc ticks  \u2022  {totalCpuSamples:N0} CPU samples");
+                    lastProgressMs = Environment.TickCount64;
+                }
+
                 if (processFilter is not null &&
                     !(ev.ProcessName ?? "").Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

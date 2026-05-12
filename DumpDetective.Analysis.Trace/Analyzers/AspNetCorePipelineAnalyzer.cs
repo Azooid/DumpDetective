@@ -26,18 +26,27 @@ public sealed class AspNetCorePipelineAnalyzer
     }
 
     public AspNetCorePipelineData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                           string? processFilter = null)
+                                           string? processFilter = null, Action<string>? progress = null)
     {
         var byRoute     = new Dictionary<string, RouteAcc>(StringComparer.OrdinalIgnoreCase);
         var authTimeline = new Dictionary<int, int>();
 
         int totalReq = 0, totalErr = 0, authFail = 0, unmatched = 0;
         var pendingAuth = new Dictionary<int, (double StartMs, string Route)>();
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{totalReq:N0} requests  \u2022  {totalErr:N0} errors");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

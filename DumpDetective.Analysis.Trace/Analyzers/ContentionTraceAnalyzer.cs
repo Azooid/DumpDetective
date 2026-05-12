@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -25,17 +25,26 @@ public sealed class ContentionTraceAnalyzer
     }
 
     public ContentionTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null)
+                                        string? processFilter = null, Action<string>? progress = null)
     {
         // Key: ThreadID → (startTimeMs, topFrame captured at ContentionStart)
         var pending  = new Dictionary<int, (double StartMs, string Frame)>();
         var events   = new List<ContentionEvent>();
         var hotspots = new Dictionary<string, HotspotAcc>(StringComparer.Ordinal);
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{events.Count:N0} contentions");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

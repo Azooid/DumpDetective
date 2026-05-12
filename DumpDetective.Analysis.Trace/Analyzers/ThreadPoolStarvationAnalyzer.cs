@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -25,7 +25,6 @@ public sealed class ThreadPoolStarvationAnalyzer
 
     public ThreadPoolStarvationData Analyze(string tracePath, int top = 10)
     {
-        CommandBase.RunStatus($"Parsing trace: {Path.GetFileName(tracePath)}...", () => { });
         try
         {
             using var trace = TraceLog.OpenOrConvert(tracePath, new TraceLogOptions { ConversionLog = TextWriter.Null });
@@ -38,7 +37,8 @@ public sealed class ThreadPoolStarvationAnalyzer
         }
     }
 
-    public ThreadPoolStarvationData Analyze(TraceLog trace, string traceFileName, int top = 10)
+    public ThreadPoolStarvationData Analyze(TraceLog trace, string traceFileName, int top = 10,
+                                             Action<string>? progress = null)
     {
         var events      = new List<WaitEventSummary>();
         var adjustments = new List<TpAdjustmentRecord>();
@@ -46,10 +46,17 @@ public sealed class ThreadPoolStarvationAnalyzer
         int starvCount  = 0;
         uint tpMax = 0, tpFinal = 0;
         int totalEvents = 0;
+        long evTotal = trace.EventCount;
+        long lastProgressMs = 0;
 
         foreach (var ev in trace.Events)
         {
             totalEvents++;
+            if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+            {
+                progress($"{starvCount:N0} starvation events");
+                lastProgressMs = Environment.TickCount64;
+            }
             string evName = ev.EventName ?? "?";
             if (!eventCounts.TryGetValue(evName, out int cnt)) cnt = 0;
             eventCounts[evName] = cnt + 1;

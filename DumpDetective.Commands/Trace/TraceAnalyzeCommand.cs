@@ -110,14 +110,22 @@ public sealed class TraceAnalyzeCommand : ICommand
             return 1;
         }
 
-        AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath))}");
+        // Resolve companion ETL → base so TraceLog.OpenOrConvert auto-merges all companions.
+        string resolvedTrace = EtlPathHelper.ResolveToBase(tracePath);
+        if (!string.Equals(resolvedTrace, tracePath, StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine($"[dim]↪ Companion ETL detected. Using base file: {Markup.Escape(Path.GetFileName(resolvedTrace))}[/]");
+            tracePath = resolvedTrace;
+        }
+        var traceCompanions = EtlPathHelper.FindCompanionNames(tracePath!);
+        if (traceCompanions.Count > 0)
+            AnsiConsole.MarkupLine($"[dim]  + {traceCompanions.Count} companion file(s) will be auto-merged: {Markup.Escape(string.Join(", ", traceCompanions))}[/]");
 
         TraceLog? trace = null;
         try
         {
-            CommandBase.RunStatus("Opening trace file...", _ =>
-                trace = TraceLog.OpenOrConvert(tracePath,
-                    new TraceLogOptions { ConversionLog = TextWriter.Null }));
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath, s => update($"{Name}  {s}")));
 
             string traceFileName = Path.GetFileName(tracePath);
             var outputPaths = a.EffectiveOutputPaths.Count > 0
@@ -139,7 +147,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 if (sub.HasCorrelationPhase) continue;
                 string? traceInfo = null;
                 RunAnalyzer(sub.Key,
-                    () => traceInfo = sub.Run(trace!, traceFileName, runParams, captured, results),
+                    update => traceInfo = sub.Run(trace!, traceFileName, runParams, captured, results, s => update($"{sub.Key}  {s}")),
                     () => traceInfo);
             }
 
@@ -186,7 +194,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 if (!sub.HasCorrelationPhase) continue;
                 string? traceInfo = null;
                 RunAnalyzer(sub.Key,
-                    () => traceInfo = sub.OnCorrelationAvailable(traceFileName, correlations, captured, results, top),
+                    update => traceInfo = sub.OnCorrelationAvailable(traceFileName, correlations, captured, results, top),
                     () => traceInfo);
             }
 
@@ -224,11 +232,11 @@ public sealed class TraceAnalyzeCommand : ICommand
         }
     }
 
-    private static void RunAnalyzer(string name, Action run, Func<string?>? info = null)
+    private static void RunAnalyzer(string name, Action<Action<string>> body, Func<string?>? info = null)
     {
         try
         {
-            CommandBase.RunStatus($"Running {name}...", _ => run());
+            CommandBase.RunStatus($"Running {name}...", body);
             string stats = SummaryStats(info?.Invoke());
             if (stats.Length > 0)
                 AnsiConsole.MarkupLine($"  [green]✓[/] {name}  [dim]{Markup.Escape(stats)}[/]");

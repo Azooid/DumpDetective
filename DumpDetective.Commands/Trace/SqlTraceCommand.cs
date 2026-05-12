@@ -29,11 +29,12 @@ public sealed class SqlTraceCommand : ICommand, ITraceSubAnalyzer
     public string SectionTitle         => "SQL / EF Trace";
 
     public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
-                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
     {
         var sink = new CaptureSink();
         sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
-        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, p.SlowMs);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, p.SlowMs, progress);
         _report.Render(d, sink, p.Top);
         captured[Name] = sink.GetDoc(); results[Name] = d;
         return d.TraceInfo;
@@ -87,7 +88,7 @@ public sealed class SqlTraceCommand : ICommand, ITraceSubAnalyzer
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
 
-        if (!GcTraceCommand.ValidateTrace(tracePath, Help)) return 1;
+        if (!GcTraceCommand.ValidateTrace(ref tracePath, Help)) return 1;
 
         var outputPaths = a.EffectiveOutputPaths.Count > 0
             ? a.EffectiveOutputPaths
@@ -99,8 +100,19 @@ public sealed class SqlTraceCommand : ICommand, ITraceSubAnalyzer
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
 
             Core.Models.CommandData.SqlTraceData? data = null;
-            CommandBase.RunStatus("Parsing SQL command events...", _ =>
-                data = _analyzer.Analyze(tracePath!, top, processFilter, slowMs));
+            TraceLog? trace = null;
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
+
+            try
+            {
+                CommandBase.RunStatus(Name, update =>
+                    data = _analyzer.Analyze(trace!, Path.GetFileName(tracePath!), top, processFilter, slowMs, s => update($"{Name}  {s}")));
+            }
+            finally
+            {
+                trace?.Dispose();
+            }
 
             sink.Header("SQL Trace", Path.GetFileName(tracePath!), navLevel: 2, commandName: "sql-trace");
             _report.Render(data!, sink, top);

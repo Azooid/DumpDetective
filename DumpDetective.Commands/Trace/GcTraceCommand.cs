@@ -28,11 +28,12 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
     public string SectionTitle         => "GC Trace";
 
     public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
-                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
     {
         var sink = new CaptureSink();
         sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
-        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, progress);
         _report.Render(d, sink, p.Top);
         captured[Name] = sink.GetDoc(); results[Name] = d;
         return d.TraceInfo;
@@ -71,7 +72,7 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
 
-        if (!ValidateTrace(tracePath, Help)) return 1;
+        if (!ValidateTrace(ref tracePath, Help)) return 1;
 
         var outputPaths = a.EffectiveOutputPaths.Count > 0
             ? a.EffectiveOutputPaths
@@ -83,8 +84,19 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath!))}");
 
             GcTraceData? data = null;
-            CommandBase.RunStatus("Parsing GC events...", _ =>
-                data = _analyzer.Analyze(tracePath!, top, processFilter));
+            TraceLog? trace = null;
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
+
+            try
+            {
+                CommandBase.RunStatus(Name, update =>
+                    data = _analyzer.Analyze(trace!, Path.GetFileName(tracePath!), top, processFilter, s => update($"{Name}  {s}")));
+            }
+            finally
+            {
+                trace?.Dispose();
+            }
 
             _report.Render(data!, sink, top);
             PrintOutputPath(outputPaths);
@@ -101,7 +113,7 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
         sink.Alert(AlertLevel.Warning,
             "gc-trace requires a trace file (.nettrace or .etl) — it cannot analyze a memory dump.");
 
-    internal static bool ValidateTrace(string? tracePath, string help)
+    internal static bool ValidateTrace(ref string? tracePath, string help)
     {
         if (tracePath is null)
         {
@@ -119,6 +131,20 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
             AnsiConsole.MarkupLine($"[bold red]✗[/] Unsupported file type. Expected .nettrace or .etl — got: {Markup.Escape(Path.GetFileName(tracePath))}");
             return false;
         }
+
+        // Resolve companion ETL → base ETL so TraceLog.OpenOrConvert can auto-merge all companions.
+        string resolved = EtlPathHelper.ResolveToBase(tracePath);
+        if (!string.Equals(resolved, tracePath, StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine($"[dim]↪ Companion ETL detected. Using base file: {Markup.Escape(Path.GetFileName(resolved))}[/]");
+            tracePath = resolved;
+        }
+
+        // Inform the user which companions will be auto-merged.
+        var companions = EtlPathHelper.FindCompanionNames(tracePath!);
+        if (companions.Count > 0)
+            AnsiConsole.MarkupLine($"[dim]  + {companions.Count} companion file(s) will be auto-merged: {Markup.Escape(string.Join(", ", companions))}[/]");
+
         return true;
     }
 

@@ -26,17 +26,26 @@ public sealed class KestrelTraceAnalyzer
     }
 
     public KestrelTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                     string? processFilter = null)
+                                     string? processFilter = null, Action<string>? progress = null)
     {
         int connections = 0, rejected = 0, errors = 0;
         int currentConcurrent = 0, peak = 0;
         bool queuePressure = false;
         var perSecond = new Dictionary<int, int>();
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{connections:N0} connections  \u2022  {rejected:N0} rejected");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

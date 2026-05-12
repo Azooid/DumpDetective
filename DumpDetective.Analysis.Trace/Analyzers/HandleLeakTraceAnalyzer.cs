@@ -28,18 +28,27 @@ public sealed class HandleLeakTraceAnalyzer
     }
 
     public HandleLeakTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null)
+                                        string? processFilter = null, Action<string>? progress = null)
     {
         var byKind    = new Dictionary<string, KindAcc>(StringComparer.OrdinalIgnoreCase);
         var perSecond = new Dictionary<int, int>(); // net per second
         int netCurrent = 0;
 
         int created = 0, destroyed = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{created:N0} handles created  \u2022  {destroyed:N0} destroyed");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

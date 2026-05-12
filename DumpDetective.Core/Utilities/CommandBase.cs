@@ -229,7 +229,7 @@ public static class CommandBase
                         scanSuffix = FormatScanSuffix(msg[6..]);
                         return;
                     }
-                    ctx.Status(Markup.Escape(msg));
+                    ctx.Status(Markup.Escape($"{msg}  ({sw.Elapsed.TotalSeconds:F1}s)"));
                 }));
         }
         finally

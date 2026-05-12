@@ -27,16 +27,25 @@ public sealed class LohTraceAnalyzer
     }
 
     public LohTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                 string? processFilter = null)
+                                 string? processFilter = null, Action<string>? progress = null)
     {
         var lohSizes = new List<(double TimeMs, long Bytes)>();
         int gen2WithGrowth = 0;
         long prevLoh = -1;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{lohSizes.Count:N0} heap stats");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

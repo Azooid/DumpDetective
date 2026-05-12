@@ -37,7 +37,7 @@ public sealed class AsyncTraceAnalyzer
     }
 
     public AsyncTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                  string? processFilter = null)
+                                  string? processFilter = null, Action<string>? progress = null)
     {
         // Task execution tracking: TaskID → scheduled time
         var pendingSchedule = new Dictionary<int, (double TimeMs, string Frame)>();
@@ -51,11 +51,20 @@ public sealed class AsyncTraceAnalyzer
 
         int scheduledCount  = 0;
         int completedCount  = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{scheduledCount:N0} tasks  \u2022  {completedCount:N0} done");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

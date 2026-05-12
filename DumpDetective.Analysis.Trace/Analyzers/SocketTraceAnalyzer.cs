@@ -29,7 +29,7 @@ public sealed class SocketTraceAnalyzer
     }
 
     public SocketTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                    string? processFilter = null)
+                                    string? processFilter = null, Action<string>? progress = null)
     {
         var pending = new Dictionary<int, (double StartMs, string Endpoint)>();
         var byHost  = new Dictionary<string, HostAcc>(StringComparer.OrdinalIgnoreCase);
@@ -38,11 +38,20 @@ public sealed class SocketTraceAnalyzer
 
         int connects = 0, failures = 0;
         double totalMs = 0, maxMs = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{connects:N0} connects  \u2022  {failures:N0} failures");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

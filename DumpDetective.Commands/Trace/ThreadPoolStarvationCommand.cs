@@ -24,11 +24,12 @@ public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
     public string SectionTitle         => "Thread Pool Starvation";
 
     public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
-                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
     {
         var sink = new CaptureSink();
         sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
-        var d = _analyzer.Analyze(trace, traceFileName, p.Top);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, progress);
         _report.Render(d, sink, p.Top);
         captured[Name] = sink.GetDoc(); results[Name] = d;
         return d.TraceInfo;
@@ -81,6 +82,17 @@ public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
             return 1;
         }
 
+        // Resolve companion ETL → base so TraceLog.OpenOrConvert auto-merges all companions.
+        string resolved = EtlPathHelper.ResolveToBase(tracePath);
+        if (!string.Equals(resolved, tracePath, StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine($"[dim]↪ Companion ETL detected. Using base file: {Markup.Escape(Path.GetFileName(resolved))}[/]");
+            tracePath = resolved;
+        }
+        var companions = EtlPathHelper.FindCompanionNames(tracePath!);
+        if (companions.Count > 0)
+            AnsiConsole.MarkupLine($"[dim]  + {companions.Count} companion file(s) will be auto-merged: {Markup.Escape(string.Join(", ", companions))}[/]");
+
         var outputPaths = a.EffectiveOutputPaths.Count > 0
             ? a.EffectiveOutputPaths
             : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
@@ -90,8 +102,15 @@ public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
             if (!CommandBase.SuppressVerbose)
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath))}");
 
-            var data = _analyzer.Analyze(tracePath, top);
-            _report.Render(data, sink, top);
+            TraceLog? trace = null;
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
+
+            ThreadPoolStarvationData? data = null;
+            CommandBase.RunStatus(Name, update =>
+                data = _analyzer.Analyze(trace!, Path.GetFileName(tracePath!), top, s => update($"{Name}  {s}")));
+
+            _report.Render(data!, sink, top);
 
             foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");

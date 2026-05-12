@@ -27,7 +27,7 @@ public sealed class ConnectionPoolTraceAnalyzer
     }
 
     public ConnectionPoolTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                            string? processFilter = null)
+                                            string? processFilter = null, Action<string>? progress = null)
     {
         // Track open connections by thread — key: ThreadID, value: database
         var openByThread = new Dictionary<int, string>();
@@ -41,11 +41,20 @@ public sealed class ConnectionPoolTraceAnalyzer
         var perSecond = new Dictionary<int, int>();
 
         int totalOpens = 0, totalCloses = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{totalOpens:N0} opens  \u2022  peak {peakOpen}");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

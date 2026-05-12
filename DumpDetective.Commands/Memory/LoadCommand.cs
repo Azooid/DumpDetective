@@ -3,6 +3,7 @@ using System.Runtime;
 using DumpDetective.Analysis.Memory;
 using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Analysis.Memory.Consumers;
+using DumpDetective.Commands.Trace;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
@@ -39,7 +40,8 @@ public sealed class LoadCommand : ICommand
         Usage: DumpDetective load <dump-file-or-directory> [options]
 
         Pre-builds all analysis caches so subsequent 'analyze --full' runs are fast.
-        When a directory is given, every .dmp and .mdmp file in it is cached in order.
+        When a directory is given, every .dmp/.mdmp and .etl file in it is processed in order.
+        ETL trace files (.etl) are converted to .etlx alongside the original file.
 
         Caches written to .ddcache\<dump-name>\ alongside the dump:
           stringGroups.bin     — string-duplicates data
@@ -72,7 +74,7 @@ public sealed class LoadCommand : ICommand
 
         target = Path.GetFullPath(target);
 
-        // ── Directory mode: process every .dmp / .mdmp in the folder ─────────
+        // ── Directory mode: process every .dmp / .mdmp / .etl in the folder ──
         if (Directory.Exists(target))
         {
             var dumps = Directory.EnumerateFiles(target, "*.dmp",  SearchOption.TopDirectoryOnly)
@@ -80,27 +82,57 @@ public sealed class LoadCommand : ICommand
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (dumps.Count == 0)
+            // Exclude companion ETL files (*.kernel.etl, *.clrRundown.etl, etc.) —
+            // TraceLog merges them automatically from the base file.
+            var etls = Directory.EnumerateFiles(target, "*.etl", SearchOption.TopDirectoryOnly)
+                .Where(f => EtlPathHelper.ResolveToBase(f) == f)
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (dumps.Count == 0 && etls.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[yellow]⚠[/] No .dmp or .mdmp files found in: {Markup.Escape(target)}");
+                AnsiConsole.MarkupLine($"[yellow]⚠[/] No .dmp, .mdmp, or .etl files found in: {Markup.Escape(target)}");
                 return 0;
             }
 
-            AnsiConsole.MarkupLine($"[bold]Found {dumps.Count} dump file(s) in[/] {Markup.Escape(target)}");
-            AnsiConsole.WriteLine();
-
             int exitCode = 0;
-            for (int i = 0; i < dumps.Count; i++)
+
+            if (dumps.Count > 0)
             {
-                AnsiConsole.MarkupLine($"[bold dim]── [[{i + 1}/{dumps.Count}]] {Markup.Escape(Path.GetFileName(dumps[i]))} ──[/]");
-                int result = RunSingle(dumps[i], force);
-                if (result != 0) exitCode = result;
+                AnsiConsole.MarkupLine($"[bold]Found {dumps.Count} dump file(s) in[/] {Markup.Escape(target)}");
                 AnsiConsole.WriteLine();
+
+                for (int i = 0; i < dumps.Count; i++)
+                {
+                    AnsiConsole.MarkupLine($"[bold dim]── [[{i + 1}/{dumps.Count}]] {Markup.Escape(Path.GetFileName(dumps[i]))} ──[/]");
+                    int result = RunSingle(dumps[i], force);
+                    if (result != 0) exitCode = result;
+                    AnsiConsole.WriteLine();
+                }
+
+                AnsiConsole.MarkupLine(exitCode == 0
+                    ? $"[green]✓[/] All {dumps.Count} dump(s) cached."
+                    : $"[yellow]⚠[/] Completed with errors ({dumps.Count} dump(s) processed).");
             }
 
-            AnsiConsole.MarkupLine(exitCode == 0
-                ? $"[green]✓[/] All {dumps.Count} dump(s) cached."
-                : $"[yellow]⚠[/] Completed with errors ({dumps.Count} dump(s) processed).");
+            if (etls.Count > 0)
+            {
+                AnsiConsole.MarkupLine($"[bold]Found {etls.Count} ETL trace file(s) in[/] {Markup.Escape(target)}");
+                AnsiConsole.WriteLine();
+
+                for (int i = 0; i < etls.Count; i++)
+                {
+                    AnsiConsole.MarkupLine($"[bold dim]── [[{i + 1}/{etls.Count}]] {Markup.Escape(Path.GetFileName(etls[i]))} ──[/]");
+                    int result = ConvertEtl(etls[i], force);
+                    if (result != 0) exitCode = result;
+                    AnsiConsole.WriteLine();
+                }
+
+                AnsiConsole.MarkupLine(exitCode == 0
+                    ? $"[green]✓[/] All {etls.Count} ETL file(s) converted."
+                    : $"[yellow]⚠[/] Completed with errors ({etls.Count} ETL file(s) processed).");
+            }
+
             return exitCode;
         }
 
@@ -110,6 +142,10 @@ public sealed class LoadCommand : ICommand
             AnsiConsole.MarkupLine($"[bold red]✗[/] path not found: {Markup.Escape(target)}");
             return 1;
         }
+
+        if (target.EndsWith(".etl", StringComparison.OrdinalIgnoreCase))
+            return ConvertEtl(target, force);
+
         return RunSingle(target, force);
     }
 
@@ -433,4 +469,32 @@ public sealed class LoadCommand : ICommand
 
     private static void Step(int n, int total, string label, Action body)
         => CommandBase.RunStatus($"  [{n}/{total}] {label}...", body);
+
+    private static int ConvertEtl(string etlPath, bool force)
+    {
+        string etlxPath = TraceOpener.CachedEtlxPath(etlPath);
+
+        bool cacheValid = !force &&
+                          File.Exists(etlxPath) &&
+                          File.GetLastWriteTimeUtc(etlxPath) >= File.GetLastWriteTimeUtc(etlPath);
+
+        if (cacheValid)
+        {
+            AnsiConsole.MarkupLine($"  [dim].etlx already cached — {Markup.Escape(Path.GetFileName(etlxPath))}[/]");
+            return 0;
+        }
+
+        var log = new ProgressLogger();
+        log.SectionHeader($"DumpDetective load (trace)  {AppInfo.Version}");
+        log.Info($"ETL: {Path.GetFileName(etlPath)}");
+        log.InfoM($"Cache: {etlxPath}", indent: true);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        CommandBase.RunStatus("Converting ETL → ETLX…", update =>
+        {
+            using var trace = TraceOpener.Open(etlPath, update);
+        });
+        log.Check($"Converted → {Path.GetFileName(etlxPath)}  ({sw.Elapsed.TotalSeconds:F1}s)");
+        return 0;
+    }
 }

@@ -31,16 +31,25 @@ public sealed class RetryStormAnalyzer
     }
 
     public RetryStormData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                   string? processFilter = null)
+                                   string? processFilter = null, Action<string>? progress = null)
     {
         // Collect retry-type exception events with timestamps
         var retryEvents = new List<(double TimeMs, string ExType)>();
         var exTypeCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{retryEvents.Count:N0} retry events");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

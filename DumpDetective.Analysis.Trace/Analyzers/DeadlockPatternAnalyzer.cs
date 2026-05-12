@@ -32,7 +32,7 @@ public sealed class DeadlockPatternAnalyzer
     }
 
     public DeadlockPatternData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null)
+                                        string? processFilter = null, Action<string>? progress = null)
     {
         // Active waits: ThreadID → (StartMs, Frame, WaitType)
         var active = new Dictionary<int, ActiveWait>();
@@ -40,11 +40,20 @@ public sealed class DeadlockPatternAnalyzer
         int longWaits = 0;
         double totalWait = 0;
         double maxWait = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{longWaits:N0} long waits  \u2022  {chains.Count:N0} suspect chains");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

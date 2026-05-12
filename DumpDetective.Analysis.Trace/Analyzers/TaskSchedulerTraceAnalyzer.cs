@@ -29,7 +29,7 @@ public sealed class TaskSchedulerTraceAnalyzer
     }
 
     public TaskSchedulerTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                           string? processFilter = null)
+                                           string? processFilter = null, Action<string>? progress = null)
     {
         // pending: TaskId → (scheduledMs, frame)
         var pendingTasks = new Dictionary<int, (double ScheduledMs, string Frame)>();
@@ -41,11 +41,20 @@ public sealed class TaskSchedulerTraceAnalyzer
         double maxDuration = 0, totalDuration = 0;
         double maxWait = 0;
         var perSecond = new Dictionary<int, int>();
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{scheduled:N0} scheduled  \u2022  {completed:N0} done");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

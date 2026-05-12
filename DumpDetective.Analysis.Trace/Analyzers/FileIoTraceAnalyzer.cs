@@ -29,7 +29,7 @@ public sealed class FileIoTraceAnalyzer
     }
 
     public FileIoTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                    string? processFilter = null)
+                                    string? processFilter = null, Action<string>? progress = null)
     {
         // pending I/O: key = (ThreadID, IrpPtr) → (startMs, opType, filePath)
         var pending = new Dictionary<string, (double StartMs, string Op, string File)>(StringComparer.Ordinal);
@@ -39,11 +39,20 @@ public sealed class FileIoTraceAnalyzer
 
         int reads = 0, writes = 0, other = 0;
         long readBytes = 0, writeBytes = 0;
+        long total = trace.EventCount;
+        long processed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                processed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{reads:N0} reads  \u2022  {writes:N0} writes");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;

@@ -29,7 +29,7 @@ public sealed class DnsTraceAnalyzer
     }
 
     public DnsTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                 string? processFilter = null)
+                                 string? processFilter = null, Action<string>? progress = null)
     {
         var pending     = new Dictionary<int, (double StartMs, string Host)>();
         var byHost      = new Dictionary<string, HostAcc>(StringComparer.OrdinalIgnoreCase);
@@ -38,11 +38,20 @@ public sealed class DnsTraceAnalyzer
 
         int total = 0, failed = 0;
         double totalMs = 0, maxMs = 0;
+        long evTotal = trace.EventCount;
+        long evProcessed = 0;
+        long lastProgressMs = 0;
 
         try
         {
             foreach (var ev in trace.Events)
             {
+                evProcessed++;
+                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                {
+                    progress($"{total:N0} DNS lookups  \u2022  {failed:N0} failed");
+                    lastProgressMs = Environment.TickCount64;
+                }
                 if (processFilter is not null &&
                     !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
                     continue;
