@@ -44,6 +44,7 @@ public sealed class TaskSchedulerTraceAnalyzer
         long total = trace.EventCount;
         long processed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -60,10 +61,12 @@ public sealed class TaskSchedulerTraceAnalyzer
                     continue;
 
                 string evName = ev.EventName ?? "";
+                if (!evKind.TryGetValue(evName, out byte kind))
+                    evKind[evName] = kind = ComputeTaskSchedulerKind(evName);
+                if (kind == 0) continue;
 
                 // Task Scheduled
-                if (evName.Contains("Task/Scheduled",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("TaskScheduled",    StringComparison.OrdinalIgnoreCase))
+                if (kind == 1)
                 {
                     scheduled++;
                     int taskId = SafeInt(ev, "TaskID");
@@ -78,9 +81,7 @@ public sealed class TaskSchedulerTraceAnalyzer
                 }
 
                 // Task Completed
-                if (evName.Contains("Task/Completed", StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("TaskCompleted",   StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase))
+                if (kind == 2)
                 {
                     int taskId = SafeInt(ev, "TaskID");
                     bool isCancelled = SafeStr(ev, "IsExceptional") == "True" ||
@@ -102,16 +103,14 @@ public sealed class TaskSchedulerTraceAnalyzer
                 }
 
                 // Task WaitBegin
-                if (evName.Contains("TaskWaitBegin", StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Task/Wait/Begin", StringComparison.OrdinalIgnoreCase))
+                if (kind == 3)
                 {
                     pendingWaits[ev.ThreadID] = ev.TimeStampRelativeMSec;
                     continue;
                 }
 
                 // Task WaitEnd
-                if (evName.Contains("TaskWaitEnd", StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Task/Wait/End", StringComparison.OrdinalIgnoreCase))
+                if (kind == 4)
                 {
                     if (pendingWaits.TryGetValue(ev.ThreadID, out double waitStart))
                     {
@@ -157,6 +156,21 @@ public sealed class TaskSchedulerTraceAnalyzer
         return new TaskSchedulerTraceData(info, processFilter,
             scheduled, completed, cancelled, longRunning.Count,
             maxDuration, avg, maxWait, topLong, timeline, HasData: true);
+    }
+
+    /// <summary>Classify event name once: 0=skip, 1=scheduled, 2=completed, 3=waitbegin, 4=waitend.</summary>
+    private static byte ComputeTaskSchedulerKind(string n)
+    {
+        if (n.Contains("Task/Scheduled",   StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("TaskScheduled",     StringComparison.OrdinalIgnoreCase)) return 1;
+        if (n.Contains("Task/Completed",   StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("TaskCompleted",     StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase)) return 2;
+        if (n.Contains("TaskWaitBegin",    StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("Task/Wait/Begin",   StringComparison.OrdinalIgnoreCase)) return 3;
+        if (n.Contains("TaskWaitEnd",      StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("Task/Wait/End",     StringComparison.OrdinalIgnoreCase)) return 4;
+        return 0;
     }
 
     private static int SafeInt(TraceEvent ev, string field)

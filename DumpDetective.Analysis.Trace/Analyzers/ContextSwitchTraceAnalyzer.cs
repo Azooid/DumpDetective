@@ -78,6 +78,7 @@ public sealed class ContextSwitchTraceAnalyzer
         long evTotal = trace.EventCount;
         long evProcessed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -91,10 +92,11 @@ public sealed class ContextSwitchTraceAnalyzer
                 }
                 // Only process CSwitch events
                 string evName = ev.EventName ?? "";
-                bool isCSwitch =
-                    evName.IndexOf("CSwitch",          StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Thread/CSwitch",   StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Context Switch",   StringComparison.OrdinalIgnoreCase) >= 0;
+                if (!evKind.TryGetValue(evName, out bool isCSwitch))
+                    evKind[evName] = isCSwitch =
+                        evName.IndexOf("CSwitch",        StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        evName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        evName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0;
                 if (!isCSwitch) continue;
 
                 double tsMs = ev.TimeStampRelativeMSec;

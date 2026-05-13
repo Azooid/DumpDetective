@@ -22,7 +22,7 @@ Beyond the suspect lists, the command detects cross-cutting accumulation pattern
 - **Delegate accumulation** — event handler fields with large subscriber lists
 - **Task backlog** — count of `Task` objects still in running or waiting state
 
-For each top suspect, retained size is exact when a BFS index cache exists (built by `build-bfs` or `load`). Without the cache, `RetainedSize` is omitted — not an error, just absent.
+For each top suspect, retained size is exact when a BFS index cache exists (built by `load`). Without the cache, `RetainedSize` is omitted — not an error, just absent.
 
 ---
 
@@ -74,7 +74,7 @@ For every object in the heap, `ReferrerConsumer` iterates its outgoing reference
 
 ## Disk cache
 
-Retained sizes require a **BFS index cache** built separately by `build-bfs` or automatically during `load`. The cache lives at `.ddcache/<dumpName>/<dumpName>.bfs.idx`. When present, retained sizes are exact; when absent they are omitted from the report without error.
+Retained sizes require a **BFS index cache** built automatically during `load`. The cache lives at `.ddcache/<dumpName>/<dumpName>.bfs.idx`. When present, retained sizes are exact; when absent they are omitted from the report without error.
 
 The child→parent map written by `ReferrerConsumer` lives at `.ddcache/<dumpName>/<dumpName>.parents.bin` and is reused within the session but not persisted across sessions.
 

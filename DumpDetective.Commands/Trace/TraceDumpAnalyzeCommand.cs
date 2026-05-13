@@ -153,9 +153,10 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
             tracePath = resolvedTrace;
         }
         var traceCompanions = EtlPathHelper.FindCompanionNames(tracePath!);
+        AnsiConsole.MarkupLine($"[bold]Trace:[/] {Markup.Escape(tracePath)}");
         if (traceCompanions.Count > 0)
             AnsiConsole.MarkupLine($"[dim]  + {traceCompanions.Count} companion file(s) will be auto-merged: {Markup.Escape(string.Join(", ", traceCompanions))}[/]");
-        AnsiConsole.MarkupLine($"[bold]Dump:[/]  {Markup.Escape(Path.GetFileName(dumpPath))}");
+        AnsiConsole.MarkupLine($"[bold]Dump:[/]  {Markup.Escape(dumpPath)}");
 
         TraceLog? trace = null;
         try

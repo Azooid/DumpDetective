@@ -89,4 +89,4 @@ xperf -merge kernel.etl merged.etl
 
 1. **High preempted % + low idle** → CPU-bound; use `cpu-trace` to find hot methods and reduce algorithmic cost or add capacity.
 2. **High voluntary % + `WrResource`/`WrMutex`** → lock contention; use `contention-trace` to find contested call sites and switch to lock-free structures or `SemaphoreSlim`.
-3. **Short avg run-slice + `WrQueue` dominant** → thread-pool thrashing; use `thread-pool-starvation` and `async-trace` to find sync-over-async patterns or excessive `Task.Run` usage.
+3. **Short avg run-slice + `WrQueue` dominant** → thread-pool thrashing; use `threadpool-starvation` and `async-trace` to find sync-over-async patterns or excessive `Task.Run` usage.

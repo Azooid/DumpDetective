@@ -41,6 +41,7 @@ public sealed class DnsTraceAnalyzer
         long evTotal = trace.EventCount;
         long evProcessed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -57,35 +58,20 @@ public sealed class DnsTraceAnalyzer
                     continue;
 
                 string evName = ev.EventName ?? "";
-                bool isDnsStart =
-                    (evName.Contains("NameResolution", StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("DnsResolut",    StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("GetHostEntry",  StringComparison.OrdinalIgnoreCase)) &&
-                    (evName.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Begin", StringComparison.OrdinalIgnoreCase));
-                bool isDnsStop =
-                    (evName.Contains("NameResolution", StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("DnsResolut",    StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("GetHostEntry",  StringComparison.OrdinalIgnoreCase)) &&
-                    (evName.EndsWith("Stop",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("End",   StringComparison.OrdinalIgnoreCase));
-                bool isDnsFail =
-                    evName.Contains("NameResolution", StringComparison.OrdinalIgnoreCase) &&
-                    (evName.Contains("Fail",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Error", StringComparison.OrdinalIgnoreCase));
-
-                if (!isDnsStart && !isDnsStop && !isDnsFail) continue;
+                if (!evKind.TryGetValue(evName, out byte kind))
+                    evKind[evName] = kind = ComputeDnsKind(evName);
+                if (kind == 0) continue;
 
                 string host = SafeStr(ev, "HostName");
                 if (host.Length == 0) host = SafeStr(ev, "Host");
                 if (host.Length == 0) host = SafeStr(ev, "Name");
                 if (host.Length == 0) host = "(unknown)";
 
-                if (isDnsStart)
+                if (kind == 1) // start
                 {
                     pending[ev.ThreadID] = (ev.TimeStampRelativeMSec, host);
                 }
-                else if (isDnsStop && pending.TryGetValue(ev.ThreadID, out var start))
+                else if (kind == 2 && pending.TryGetValue(ev.ThreadID, out var start)) // stop
                 {
                     pending.Remove(ev.ThreadID);
                     string resolvedHost = host.Length > 1 ? host : start.Host;
@@ -104,7 +90,7 @@ public sealed class DnsTraceAnalyzer
                         slowList.Add(new DnsSlowResolution(resolvedHost, ms, false,
                             start.StartMs));
                 }
-                else if (isDnsFail)
+                else if (kind == 3) // fail
                 {
                     failed++;
                     if (!byHost.TryGetValue(host, out var acc))
@@ -160,6 +146,22 @@ public sealed class DnsTraceAnalyzer
 
         return new DnsTraceData(info, processFilter,
             total, failed, avg, maxMs, topHosts, topSlow, timeline, HasData: true);
+    }
+
+    /// <summary>Classify event name once: 0=skip, 1=start, 2=stop, 3=fail.</summary>
+    private static byte ComputeDnsKind(string n)
+    {
+        bool isDns = n.Contains("NameResolution", StringComparison.OrdinalIgnoreCase) ||
+                     n.Contains("DnsResolut",     StringComparison.OrdinalIgnoreCase) ||
+                     n.Contains("GetHostEntry",   StringComparison.OrdinalIgnoreCase);
+        if (!isDns) return 0;
+        if (n.Contains("Fail",  StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("Error", StringComparison.OrdinalIgnoreCase)) return 3;
+        if (n.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
+            n.EndsWith("Begin", StringComparison.OrdinalIgnoreCase)) return 1;
+        if (n.EndsWith("Stop",  StringComparison.OrdinalIgnoreCase) ||
+            n.EndsWith("End",   StringComparison.OrdinalIgnoreCase)) return 2;
+        return 0;
     }
 
     private static string SafeStr(TraceEvent ev, string field)

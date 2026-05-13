@@ -57,6 +57,7 @@ public sealed class CpuTraceAnalyzer
         long total = trace.EventCount;
         long processed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -72,12 +73,8 @@ public sealed class CpuTraceAnalyzer
                     lastProgressMs = Environment.TickCount64;
                 }
                 string evName = ev.EventName ?? "";
-                bool isCpuSample =
-                    evName.IndexOf("SampledProfile",    StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("PerfInfo/Sample",   StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Kernel/PerfInfo",   StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("cpu-sampling",      StringComparison.OrdinalIgnoreCase) >= 0;
-
+                if (!evKind.TryGetValue(evName, out bool isCpuSample))
+                    evKind[evName] = isCpuSample = IsCpuSampleEvent(evName);
                 if (!isCpuSample) continue;
 
                 // Optional process filter
@@ -291,6 +288,12 @@ public sealed class CpuTraceAnalyzer
             semanticFindings, hotChains, categoryScores, samplesTimeline,
             unresolvedSamples);
     }
+
+    private static bool IsCpuSampleEvent(string n) =>
+        n.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("cpu-sampling",    StringComparison.OrdinalIgnoreCase) >= 0;
 
     private static CallTreeNode Freeze(MutableNode n, int total, int childrenDepth = 5,
                                        bool filterSystem = false, bool filterUnresolved = true)

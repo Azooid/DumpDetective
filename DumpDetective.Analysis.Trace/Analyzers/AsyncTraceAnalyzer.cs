@@ -54,6 +54,7 @@ public sealed class AsyncTraceAnalyzer
         long total = trace.EventCount;
         long processed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -70,9 +71,12 @@ public sealed class AsyncTraceAnalyzer
                     continue;
 
                 string evName = ev.EventName ?? "";
+                if (!evKind.TryGetValue(evName, out byte kind))
+                    evKind[evName] = kind = ComputeAsyncKind(evName);
+                if (kind == 0) continue;
 
-                // ── Task/Scheduled ────────────────────────────────────────────
-                if (IsTaskScheduled(evName))
+                // ── Task/Scheduled ────────────────────────────────────────────────────────────────
+                if (kind == 1) // Scheduled
                 {
                     scheduledCount++;
                     scheduleTimestamps.Add(ev.TimeStampRelativeMSec);
@@ -83,7 +87,7 @@ public sealed class AsyncTraceAnalyzer
                 }
 
                 // ── Task/Execute/Stop (completed) ─────────────────────────────
-                if (IsTaskCompleted(evName))
+                if (kind == 2) // Completed
                 {
                     completedCount++;
                     int taskId = GetIntPayload(ev, "TaskID", 0);
@@ -98,7 +102,7 @@ public sealed class AsyncTraceAnalyzer
                 }
 
                 // ── Task/Wait/Begin — thread about to block synchronously ─────
-                if (IsTaskWaitBegin(evName))
+                if (kind == 3) // WaitBegin
                 {
                     string frame = TopFrame(ev);
                     pendingWaits[ev.ThreadID] = (ev.TimeStampRelativeMSec, frame);
@@ -106,7 +110,7 @@ public sealed class AsyncTraceAnalyzer
                 }
 
                 // ── Task/Wait/End ─────────────────────────────────────────────
-                if (IsTaskWaitEnd(evName))
+                if (kind == 4) // WaitEnd
                 {
                     if (pendingWaits.TryGetValue(ev.ThreadID, out var waitEntry))
                     {
@@ -119,7 +123,7 @@ public sealed class AsyncTraceAnalyzer
                 }
 
                 // ── Awaiter/ScheduleContinuation ──────────────────────────────
-                if (IsAwaiterContinuation(evName))
+                if (kind == 5) // Continuation
                 {
                     string frame = TopFrame(ev);
                     continuationCounts.TryGetValue(frame, out int cnt);
@@ -208,6 +212,18 @@ public sealed class AsyncTraceAnalyzer
     // ─────────────────────────────────────────────────────────────────────────
     // Event name matchers
     // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>Classify event name once: 0=skip, 1=scheduled, 2=completed, 3=waitbegin, 4=waitend, 5=continuation.</summary>
+    private static byte ComputeAsyncKind(string n)
+    {
+        if (IsTaskScheduled(n))      return 1;
+        if (IsTaskCompleted(n))      return 2;
+        if (IsTaskWaitBegin(n))      return 3;
+        if (IsTaskWaitEnd(n))        return 4;
+        if (IsAwaiterContinuation(n)) return 5;
+        return 0;
+    }
+
     private static bool IsTaskScheduled(string n) =>
         n.Contains("Task/Scheduled",   StringComparison.OrdinalIgnoreCase) ||
         n.Contains("TaskScheduled",     StringComparison.OrdinalIgnoreCase);

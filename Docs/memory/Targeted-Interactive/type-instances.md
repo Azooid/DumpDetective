@@ -24,7 +24,7 @@ Enumerates `ctx.Heap.EnumerateObjects()` with a case-insensitive substring filte
 
 A spinner updates every ~200ms during the walk.
 
-**Retained size** (`--retained` flag): after the walk, retained sizes for the top instances are computed. If `BfsIndexCache.TryLoad` succeeds (the BFS index was built by `build-bfs`), each lookup is O(1) — `cache.GetRetainedSize(addr)`. Without the cache, a BFS is run from each address, which may be slow for large instance sets.
+**Retained size** (`--retained` flag): after the walk, retained sizes for the top instances are computed. If `BfsIndexCache.TryLoad` succeeds (the BFS index was built by `load`), each lookup is O(1) — `cache.GetRetainedSize(addr)`. Without the cache, a BFS is run from each address, which may be slow for large instance sets.
 
 ---
 

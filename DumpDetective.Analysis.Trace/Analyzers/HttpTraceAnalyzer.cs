@@ -52,6 +52,7 @@ public sealed class HttpTraceAnalyzer
         long total = trace.EventCount;
         long processed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -68,97 +69,33 @@ public sealed class HttpTraceAnalyzer
                     continue;
 
                 string evName = ev.EventName ?? "";
+                if (!evKind.TryGetValue(evName, out byte kind))
+                    evKind[evName] = kind = ComputeHttpKind(evName);
+                if (kind == 0) continue;
 
-                // ── ASP.NET Core: Microsoft-AspNetCore-Hosting ───────────────────────────────
-                // Matches:
-                //   Microsoft-AspNetCore-Hosting/RequestStart|RequestStop  (ETW EventSource events)
-                //   Microsoft-AspNetCore-Hosting/Request/Start|Stop        (opcode variant)
-                //   Microsoft-AspNetCore-Hosting/HttpRequestIn/Start|Stop  (activity bridge, very common)
-                //   Microsoft-AspNetCore-Hosting/HttpIncoming/Start|Stop   (older activity name)
-                bool isAspNetCoreStart =
-                    evName.IndexOf("AspNetCore", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    (evName.EndsWith("RequestStart",   StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Request/Start",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("RequestIn/Start",StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Incoming/Start", StringComparison.OrdinalIgnoreCase));
-                bool isAspNetCoreStop =
-                    evName.IndexOf("AspNetCore", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    (evName.EndsWith("RequestStop",    StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Request/Stop",   StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("RequestIn/Stop", StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Incoming/Stop",  StringComparison.OrdinalIgnoreCase));
-
-                // ── Classic ASP.NET (System.Web / IIS): Microsoft-Windows-ASPNET  ─────────────
-                // Seen in traces as: Microsoft-Windows-ASPNET/Request/Start|Stop
-                bool isAspNetStart =
-                    (evName.IndexOf("ASPNET",      StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     evName.IndexOf("System.Web",  StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    evName.IndexOf("Start",   StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    evName.IndexOf("Request", StringComparison.OrdinalIgnoreCase) >= 0;
-                bool isAspNetStop =
-                    (evName.IndexOf("ASPNET",      StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     evName.IndexOf("System.Web",  StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    evName.IndexOf("Stop",    StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    evName.IndexOf("Request", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                // ── AspNetTrace/AspNetReq/Start|Stop  (older System.Web ETW provider) ─────────
-                // Seen in traces as: AspNetTrace/AspNetReq/Start
-                bool isAspNetTraceStart =
-                    evName.IndexOf("AspNetReq",  StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    evName.EndsWith("/Start",    StringComparison.OrdinalIgnoreCase);
-                bool isAspNetTraceStop =
-                    evName.IndexOf("AspNetReq",  StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    evName.EndsWith("/Stop",     StringComparison.OrdinalIgnoreCase);
-
-                // ── FrameworkEventSource GetResponse (HttpWebRequest / HttpClient pre-.NET Core) ─
-                // Seen as: System.Diagnostics.Eventing.FrameworkEventSource/GetResponse/Start|Stop
-                bool isFrameworkHttpStart =
-                    evName.IndexOf("FrameworkEventSource", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    (evName.IndexOf("GetResponse",       StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     evName.IndexOf("GetRequestStream",  StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    evName.EndsWith("/Start", StringComparison.OrdinalIgnoreCase);
-                bool isFrameworkHttpStop =
-                    evName.IndexOf("FrameworkEventSource", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    (evName.IndexOf("GetResponse",       StringComparison.OrdinalIgnoreCase) >= 0 ||
-                     evName.IndexOf("GetRequestStream",  StringComparison.OrdinalIgnoreCase) >= 0) &&
-                    evName.EndsWith("/Stop", StringComparison.OrdinalIgnoreCase);
-
-                bool isStart = isAspNetCoreStart || isAspNetStart || isAspNetTraceStart || isFrameworkHttpStart;
-                bool isStop  = isAspNetCoreStop  || isAspNetStop  || isAspNetTraceStop  || isFrameworkHttpStop;
-
-                if (!isStart && !isStop) continue;
-
-                // Route to the correct tracking dict.
-                // isAspNetStart/Stop = Microsoft-Windows-ASPNET (IIS canonical provider)
-                bool useIis = isAspNetStart || isAspNetStop;
+                // Routing: odd=start, even=stop; 1|2=IIS, 3|4=AspNetTrace, 5|6=other
+                bool useIis     = kind <= 2;
+                bool isAspTrace = kind == 3 || kind == 4;
+                bool isStart    = (kind & 1) == 1;
                 var activeInFlight  = useIis ? inFlightIis  : inFlightOther;
                 var activeCompleted = useIis ? completedIis : completedOther;
 
-                // ── Correlation key ──────────────────────────────────────────────────────────
-                // Each provider uses a different payload field to identify the request:
-                //   Microsoft-Windows-ASPNET   → RequestId   (win:GUID)
-                //   AspNetTrace/AspNetReq      → ContextId   (win:GUID)
-                //   Microsoft-AspNetCore-Hosting (activity) → requestId (string)
-                // Fallback: ActivityID from the ETW event header (non-zero), then thread ID.
+                // ── Correlation key ───────────────────────────────────────────
                 string correlationKey;
                 if (useIis)
                 {
-                    // IIS provider: RequestId payload is the per-request GUID
                     correlationKey = SafeStr(ev, "RequestId");
                 }
-                else if (isAspNetTraceStart || isAspNetTraceStop)
+                else if (isAspTrace)
                 {
-                    // AspNetTrace managed provider: ContextId payload
                     correlationKey = SafeStr(ev, "ContextId");
                     if (correlationKey.Length == 0) correlationKey = SafeStr(ev, "contextId");
                 }
                 else
                 {
-                    // ASP.NET Core EventSource / FrameworkEventSource
                     correlationKey = SafeStr(ev, "requestId");
                     if (correlationKey.Length == 0) correlationKey = SafeStr(ev, "RequestId");
                 }
-                // Final fallback: ETW ActivityID (header), then thread
                 if (correlationKey.Length == 0)
                     correlationKey = ev.ActivityID != Guid.Empty
                         ? ev.ActivityID.ToString()
@@ -279,6 +216,52 @@ public sealed class HttpTraceAnalyzer
             completed.Count, totalMs, avgMs, maxMs, p95Ms, p99Ms,
             errors, slow.Count, slowThresholdMs,
             slow, byStatus, topPaths, HasData: true);
+    }
+
+    /// <summary>
+    /// Classify event name once: 0=skip, 1=start_IIS, 2=stop_IIS,
+    /// 3=start_AspNetTrace, 4=stop_AspNetTrace, 5=start_other, 6=stop_other.
+    /// Odd=start, Even=stop (for kind>0). 1|2=IIS, 3|4=AspNetTrace, 5|6=other.
+    /// </summary>
+    private static byte ComputeHttpKind(string n)
+    {
+        // IIS / Classic ASP.NET (Microsoft-Windows-ASPNET, System.Web)
+        if (n.IndexOf("ASPNET",     StringComparison.OrdinalIgnoreCase) >= 0 ||
+            n.IndexOf("System.Web", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            if (n.IndexOf("Request", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                if (n.IndexOf("Start", StringComparison.OrdinalIgnoreCase) >= 0) return 1;
+                if (n.IndexOf("Stop",  StringComparison.OrdinalIgnoreCase) >= 0) return 2;
+            }
+        }
+        // AspNetTrace (AspNetReq)
+        if (n.IndexOf("AspNetReq", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            if (n.EndsWith("/Start", StringComparison.OrdinalIgnoreCase)) return 3;
+            if (n.EndsWith("/Stop",  StringComparison.OrdinalIgnoreCase)) return 4;
+        }
+        // ASP.NET Core
+        if (n.IndexOf("AspNetCore", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            if (n.EndsWith("RequestStart",    StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith("Request/Start",   StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith("RequestIn/Start", StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith("Incoming/Start",  StringComparison.OrdinalIgnoreCase)) return 5;
+            if (n.EndsWith("RequestStop",    StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith("Request/Stop",   StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith("RequestIn/Stop", StringComparison.OrdinalIgnoreCase) ||
+                n.EndsWith("Incoming/Stop",  StringComparison.OrdinalIgnoreCase)) return 6;
+        }
+        // FrameworkEventSource (HttpWebRequest / HttpClient pre-.NET Core)
+        if (n.IndexOf("FrameworkEventSource", StringComparison.OrdinalIgnoreCase) >= 0 &&
+            (n.IndexOf("GetResponse",      StringComparison.OrdinalIgnoreCase) >= 0 ||
+             n.IndexOf("GetRequestStream", StringComparison.OrdinalIgnoreCase) >= 0))
+        {
+            if (n.EndsWith("/Start", StringComparison.OrdinalIgnoreCase)) return 5;
+            if (n.EndsWith("/Stop",  StringComparison.OrdinalIgnoreCase)) return 6;
+        }
+        return 0;
     }
 
     private static double Percentile(List<HttpRequestEntry> sorted, double pct)

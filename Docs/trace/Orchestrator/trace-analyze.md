@@ -7,6 +7,8 @@
 
 Opens a `.nettrace` or `.etl` trace file **once** and runs all **29 trace sub-analyzers** sequentially in a single `TraceLog` parse pass, producing a single combined report with a cross-cutting **Trace Summary** dashboard at the top. More efficient than running each trace command individually because `TraceLog.OpenOrConvert` is called only once and all `Analyze(TraceLog, ...)` overloads process the already-loaded trace.
 
+The slowest analyzers also cache per-event-name classification internally, so repeated ETW event names are classified once and reused across the rest of the trace.
+
 Each of the 29 standalone trace commands (e.g. `GcTraceCommand`, `CpuTraceCommand`) implements `ITraceSubAnalyzer` directly — the `trace-analyze` orchestrator receives the same command instances from `TraceCommandRegistry.SubAnalyzers` and calls their `ITraceSubAnalyzer.Run()` method. No duplicate object construction occurs.
 
 The report structure:

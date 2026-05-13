@@ -69,4 +69,4 @@ PerfView.exe /ClrEvents:Tasks,Default /NoGui collect
 | **Long-running continuations on thread-pool threads** | Blocks a thread-pool thread; use `Task.Run` to offload CPU-bound work, or `ConfigureAwait(false)` to avoid capturing the synchronization context |
 | **High continuation count from one scheduler site** | Over-decomposition — consider batching or restructuring the async pipeline to reduce Task overhead |
 | **Spike in Task scheduling rate correlating with request bursts** | Task fan-out proportional to load — check for unbounded `Task.WhenAll` on large collections |
-| **Many Tasks scheduled but low completion rate** | Tasks may be queued but not executing — possible thread-pool starvation; cross-reference with `thread-pool-starvation` |
+| **Many Tasks scheduled but low completion rate** | Tasks may be queued but not executing — possible thread-pool starvation; cross-reference with `threadpool-starvation` |

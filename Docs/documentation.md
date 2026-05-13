@@ -138,7 +138,7 @@ Commands that operate on `.nettrace` or `.etl` trace files.
 
 | Command | Description |
 |---|---|
-| [thread-pool-starvation](trace/Threads-Concurrency/threadpool-starvation.md) | WaitHandle wait events and hill-climbing adjustments: starvation signal detection |
+| [threadpool-starvation](trace/Threads-Concurrency/threadpool-starvation.md) | WaitHandle wait events and hill-climbing adjustments: starvation signal detection |
 | [async-trace](trace/Threads-Concurrency/async-trace.md) | Async Task scheduling, sync-over-async hotspots, continuation call sites |
 
 ### JIT, HTTP, and SQL

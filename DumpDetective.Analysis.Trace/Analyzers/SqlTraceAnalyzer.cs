@@ -53,6 +53,7 @@ public sealed class SqlTraceAnalyzer
         long total = trace.EventCount;
         long processed = 0;
         long lastProgressMs = 0;
+        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
 
         try
         {
@@ -69,9 +70,12 @@ public sealed class SqlTraceAnalyzer
                     continue;
 
                 string evName = ev.EventName ?? "";
+                if (!evKind.TryGetValue(evName, out byte kind))
+                    evKind[evName] = kind = ComputeSqlKind(evName);
+                if (kind == 0) continue;
 
-                // ── Command / Query start ──────────────────────────────────────
-                if (IsCommandStart(evName))
+                // ── Command / Query start ────────────────────────────────────────────
+                if (kind == 1) // start
                 {
                     string key  = GetCorrelationKey(ev);
                     string db   = GetDatabase(ev);
@@ -88,10 +92,10 @@ public sealed class SqlTraceAnalyzer
                 }
 
                 // ── Command / Query stop ───────────────────────────────────────
-                if (IsCommandStop(evName))
+                if (kind == 2 || kind == 3) // stop (kind==3 means error)
                 {
                     string key  = GetCorrelationKey(ev);
-                    bool   isErr = IsErrorEvent(evName);
+                    bool   isErr = (kind == 3);
 
                     if (!pending.TryGetValue(key, out var entry))
                     {
@@ -213,6 +217,14 @@ public sealed class SqlTraceAnalyzer
     // ─────────────────────────────────────────────────────────────────────────
     // Event name matchers
     // ─────────────────────────────────────────────────────────────────────────
+    /// <summary>Classify event name once: 0=skip, 1=start, 2=stop, 3=error-stop.</summary>
+    private static byte ComputeSqlKind(string n)
+    {
+        if (IsCommandStart(n)) return 1;
+        if (IsCommandStop(n))  return IsErrorEvent(n) ? (byte)3 : (byte)2;
+        return 0;
+    }
+
     private static bool IsCommandStart(string n) =>
         // Microsoft-AdoNet-SystemData/BeginExecute  (classic ADO.NET, .NET Framework)
         n.Contains("BeginExecute", StringComparison.OrdinalIgnoreCase) ||

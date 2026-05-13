@@ -81,7 +81,7 @@ Commands marked **No** are excluded from `analyze --full` because they require e
 | `module-list` | Targeted | ✓ | [→](memory/Targeted-Interactive/module-list.md) |
 | `type-instances` | Targeted | No | [→](memory/Targeted-Interactive/type-instances.md) |
 | `object-inspect` | Targeted | No | [→](memory/Targeted-Interactive/object-inspect.md) |
-| `build-bfs` | Cache Lifecycle | No | Pre-builds BFS index and parent map on disk |
+| `load` | Cache Lifecycle | No | Pre-builds BFS index and parent map on disk |
 
 ---
 
@@ -270,17 +270,6 @@ Deep recursive field dump for one object by hex address. Options: `--address <he
 
 ### `module-list`
 Loaded assemblies classified as Dynamic, GAC, System, or App. Options: `--filter <t>`, `--app-only` — [full details →](memory/Targeted-Interactive/module-list.md)
-
-### `build-bfs`
-Pre-builds the BFS forward-reference index and child→parent map on disk.
-
-```bash
-DumpDetective build-bfs app.dmp
-DumpDetective build-bfs app.dmp --force
-DumpDetective build-bfs D:\dumps --recurse --force
-```
-
----
 
 ## Suggested Incident Triage Path
 

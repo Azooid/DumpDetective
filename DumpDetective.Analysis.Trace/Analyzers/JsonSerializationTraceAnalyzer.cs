@@ -96,6 +96,14 @@ public sealed class JsonSerializationTraceAnalyzer
         int totalCpuSamples = 0;
         int jsonCpuSamples  = 0;
 
+        // ── Classification indices — raw event/frame/type → label, built once during this pass ──
+        // Each unique method name / type name / event name is classified exactly once;
+        // all subsequent occurrences are O(1) dictionary hits, eliminating millions of
+        // redundant string searches (critical: 1.5 M CPU samples × ~30 frames each).
+        var frameLibIndex = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var typeLibIndex  = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var evTypeIndex   = new Dictionary<string, (bool IsAlloc, bool IsCpu)>(StringComparer.OrdinalIgnoreCase);
+
         long total     = trace.EventCount;
         long processed = 0;
         long lastProgressMs = 0;
@@ -117,13 +125,22 @@ public sealed class JsonSerializationTraceAnalyzer
 
                 string evName = ev.EventName ?? "";
 
-                // ── GCAllocationTick ───────────────────────────────────────────────────
-                bool isAlloc =
-                    evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
-                    evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
+                // ── Event-type index: classify each unique event name once ─────────────
+                if (!evTypeIndex.TryGetValue(evName, out var evType))
+                {
+                    bool a =
+                        evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
+                        evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
+                        evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
+                    bool c =
+                        evName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        evName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                        evName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
+                    evTypeIndex[evName] = evType = (a, c);
+                }
 
-                if (isAlloc)
+                // ── GCAllocationTick ───────────────────────────────────────────────────
+                if (evType.IsAlloc)
                 {
                     totalAllocTicks++;
                     string typeName  = SafeStr(ev, "TypeName");
@@ -135,7 +152,8 @@ public sealed class JsonSerializationTraceAnalyzer
                     if (bytes <= 0) bytes = TickSizeBytes;
                     totalAllocBytes += bytes;
 
-                    string? library = ClassifyTypeLibrary(typeName);
+                    if (!typeLibIndex.TryGetValue(typeName, out var library))
+                        typeLibIndex[typeName] = library = ClassifyTypeLibrary(typeName);
                     if (library is null) continue; // not a JSON type
 
                     jsonAllocBytes += bytes;
@@ -150,7 +168,7 @@ public sealed class JsonSerializationTraceAnalyzer
                     lAcc.Bytes += bytes;
 
                     // Caller for allocation: innermost non-JSON, non-runtime user frame
-                    string callerFrame = FindAllocCaller(ev, typeName);
+                    string callerFrame = FindAllocCaller(ev, typeName, frameLibIndex);
                     string callerKey   = $"{callerFrame}|{library}";
                     if (!callerByFrame.TryGetValue(callerKey, out var cAcc))
                         callerByFrame[callerKey] = cAcc = new CallerAcc(callerFrame, library);
@@ -160,12 +178,7 @@ public sealed class JsonSerializationTraceAnalyzer
                 }
 
                 // ── CPU sample ────────────────────────────────────────────────────────
-                bool isCpu =
-                    evName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
-
-                if (!isCpu) continue;
+                if (!evType.IsCpu) continue;
 
                 totalCpuSamples++;
                 var callStack = ev.CallStack();
@@ -186,7 +199,8 @@ public sealed class JsonSerializationTraceAnalyzer
                     string method = cur.CodeAddress.FullMethodName ?? "";
                     if (method.Length == 0) continue;
 
-                    string? frameLibrary = ClassifyFrameLibrary(method);
+                    if (!frameLibIndex.TryGetValue(method, out var frameLibrary))
+                        frameLibIndex[method] = frameLibrary = ClassifyFrameLibrary(method);
                     if (frameLibrary is not null)
                     {
                         inJsonZone = true;
@@ -336,7 +350,8 @@ public sealed class JsonSerializationTraceAnalyzer
     }
 
     /// <summary>Find the first user-code frame in the call stack that is NOT a JSON/runtime frame.</summary>
-    private static string FindAllocCaller(TraceEvent ev, string allocTypeName)
+    private static string FindAllocCaller(TraceEvent ev, string allocTypeName,
+                                           Dictionary<string, string?> frameLibIndex)
     {
         var cs = ev.CallStack();
         if (cs is null) return "(no call stack)";
@@ -347,9 +362,12 @@ public sealed class JsonSerializationTraceAnalyzer
             string? name = cur.CodeAddress.FullMethodName;
             if (string.IsNullOrEmpty(name)) { cur = cur.Caller; continue; }
 
-            // Skip JSON library frames and common runtime/GC frames
-            if (ClassifyFrameLibrary(name) is not null)     { cur = cur.Caller; continue; }
-            if (IsRuntimeFrame(name))                        { cur = cur.Caller; continue; }
+            // Use shared frame index — each unique method name classified once
+            if (!frameLibIndex.TryGetValue(name, out var lib))
+                frameLibIndex[name] = lib = ClassifyFrameLibrary(name);
+
+            if (lib is not null)      { cur = cur.Caller; continue; } // JSON frame — skip
+            if (IsRuntimeFrame(name)) { cur = cur.Caller; continue; }
 
             return name;
         }

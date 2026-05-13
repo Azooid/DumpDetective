@@ -22,7 +22,7 @@ Each result row shows the declaring type, field name, type of the referenced obj
 
 **Retained-size computation** runs after field enumeration using BFS traversal from each field's root address:
 
-When a `BfsIndexCache` is available (built by `build-bfs` or `load`), each root address is looked up directly in the pre-built BFS index — an O(1) operation that returns the exact exclusive retained byte count. No traversal happens at analysis time.
+When a `BfsIndexCache` is available (built by `load`), each root address is looked up directly in the pre-built BFS index — an O(1) operation that returns the exact exclusive retained byte count. No traversal happens at analysis time.
 
 Without the cache, the analyzer builds an in-memory referrer graph on demand and runs BFS from each root with a configurable node cap. The cap defaults to 1% of total heap objects (clamped between 10,000 and 80% of total). When the cap is hit, `IsEstimated = true` and the retained size is a lower bound. Up to 8 BFS walks run in parallel. All fields belonging to the same declaring type share a single visited set — so if a static `Dictionary` and a static `List` both reference the same backing array, it is counted once.
 
@@ -38,7 +38,7 @@ Results are sorted by retained size descending.
 
 ## Disk cache
 
-Uses `BfsIndexCache` at `.ddcache/<dumpName>/<dumpName>.bfs.idx` for exact retained sizes. Presence of this file switches the analyzer from sampling to exact mode. Built by `build-bfs` command or triggered by `load`.
+Uses `BfsIndexCache` at `.ddcache/<dumpName>/<dumpName>.bfs.idx` for exact retained sizes. Presence of this file switches the analyzer from sampling to exact mode. Built by `load`.
 
 ---
 
