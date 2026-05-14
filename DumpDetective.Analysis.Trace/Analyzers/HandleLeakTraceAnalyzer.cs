@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -27,75 +28,72 @@ public sealed class HandleLeakTraceAnalyzer
         }
     }
 
-    public HandleLeakTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var byKind    = new Dictionary<string, KindAcc>(StringComparer.OrdinalIgnoreCase);
-        var perSecond = new Dictionary<int, int>(); // net per second
-        int netCurrent = 0;
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<string, KindAcc> ByKind = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly Dictionary<int, int> PerSecond = new();
+        internal int NetCurrent;
+        internal int Created, Destroyed;
 
-        int created = 0, destroyed = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
-            {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{created:N0} handles created  \u2022  {destroyed:N0} destroyed");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
 
-                string evName = ev.EventName ?? "";
-                bool isCreated =
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind =
                     evName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
                     (evName.Contains("Created",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Create",   StringComparison.OrdinalIgnoreCase));
-                bool isDestroyed =
+                     evName.Contains("Create",   StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
                     evName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
                     (evName.Contains("Destroyed", StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Destroy",   StringComparison.OrdinalIgnoreCase));
+                     evName.Contains("Destroy",   StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
+                    (byte)0;
+            if (kind == 0) return;
+            bool isCreated   = kind == 1;
+            bool isDestroyed = kind == 2;
 
-                if (!isCreated && !isDestroyed) continue;
+            string handleKind = SafeStr(ev, "Kind");
+            if (handleKind.Length == 0) handleKind = SafeStr(ev, "HandleType");
+            if (handleKind.Length == 0) handleKind = "Unknown";
 
-                string kind = SafeStr(ev, "Kind");
-                if (kind.Length == 0) kind = SafeStr(ev, "HandleType");
-                if (kind.Length == 0) kind = "Unknown";
+            if (!ByKind.TryGetValue(handleKind, out var acc))
+                ByKind[handleKind] = acc = new KindAcc();
 
-                if (!byKind.TryGetValue(kind, out var acc))
-                    byKind[kind] = acc = new KindAcc();
-
-                if (isCreated)
-                {
-                    created++;
-                    acc.Created++;
-                    netCurrent++;
-                }
-                else
-                {
-                    destroyed++;
-                    acc.Destroyed++;
-                    netCurrent = Math.Max(0, netCurrent - 1);
-                }
-
-                int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                perSecond[bucket] = netCurrent;
+            if (isCreated)
+            {
+                Created++;
+                acc.Created++;
+                NetCurrent++;
             }
-        }
-        catch (Exception ex)
-        {
-            return new HandleLeakTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, false, [], null, false);
+            else
+            {
+                Destroyed++;
+                acc.Destroyed++;
+                NetCurrent = Math.Max(0, NetCurrent - 1);
+            }
+
+            int bucket = (int)(timestampMs / 1000.0);
+            PerSecond[bucket] = NetCurrent;
         }
 
-        if (created == 0 && destroyed == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) && (eventName.Contains("Created", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Create", StringComparison.OrdinalIgnoreCase)) ? (byte)1 : eventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) && (eventName.Contains("Destroyed", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Destroy", StringComparison.OrdinalIgnoreCase)) ? (byte)2 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public HandleLeakTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                            string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Created == 0 && c.Destroyed == 0)
         {
             return new HandleLeakTraceData(
                 $"{traceFileName}  |  0 GCHandle events — collect with " +
@@ -103,10 +101,10 @@ public sealed class HandleLeakTraceAnalyzer
                 processFilter, 0, 0, 0, false, [], null, false);
         }
 
-        int net = created - destroyed;
+        int net = c.Created - c.Destroyed;
         bool isGrowing = net > GrowthAlertThreshold;
 
-        var breakdown = byKind
+        var breakdown = c.ByKind
             .OrderByDescending(kv => Math.Abs(kv.Value.Created - kv.Value.Destroyed))
             .Take(top)
             .Select(kv => new HandleKindSummary(kv.Key,
@@ -115,14 +113,14 @@ public sealed class HandleLeakTraceAnalyzer
             .ToList();
 
         IReadOnlyList<double>? timeline = null;
-        if (perSecond.Count > 1)
+        if (c.PerSecond.Count > 1)
         {
-            int minB = perSecond.Keys.Min(), maxB = perSecond.Keys.Max();
+            int minB = c.PerSecond.Keys.Min(), maxB = c.PerSecond.Keys.Max();
             var tl = new double[maxB - minB + 1];
             double lastNet = 0;
             for (int b = 0; b <= maxB - minB; b++)
             {
-                lastNet = perSecond.TryGetValue(b + minB, out int v) ? v : lastNet;
+                lastNet = c.PerSecond.TryGetValue(b + minB, out int v) ? v : lastNet;
                 tl[b] = lastNet;
             }
             timeline = tl;
@@ -130,17 +128,30 @@ public sealed class HandleLeakTraceAnalyzer
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {created:N0} created  •  {destroyed:N0} destroyed  •  net +{net}" +
+                      $"  |  {c.Created:N0} created  •  {c.Destroyed:N0} destroyed  •  net +{net}" +
                       (isGrowing ? "  ⚠ leak suspected" : "");
 
         return new HandleLeakTraceData(info, processFilter,
-            created, destroyed, net, isGrowing, breakdown, timeline, HasData: true);
+            c.Created, c.Destroyed, net, isGrowing, breakdown, timeline, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public HandleLeakTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                        string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new HandleLeakTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, false, [], null, false);
+        }
     }
+
 
     private sealed class KindAcc { public int Created, Destroyed; }
 }

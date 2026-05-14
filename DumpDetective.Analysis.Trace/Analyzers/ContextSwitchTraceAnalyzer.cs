@@ -44,147 +44,112 @@ public sealed class ContextSwitchTraceAnalyzer
         }
     }
 
-    public ContextSwitchTraceData Analyze(TraceLog trace, string traceFileName,
-                                           int top = 30, string? processFilter = null,
-                                           Action<string>? progress = null)
+    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        // ── Per-thread accumulators ─────────────────────────────────────────
-        // Keyed by OLD thread ID (the thread being switched away from)
-        var threadAcc = new Dictionary<int, ThreadAcc>(2048);
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<int, ThreadAcc> ThreadAccs = new(2048);
+        internal readonly Dictionary<int, string> ThreadProcess = new(2048);
+        internal readonly Dictionary<int, double> ThreadRunStart = new(2048);
+        internal long TotalSwitches;
+        internal long VoluntarySwitches;
+        internal long PreemptedSwitches;
+        internal double FirstEventMs = double.MaxValue;
+        internal double LastEventMs;
+        internal long IdleSwitches;
+        internal double IdleRunMs;
+        internal readonly Dictionary<int, double> PerSecond = new(4096);
+        internal readonly Dictionary<int, long> WaitReasons = new(64);
 
-        // thread → process name map built from "new thread" side of each CSwitch
-        var threadProcess = new Dictionary<int, string>(2048);
-
-        // thread → last run-start timestamp (when it was last scheduled IN)
-        var threadRunStart = new Dictionary<int, double>(2048);
-
-        // ── Aggregate counters ─────────────────────────────────────────────
-        long   totalSwitches    = 0;
-        long   voluntarySwitches = 0;
-        long   preemptedSwitches = 0;
-        double firstEventMs      = double.MaxValue;
-        double lastEventMs       = 0;
-
-        // Idle thread tracking (Windows Idle process, PID 0 per-CPU idle threads)
-        long   idleSwitches = 0;
-        double idleRunMs    = 0;
-
-        // Per-second bucket for timeline sparkline
-        var perSecond = new Dictionary<int, double>(4096);
-
-        // Wait reason aggregate (OldThreadState=5 only)
-        var waitReasons = new Dictionary<int, long>(64);
-
-        long evTotal = trace.EventCount;
-        long evProcessed = 0;
-        long lastProgressMs = 0;
-        var evKind = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (!EvKind.TryGetValue(evName, out bool isCSwitch))
+                EvKind[evName] = isCSwitch =
+                    evName.IndexOf("CSwitch",        StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isCSwitch) return;
+
+            double tsMs = timestampMs;
+            if (tsMs < FirstEventMs) FirstEventMs = tsMs;
+            if (tsMs > LastEventMs)  LastEventMs  = tsMs;
+
+            // ── New thread side ─────────────────────────────────────────
+            int newTid = threadId;
+            string newProc = processName;
+
+            if (newProc.Length > 0 && !ThreadProcess.ContainsKey(newTid))
+                ThreadProcess[newTid] = newProc;
+
+            ThreadRunStart[newTid] = tsMs;
+
+            // ── Old thread side ─────────────────────────────────────────
+            int oldTid     = SafeInt(ev, "OldThreadId",       "OldThreadID");
+            int oldState   = SafeInt(ev, "OldThreadState");
+            int oldReason  = SafeInt(ev, "OldThreadWaitReason");
+
+            string oldProc = ThreadProcess.TryGetValue(oldTid, out var pn) ? pn : "";
+
+            // Apply process filter — include event if either thread matches
+            if (_processFilter is not null)
             {
-                evProcessed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{totalSwitches:N0} ctx switches");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                // Only process CSwitch events
-                string evName = ev.EventName ?? "";
-                if (!evKind.TryGetValue(evName, out bool isCSwitch))
-                    evKind[evName] = isCSwitch =
-                        evName.IndexOf("CSwitch",        StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        evName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        evName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0;
-                if (!isCSwitch) continue;
-
-                double tsMs = ev.TimeStampRelativeMSec;
-                if (tsMs < firstEventMs) firstEventMs = tsMs;
-                if (tsMs > lastEventMs)  lastEventMs  = tsMs;
-
-                // ── New thread side ─────────────────────────────────────────
-                int newTid = ev.ThreadID;
-                string newProc = ev.ProcessName ?? "";
-
-                // Register the new thread's process name (for resolving old thread later)
-                if (newProc.Length > 0 && !threadProcess.ContainsKey(newTid))
-                    threadProcess[newTid] = newProc;
-
-                // Record when this thread started its current run slice
-                threadRunStart[newTid] = tsMs;
-
-                // ── Old thread side ─────────────────────────────────────────
-                int oldTid     = SafeInt(ev, "OldThreadId",       "OldThreadID");
-                int oldState   = SafeInt(ev, "OldThreadState");
-                int oldReason  = SafeInt(ev, "OldThreadWaitReason");
-
-                // Resolve old thread's process name (may be unknown at start of trace)
-                string oldProc = threadProcess.TryGetValue(oldTid, out var pn) ? pn : "";
-
-                // Apply process filter — include event if either thread matches
-                if (processFilter is not null)
-                {
-                    bool newMatch = newProc.Contains(processFilter, StringComparison.OrdinalIgnoreCase);
-                    bool oldMatch = oldProc.Contains(processFilter, StringComparison.OrdinalIgnoreCase);
-                    if (!newMatch && !oldMatch) continue;
-                }
-
-                totalSwitches++;
-
-                // Per-second bucket
-                int bucket = (int)(tsMs / 1000.0);
-                perSecond.TryGetValue(bucket, out double prevBucket);
-                perSecond[bucket] = prevBucket + 1;
-
-                // Classify old thread's exit reason.
-                // OldThreadState is the state the old thread TRANSITIONS INTO:
-                //   1 = Ready   → thread is still runnable but was preempted (quantum expiry
-                //                 or a higher-priority thread became ready)
-                //   5 = Waiting → thread voluntarily blocked (I/O, mutex, timer, etc.)
-                bool preempted = (oldState == 1);  // Ready → preempted
-                bool voluntary = (oldState == 5);  // Waiting → blocked voluntarily
-                if (preempted) preemptedSwitches++;
-                if (voluntary)
-                {
-                    voluntarySwitches++;
-                    waitReasons.TryGetValue(oldReason, out long prev);
-                    waitReasons[oldReason] = prev + 1;
-                }
-
-                // ── Per-thread accumulation for old thread ──────────────────
-                // Idle process threads (process name "Idle", or TID 0 with no process name)
-                // represent CPU time when no real thread was runnable. Accumulate separately
-                // so they do not pollute the top-threads table.
-                bool isIdle = oldProc.Equals("Idle", StringComparison.OrdinalIgnoreCase) ||
-                              (oldProc.Length == 0 && oldTid == 0);
-
-                if (isIdle)
-                {
-                    idleSwitches++;
-                    if (threadRunStart.TryGetValue(oldTid, out double idleStart))
-                        idleRunMs += tsMs - idleStart;
-                    continue;
-                }
-
-                if (!threadAcc.TryGetValue(oldTid, out var acc))
-                    threadAcc[oldTid] = acc = new ThreadAcc(oldProc.Length > 0 ? oldProc : newProc);
-
-                // If we have a run-start timestamp for this thread, compute run duration
-                if (threadRunStart.TryGetValue(oldTid, out double runStart))
-                    acc.TotalRunMs += tsMs - runStart;
-
-                acc.SwitchCount++;
-                if (preempted) acc.Preempted++;
-                if (voluntary) acc.Voluntary++;
+                bool newMatch = newProc.Contains(_processFilter, StringComparison.OrdinalIgnoreCase);
+                bool oldMatch = oldProc.Contains(_processFilter, StringComparison.OrdinalIgnoreCase);
+                if (!newMatch && !oldMatch) return;
             }
-        }
-        catch (Exception ex)
-        {
-            return Empty($"Failed during event pass: {ex.Message}", processFilter);
+
+            TotalSwitches++;
+
+            int bucket = (int)(tsMs / 1000.0);
+            PerSecond.TryGetValue(bucket, out double prevBucket);
+            PerSecond[bucket] = prevBucket + 1;
+
+            bool preempted = (oldState == 1);
+            bool voluntary = (oldState == 5);
+            if (preempted) PreemptedSwitches++;
+            if (voluntary)
+            {
+                VoluntarySwitches++;
+                WaitReasons.TryGetValue(oldReason, out long prev);
+                WaitReasons[oldReason] = prev + 1;
+            }
+
+            bool isIdle = oldProc.Equals("Idle", StringComparison.OrdinalIgnoreCase) ||
+                          (oldProc.Length == 0 && oldTid == 0);
+
+            if (isIdle)
+            {
+                IdleSwitches++;
+                if (ThreadRunStart.TryGetValue(oldTid, out double idleStart))
+                    IdleRunMs += tsMs - idleStart;
+                return;
+            }
+
+            if (!ThreadAccs.TryGetValue(oldTid, out var acc))
+                ThreadAccs[oldTid] = acc = new ThreadAcc(oldProc.Length > 0 ? oldProc : newProc);
+
+            if (ThreadRunStart.TryGetValue(oldTid, out double runStart))
+                acc.TotalRunMs += tsMs - runStart;
+
+            acc.SwitchCount++;
+            if (preempted) acc.Preempted++;
+            if (voluntary) acc.Voluntary++;
         }
 
-        if (totalSwitches == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.IndexOf("CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public ContextSwitchTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName,
+                                               int top = 30, string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.TotalSwitches == 0)
         {
             string noData = $"{traceFileName}" +
                 (processFilter is not null ? $"  |  process: {processFilter}" : "") +
@@ -193,18 +158,18 @@ public sealed class ContextSwitchTraceAnalyzer
                 0, 0, 0, 0, 0, 0, 0, 0, 0, [], [], null, HasData: false);
         }
 
-        double traceSpanMs = lastEventMs > firstEventMs ? lastEventMs - firstEventMs : 1;
-        double switchesPerSec = totalSwitches * 1000.0 / traceSpanMs;
+        double traceSpanMs = c.LastEventMs > c.FirstEventMs ? c.LastEventMs - c.FirstEventMs : 1;
+        double switchesPerSec = c.TotalSwitches * 1000.0 / traceSpanMs;
 
         // ── Top threads ─────────────────────────────────────────────────────
-        var topThreads = threadAcc
+        var topThreads = c.ThreadAccs
             .OrderByDescending(kv => kv.Value.SwitchCount)
             .Take(top)
             .Select(kv =>
             {
                 var a = kv.Value;
                 double avgSlice = a.SwitchCount > 0 ? a.TotalRunMs / a.SwitchCount : 0;
-                double pct = totalSwitches > 0 ? a.SwitchCount * 100.0 / totalSwitches : 0;
+                double pct = c.TotalSwitches > 0 ? a.SwitchCount * 100.0 / c.TotalSwitches : 0;
                 return new CswitchThreadSummary(
                     a.ProcessName, kv.Key,
                     a.SwitchCount, a.Voluntary, a.Preempted,
@@ -213,8 +178,8 @@ public sealed class ContextSwitchTraceAnalyzer
             .ToList();
 
         // ── Wait reason distribution (voluntary switches only) ───────────────
-        long totalWaits = waitReasons.Values.Sum();
-        var waitReasonList = waitReasons
+        long totalWaits = c.WaitReasons.Values.Sum();
+        var waitReasonList = c.WaitReasons
             .OrderByDescending(kv => kv.Value)
             .Take(20)
             .Select(kv => new WaitReasonSummary(
@@ -225,29 +190,46 @@ public sealed class ContextSwitchTraceAnalyzer
 
         // ── Timeline ────────────────────────────────────────────────────────
         IReadOnlyList<double>? timeline = null;
-        if (perSecond.Count > 1)
+        if (c.PerSecond.Count > 1)
         {
             int minB = int.MaxValue, maxB = int.MinValue;
-            foreach (int k in perSecond.Keys) { if (k < minB) minB = k; if (k > maxB) maxB = k; }
+            foreach (int k in c.PerSecond.Keys) { if (k < minB) minB = k; if (k > maxB) maxB = k; }
             var tl = new double[maxB - minB + 1];
-            foreach (var kv in perSecond) tl[kv.Key - minB] = kv.Value;
+            foreach (var kv in c.PerSecond) tl[kv.Key - minB] = kv.Value;
             timeline = tl;
         }
 
-        double voluntaryPct  = totalSwitches > 0 ? voluntarySwitches  * 100.0 / totalSwitches : 0;
-        double preemptedPct  = totalSwitches > 0 ? preemptedSwitches  * 100.0 / totalSwitches : 0;
+        double voluntaryPct  = c.TotalSwitches > 0 ? c.VoluntarySwitches  * 100.0 / c.TotalSwitches : 0;
+        double preemptedPct  = c.TotalSwitches > 0 ? c.PreemptedSwitches  * 100.0 / c.TotalSwitches : 0;
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {totalSwitches:N0} switches  •  {switchesPerSec:F0}/s  •  " +
+                      $"  |  {c.TotalSwitches:N0} switches  •  {switchesPerSec:F0}/s  •  " +
                       $"{voluntaryPct:F1}% voluntary  •  {preemptedPct:F1}% preempted";
 
         return new ContextSwitchTraceData(
             info, processFilter,
-            totalSwitches, voluntarySwitches, preemptedSwitches,
+            c.TotalSwitches, c.VoluntarySwitches, c.PreemptedSwitches,
             switchesPerSec, voluntaryPct, preemptedPct,
-            idleSwitches, idleRunMs,
+            c.IdleSwitches, c.IdleRunMs,
             traceSpanMs, topThreads, waitReasonList, timeline, HasData: true);
+    }
+
+    public ContextSwitchTraceData Analyze(TraceLog trace, string traceFileName,
+                                           int top = 30, string? processFilter = null,
+                                           Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return Empty($"Failed during event pass: {ex.Message}", processFilter);
+        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -298,21 +280,6 @@ public sealed class ContextSwitchTraceAnalyzer
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
-
-    private static int SafeInt(TraceEvent ev, params string[] fields)
-    {
-        foreach (var field in fields)
-        {
-            try
-            {
-                var v = ev.PayloadByName(field);
-                if (v is not null)
-                    return (int)Convert.ChangeType(v, typeof(int));
-            }
-            catch { }
-        }
-        return 0;
-    }
 
     private static ContextSwitchTraceData Empty(string info, string? filter) =>
         new(info, filter, 0, 0, 0, 0, 0, 0, 0, 0, 0, [], [], null, HasData: false);

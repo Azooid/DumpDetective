@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -24,120 +25,117 @@ public sealed class JitTraceAnalyzer
         }
     }
 
-    public JitTraceData Analyze(TraceLog trace, string traceFileName, int top = 30,
-                                 string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        // Track in-progress compilations keyed by (threadId, methodId) to match start→stop pairs
-        // We also track a flat record per method name for aggregation.
-        var inFlight  = new Dictionary<long, (double startMs, string method, string module, int ilSize)>();
-        var byMethod  = new Dictionary<string, MethodAcc>(StringComparer.Ordinal);
-        var byModule  = new Dictionary<string, ModuleAcc>(StringComparer.OrdinalIgnoreCase);
-        bool timingAvailable = false;
-        long evTotal = trace.EventCount;
-        long evProcessed = 0;
-        long lastProgressMs = 0;
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<long, (double startMs, string method, string module, int ilSize)> InFlight = new();
+        internal readonly Dictionary<string, MethodAcc> ByMethod = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, ModuleAcc> ByModule = new(StringComparer.OrdinalIgnoreCase);
+        internal bool TimingAvailable;
 
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind =
+                    evName.IndexOf("JittingStarted",   StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("MethodJitStart",   StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1 :
+                    evName.IndexOf("MethodLoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("Method/LoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("MethodLoad/Verbose",StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)2 :
+                    evName.IndexOf("MethodLoad",       StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    evName.IndexOf("Verbose",          StringComparison.OrdinalIgnoreCase) < 0 ? (byte)3 :
+                    (byte)0;
+            if (kind == 0) return;
+
+            if (kind == 1)
             {
-                evProcessed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                long   key    = BuildKey(ev);
+                string method = FullName(ev);
+                string module = ModuleName(ev);
+                int    ilSize = SafeInt(ev, "MethodILSize");
+                InFlight[key] = (timestampMs, method, module, ilSize);
+                return;
+            }
+
+            if (kind == 2)
+            {
+                long key = BuildKey(ev);
+                int  nativeSize = SafeInt(ev, "MethodSize");
+                string method = FullName(ev);
+                string module = ModuleName(ev);
+
+                double jitMs = 0;
+                int    ilSize = 0;
+                if (InFlight.TryGetValue(key, out var start))
                 {
-                    progress($"{byMethod.Count:N0} methods JIT'd");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !(ev.ProcessName ?? "").Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string evName = ev.EventName ?? "";
-
-                // ── JIT start: Method/JittingStarted or MethodJitInliningSucceeded ──────────
-                if (evName.IndexOf("JittingStarted", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("MethodJitStart", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    long   key    = BuildKey(ev);
-                    string method = FullName(ev);
-                    string module = ModuleName(ev);
-                    int    ilSize = SafeInt(ev, "MethodILSize");
-
-                    inFlight[key] = (ev.TimeStampRelativeMSec, method, module, ilSize);
-                    continue;
-                }
-
-                // ── JIT end: Method/LoadVerbose (fired after JIT completes) ─────────────────
-                if (evName.IndexOf("MethodLoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Method/LoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("MethodLoad/Verbose", StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    long key = BuildKey(ev);
-                    int  nativeSize = SafeInt(ev, "MethodSize");
-                    string method = FullName(ev);
-                    string module = ModuleName(ev);
-
-                    double jitMs = 0;
-                    int    ilSize = 0;
-                    if (inFlight.TryGetValue(key, out var start))
-                    {
-                        jitMs  = ev.TimeStampRelativeMSec - start.startMs;
-                        ilSize = start.ilSize;
-                        if (start.method.Length > 0) method = start.method;
-                        if (start.module.Length > 0) module = start.module;
-                        inFlight.Remove(key);
-                        timingAvailable = true;
-                    }
-
-                    if (method.Length == 0) method = "(unknown)";
-                    // module is always non-empty — ModuleName() guarantees a fallback via namespace inference
-
-                    if (!byMethod.TryGetValue(method, out var macc))
-                        byMethod[method] = macc = new MethodAcc(module, ilSize, nativeSize);
-                    macc.Count++;
-                    macc.TotalJitMs += jitMs;
-                    if (jitMs > macc.MaxJitMs) macc.MaxJitMs = jitMs;
-
-                    if (!byModule.TryGetValue(module, out var modacc))
-                        byModule[module] = modacc = new ModuleAcc();
-                    modacc.MethodCount++;
-                    modacc.TotalJitMs += jitMs;
-                    continue;
+                    jitMs  = timestampMs - start.startMs;
+                    ilSize = start.ilSize;
+                    if (start.method.Length > 0) method = start.method;
+                    if (start.module.Length > 0) module = start.module;
+                    InFlight.Remove(key);
+                    TimingAvailable = true;
                 }
 
-                // ── MethodLoad (non-verbose): only has method address, no timing, still count ──
-                if (evName.IndexOf("MethodLoad", StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    evName.IndexOf("Verbose", StringComparison.OrdinalIgnoreCase) < 0)
-                {
-                    string method = FullName(ev);
-                    string module = ModuleName(ev);
-                    if (method.Length == 0) continue;
-                    if (!byMethod.TryGetValue(method, out var macc))
-                        byMethod[method] = macc = new MethodAcc(module, 0, 0);
-                    macc.Count++;
+                if (method.Length == 0) method = "(unknown)";
 
-                    if (!byModule.TryGetValue(module, out var modacc))
-                        byModule[module] = modacc = new ModuleAcc();
-                    modacc.MethodCount++;
-                }
+                if (!ByMethod.TryGetValue(method, out var macc))
+                    ByMethod[method] = macc = new MethodAcc(module, ilSize, nativeSize);
+                macc.Count++;
+                macc.TotalJitMs += jitMs;
+                if (jitMs > macc.MaxJitMs) macc.MaxJitMs = jitMs;
+
+                if (!ByModule.TryGetValue(module, out var modacc))
+                    ByModule[module] = modacc = new ModuleAcc();
+                modacc.MethodCount++;
+                modacc.TotalJitMs += jitMs;
+                return;
+            }
+
+            // kind == 3: MethodLoad (non-verbose)
+            {
+                string method = FullName(ev);
+                string module = ModuleName(ev);
+                if (method.Length == 0) return;
+                if (!ByMethod.TryGetValue(method, out var macc))
+                    ByMethod[method] = macc = new MethodAcc(module, 0, 0);
+                macc.Count++;
+
+                if (!ByModule.TryGetValue(module, out var modacc))
+                    ByModule[module] = modacc = new ModuleAcc();
+                modacc.MethodCount++;
             }
         }
-        catch (Exception ex)
-        {
-            return new JitTraceData($"Failed during parse: {ex.Message}", processFilter, 0, 0, 0, 0, [], [], [], false);
-        }
 
-        if (byMethod.Count == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.IndexOf("JittingStarted", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("MethodJitStart", StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1 : eventName.IndexOf("MethodLoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Method/LoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)2 : eventName.IndexOf("MethodLoad", StringComparison.OrdinalIgnoreCase) >= 0 && eventName.IndexOf("Verbose", StringComparison.OrdinalIgnoreCase) < 0 ? (byte)3 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public JitTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 30,
+                                     string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.ByMethod.Count == 0)
         {
             return new JitTraceData(
                 $"{traceFileName}  |  0 JIT events — collect with --providers Microsoft-Windows-DotNETRuntime:0x10:5",
                 processFilter, 0, 0, 0, 0, [], [], [], false);
         }
 
-        double totalJitMs = byMethod.Values.Sum(a => a.TotalJitMs);
-        double maxJitMs   = byMethod.Values.Max(a => a.MaxJitMs);
-        int    total      = byMethod.Values.Sum(a => a.Count);
+        double totalJitMs = c.ByMethod.Values.Sum(a => a.TotalJitMs);
+        double maxJitMs   = c.ByMethod.Values.Max(a => a.MaxJitMs);
+        int    total      = c.ByMethod.Values.Sum(a => a.Count);
 
-        var topByTime = byMethod
+        var topByTime = c.ByMethod
             .Where(kv => kv.Value.TotalJitMs > 0)
             .OrderByDescending(kv => kv.Value.TotalJitMs)
             .Take(top)
@@ -146,7 +144,7 @@ public sealed class JitTraceAnalyzer
                                              kv.Value.ILSize, kv.Value.NativeSize))
             .ToList();
 
-        var topByCount = byMethod
+        var topByCount = c.ByMethod
             .OrderByDescending(kv => kv.Value.Count)
             .Take(top)
             .Select(kv => new JitMethodEntry(kv.Key, kv.Value.Module, kv.Value.Count,
@@ -154,7 +152,7 @@ public sealed class JitTraceAnalyzer
                                              kv.Value.ILSize, kv.Value.NativeSize))
             .ToList();
 
-        var topModules = byModule
+        var topModules = c.ByModule
             .OrderByDescending(kv => kv.Value.TotalJitMs > 0 ? kv.Value.TotalJitMs : kv.Value.MethodCount)
             .Take(20)
             .Select(kv => new JitModuleSummary(kv.Key, kv.Value.MethodCount, kv.Value.TotalJitMs))
@@ -162,13 +160,29 @@ public sealed class JitTraceAnalyzer
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {total:N0} methods JIT-compiled  •  {byMethod.Count:N0} unique";
+                      $"  |  {total:N0} methods JIT-compiled  •  {c.ByMethod.Count:N0} unique";
 
-        double avgJitMs = total > 0 ? totalJitMs / byMethod.Count : 0;
+        double avgJitMs = total > 0 ? totalJitMs / c.ByMethod.Count : 0;
 
         return new JitTraceData(info, processFilter,
             total, totalJitMs, maxJitMs, avgJitMs,
-            topByTime, topByCount, topModules, timingAvailable);
+            topByTime, topByCount, topModules, c.TimingAvailable);
+    }
+
+    public JitTraceData Analyze(TraceLog trace, string traceFileName, int top = 30,
+                                 string? processFilter = null, Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new JitTraceData($"Failed during parse: {ex.Message}", processFilter, 0, 0, 0, 0, [], [], [], false);
+        }
     }
 
     // Build a stable key from methodId xor'd with thread to correlate start/stop pairs.
@@ -232,20 +246,6 @@ public sealed class JitTraceAnalyzer
         return "(unknown)";
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
-    {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
-    }
-
-    private static int SafeInt(TraceEvent ev, string field)
-    {
-        try
-        {
-            var raw = ev.PayloadByName(field);
-            return raw is not null ? Convert.ToInt32(raw) : 0;
-        }
-        catch { return 0; }
-    }
 
     private sealed class MethodAcc
     {

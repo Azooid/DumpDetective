@@ -1,3 +1,4 @@
+using DumpDetective.Analysis.Trace;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Tracing;
 using DumpDetective.Reporting;
@@ -71,4 +72,37 @@ public interface ITraceSubAnalyzer
                                    IReadOnlyList<CorrelationFinding> findings,
                                    Dictionary<string, ReportDoc> captured,
                                    Dictionary<string, object?> results, int top) => null;
+
+    // ── Consumer-based single-pass API ────────────────────────────────────────
+    // When SupportsConsumer is true the orchestrators use a shared single pass:
+    //   1. CreateConsumer()         — allocate per-analyzer state
+    //   2. TraceEventDispatcher.Dispatch(trace, allConsumers)  — ONE event loop
+    //   3. CompleteFromConsumer()   — build result + render report
+    // Standalone commands continue to call Analyze() via Run(TraceLog,...) unchanged.
+
+    /// <summary>
+    /// <see langword="true"/> for all event-looping analyzers.
+    /// <see langword="false"/> for analyzers that derive results from already-computed
+    /// data (e.g. <c>anomaly-trace</c>, <c>root-cause-trace</c>).
+    /// Default: <see langword="false"/>.
+    /// </summary>
+    bool SupportsConsumer => false;
+
+    /// <summary>
+    /// Creates the analyzer's <see cref="ITraceEventConsumer"/> pre-configured with
+    /// <paramref name="p"/> and ready to receive events from the dispatcher.
+    /// </summary>
+    ITraceEventConsumer? CreateConsumer(TraceRunParams p, string traceFileName) => null;
+
+    /// <summary>
+    /// Called after <see cref="TraceEventDispatcher.Dispatch"/> finishes.
+    /// Builds the typed result from the consumer's accumulated state, renders the
+    /// report section, and stores both in <paramref name="captured"/> /
+    /// <paramref name="results"/>.
+    /// </summary>
+    /// <returns>TraceInfo string for console display, or <see langword="null"/>.</returns>
+    string? CompleteFromConsumer(ITraceEventConsumer consumer, string traceFileName,
+                                 TraceRunParams p,
+                                 Dictionary<string, ReportDoc> captured,
+                                 Dictionary<string, object?> results) => null;
 }

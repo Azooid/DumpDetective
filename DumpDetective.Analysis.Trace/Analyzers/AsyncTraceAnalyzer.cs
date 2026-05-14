@@ -36,108 +36,99 @@ public sealed class AsyncTraceAnalyzer
         }
     }
 
-    public AsyncTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                  string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        // Task execution tracking: TaskID → scheduled time
-        var pendingSchedule = new Dictionary<int, (double TimeMs, string Frame)>();
-        // Task wait tracking (sync-over-async): ThreadID → wait start time + frame
-        var pendingWaits = new Dictionary<int, (double StartMs, string Frame)>();
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<int, (double TimeMs, string Frame)> PendingSchedule = new();
+        internal readonly Dictionary<int, (double StartMs, string Frame)> PendingWaits = new();
+        internal readonly List<AsyncTaskSummary> TaskSummaries = new();
+        internal readonly List<(double WaitMs, string Frame)> WaitEvents = new();
+        internal readonly Dictionary<string, int> ContinuationCounts = new(StringComparer.Ordinal);
+        internal readonly List<double> ScheduleTimestamps = new();
+        internal int ScheduledCount;
+        internal int CompletedCount;
 
-        var taskSummaries       = new List<AsyncTaskSummary>();
-        var waitEvents          = new List<(double WaitMs, string Frame)>();
-        var continuationCounts  = new Dictionary<string, int>(StringComparer.Ordinal);
-        var scheduleTimestamps  = new List<double>();
-
-        int scheduledCount  = 0;
-        int completedCount  = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind = ComputeAsyncKind(evName);
+            if (kind == 0) return;
+
+            // ── Task/Scheduled ────────────────────────────────────────────────────────────────
+            if (kind == 1) // Scheduled
             {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{scheduledCount:N0} tasks  \u2022  {completedCount:N0} done");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                ScheduledCount++;
+                ScheduleTimestamps.Add(timestampMs);
+                int taskId = GetIntPayload(ev, "TaskID", threadId);
+                string frame = TopFrame(ev);
+                PendingSchedule[taskId] = (timestampMs, frame);
+                return;
+            }
 
-                string evName = ev.EventName ?? "";
-                if (!evKind.TryGetValue(evName, out byte kind))
-                    evKind[evName] = kind = ComputeAsyncKind(evName);
-                if (kind == 0) continue;
-
-                // ── Task/Scheduled ────────────────────────────────────────────────────────────────
-                if (kind == 1) // Scheduled
+            // ── Task/Execute/Stop (completed) ─────────────────────────────
+            if (kind == 2) // Completed
+            {
+                CompletedCount++;
+                int taskId = GetIntPayload(ev, "TaskID", 0);
+                if (taskId != 0 && PendingSchedule.TryGetValue(taskId, out var sched))
                 {
-                    scheduledCount++;
-                    scheduleTimestamps.Add(ev.TimeStampRelativeMSec);
-                    int taskId = GetIntPayload(ev, "TaskID", ev.ThreadID);
-                    string frame = TopFrame(ev);
-                    pendingSchedule[taskId] = (ev.TimeStampRelativeMSec, frame);
-                    continue;
+                    double execMs = timestampMs - sched.TimeMs;
+                    if (execMs > 0)
+                        TaskSummaries.Add(new AsyncTaskSummary(taskId, execMs, sched.TimeMs, sched.Frame));
+                    PendingSchedule.Remove(taskId);
                 }
+                return;
+            }
 
-                // ── Task/Execute/Stop (completed) ─────────────────────────────
-                if (kind == 2) // Completed
-                {
-                    completedCount++;
-                    int taskId = GetIntPayload(ev, "TaskID", 0);
-                    if (taskId != 0 && pendingSchedule.TryGetValue(taskId, out var sched))
-                    {
-                        double execMs = ev.TimeStampRelativeMSec - sched.TimeMs;
-                        if (execMs > 0)
-                            taskSummaries.Add(new AsyncTaskSummary(taskId, execMs, sched.TimeMs, sched.Frame));
-                        pendingSchedule.Remove(taskId);
-                    }
-                    continue;
-                }
+            // ── Task/Wait/Begin — thread about to block synchronously ─────
+            if (kind == 3) // WaitBegin
+            {
+                string frame = TopFrame(ev);
+                PendingWaits[threadId] = (timestampMs, frame);
+                return;
+            }
 
-                // ── Task/Wait/Begin — thread about to block synchronously ─────
-                if (kind == 3) // WaitBegin
+            // ── Task/Wait/End ─────────────────────────────────────────────
+            if (kind == 4) // WaitEnd
+            {
+                if (PendingWaits.TryGetValue(threadId, out var waitEntry))
                 {
-                    string frame = TopFrame(ev);
-                    pendingWaits[ev.ThreadID] = (ev.TimeStampRelativeMSec, frame);
-                    continue;
+                    double waitMs = timestampMs - waitEntry.StartMs;
+                    if (waitMs >= 0)
+                        WaitEvents.Add((waitMs, waitEntry.Frame));
+                    PendingWaits.Remove(threadId);
                 }
+                return;
+            }
 
-                // ── Task/Wait/End ─────────────────────────────────────────────
-                if (kind == 4) // WaitEnd
-                {
-                    if (pendingWaits.TryGetValue(ev.ThreadID, out var waitEntry))
-                    {
-                        double waitMs = ev.TimeStampRelativeMSec - waitEntry.StartMs;
-                        if (waitMs >= 0)
-                            waitEvents.Add((waitMs, waitEntry.Frame));
-                        pendingWaits.Remove(ev.ThreadID);
-                    }
-                    continue;
-                }
-
-                // ── Awaiter/ScheduleContinuation ──────────────────────────────
-                if (kind == 5) // Continuation
-                {
-                    string frame = TopFrame(ev);
-                    continuationCounts.TryGetValue(frame, out int cnt);
-                    continuationCounts[frame] = cnt + 1;
-                }
+            // ── Awaiter/ScheduleContinuation ──────────────────────────────
+            if (kind == 5) // Continuation
+            {
+                string frame = TopFrame(ev);
+                ContinuationCounts.TryGetValue(frame, out int cnt);
+                ContinuationCounts[frame] = cnt + 1;
             }
         }
-        catch (Exception ex)
-        {
-            return new AsyncTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, 0, [], [], [], null, false);
-        }
 
-        bool hasData = scheduledCount > 0 || waitEvents.Count > 0 || continuationCounts.Count > 0;
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeAsyncKind(eventName); return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public AsyncTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                       string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        bool hasData = c.ScheduledCount > 0 || c.WaitEvents.Count > 0 || c.ContinuationCounts.Count > 0;
         if (!hasData)
         {
             return new AsyncTraceData(
@@ -148,7 +139,7 @@ public sealed class AsyncTraceAnalyzer
 
         // ── Aggregate sync-blocking hotspots ──────────────────────────────────
         var blockingAcc = new Dictionary<string, (int Count, double Total, double Max)>(StringComparer.Ordinal);
-        foreach (var (waitMs, frame) in waitEvents)
+        foreach (var (waitMs, frame) in c.WaitEvents)
         {
             blockingAcc.TryGetValue(frame, out var acc);
             blockingAcc[frame] = (acc.Count + 1, acc.Total + waitMs, Math.Max(acc.Max, waitMs));
@@ -160,16 +151,16 @@ public sealed class AsyncTraceAnalyzer
             .ToList();
 
         // ── Longest tasks ─────────────────────────────────────────────────────
-        var longestTasks = taskSummaries
+        var longestTasks = c.TaskSummaries
             .OrderByDescending(t => t.ExecutionMs)
             .Take(top)
             .ToList();
 
-        double avgExec = taskSummaries.Count > 0 ? taskSummaries.Average(t => t.ExecutionMs) : 0;
-        double maxExec = taskSummaries.Count > 0 ? taskSummaries.Max(t => t.ExecutionMs) : 0;
+        double avgExec = c.TaskSummaries.Count > 0 ? c.TaskSummaries.Average(t => t.ExecutionMs) : 0;
+        double maxExec = c.TaskSummaries.Count > 0 ? c.TaskSummaries.Max(t => t.ExecutionMs) : 0;
 
         // ── Top continuation sites ────────────────────────────────────────────
-        var topContinuations = continuationCounts
+        var topContinuations = c.ContinuationCounts
             .OrderByDescending(kv => kv.Value)
             .Take(top)
             .Select(kv => new AsyncContinuationSite(kv.Key, kv.Value))
@@ -177,19 +168,16 @@ public sealed class AsyncTraceAnalyzer
 
         // ── Schedule-rate timeline ────────────────────────────────────────────
         IReadOnlyList<double>? rateTimeline = null;
-        if (scheduleTimestamps.Count > 1)
+        if (c.ScheduleTimestamps.Count > 1)
         {
             var perSecond = new Dictionary<int, double>();
-            foreach (double ts in scheduleTimestamps)
+            foreach (double ts in c.ScheduleTimestamps)
             {
                 int bucket = (int)(ts / 1000.0);
                 perSecond.TryGetValue(bucket, out double prev);
                 perSecond[bucket] = prev + 1;
             }
-            int minB = 0, maxB = 0;
-            foreach (int k in perSecond.Keys) { if (k < minB || minB == 0) minB = k; if (k > maxB) maxB = k; }
-            // Recalculate properly
-            minB = int.MaxValue; maxB = int.MinValue;
+            int minB = int.MaxValue; int maxB = int.MinValue;
             foreach (int k in perSecond.Keys) { if (k < minB) minB = k; if (k > maxB) maxB = k; }
             var tl = new double[maxB - minB + 1];
             foreach (var kv in perSecond) tl[kv.Key - minB] = kv.Value;
@@ -198,17 +186,33 @@ public sealed class AsyncTraceAnalyzer
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {scheduledCount:N0} tasks scheduled  •  {waitEvents.Count:N0} sync-blocking waits";
+                      $"  |  {c.ScheduledCount:N0} tasks scheduled  •  {c.WaitEvents.Count:N0} sync-blocking waits";
 
         return new AsyncTraceData(
             info, processFilter,
-            scheduledCount, completedCount,
-            waitEvents.Count,
+            c.ScheduledCount, c.CompletedCount,
+            c.WaitEvents.Count,
             avgExec, maxExec,
             syncHotspots, longestTasks, topContinuations,
             rateTimeline, HasData: true);
     }
 
+    public AsyncTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                  string? processFilter = null, Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new AsyncTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, 0, [], [], [], null, false);
+        }
+    }
     // ─────────────────────────────────────────────────────────────────────────
     // Event name matchers
     // ─────────────────────────────────────────────────────────────────────────
@@ -277,6 +281,5 @@ public sealed class AsyncTraceAnalyzer
         catch { return fallback; }
     }
 
-    private static string Truncate(string s, int max) =>
-        s.Length <= max ? s : s[..max] + "…";
+
 }

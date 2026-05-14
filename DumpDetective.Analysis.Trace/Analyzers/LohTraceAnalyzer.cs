@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -26,60 +27,53 @@ public sealed class LohTraceAnalyzer
         }
     }
 
-    public LohTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                 string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var lohSizes = new List<(double TimeMs, long Bytes)>();
-        int gen2WithGrowth = 0;
-        long prevLoh = -1;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
+        private readonly string? _processFilter = processFilter;
+        internal readonly List<(double TimeMs, long Bytes)> LohSizes = new();
+        internal int Gen2WithGrowth;
+        internal long PrevLoh = -1;
 
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
-            {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{lohSizes.Count:N0} heap stats");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
 
-                string evName = ev.EventName ?? "";
-                bool isHeapStats =
-                    evName.EndsWith("GCHeapStats",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("GC/HeapStats",   StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("HeapStats",      StringComparison.OrdinalIgnoreCase);
-                if (!isHeapStats) continue;
+            if (!EvKind.TryGetValue(evName, out bool isHeapStats))
+                EvKind[evName] = isHeapStats =
+                    evName.EndsWith("GCHeapStats",  StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("GC/HeapStats", StringComparison.OrdinalIgnoreCase) ||
+                    evName.Contains("HeapStats",    StringComparison.OrdinalIgnoreCase);
+            if (!isHeapStats) return;
 
-                long loh = SafeLong(ev, "GenerationSize3");
-                if (loh <= 0)
-                {
-                    // Some providers report as "LohSize" or "Gen3Size"
-                    loh = SafeLong(ev, "LohSize");
-                    if (loh <= 0) loh = SafeLong(ev, "Gen3Size");
-                }
-                if (loh <= 0) continue;
+            long loh = SafeLong(ev, "GenerationSize3");
+            if (loh <= 0) loh = SafeLong(ev, "LohSize");
+            if (loh <= 0) loh = SafeLong(ev, "Gen3Size");
+            if (loh <= 0) return;
 
-                lohSizes.Add((ev.TimeStampRelativeMSec, loh));
+            LohSizes.Add((timestampMs, loh));
 
-                if (prevLoh > 0 && loh > prevLoh)
-                    gen2WithGrowth++;
-                prevLoh = loh;
-            }
-        }
-        catch (Exception ex)
-        {
-            return new LohTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, 0, 0, false, null, false);
+            if (PrevLoh > 0 && loh > PrevLoh)
+                Gen2WithGrowth++;
+            PrevLoh = loh;
         }
 
-        if (lohSizes.Count == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("GCHeapStats", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("GC/HeapStats", StringComparison.OrdinalIgnoreCase) || eventName.Contains("HeapStats", StringComparison.OrdinalIgnoreCase); return v; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public LohTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                     string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.LohSizes.Count == 0)
         {
             return new LohTraceData(
                 $"{traceFileName}  |  0 GCHeapStats events — collect with " +
@@ -87,35 +81,31 @@ public sealed class LohTraceAnalyzer
                 processFilter, 0, 0, 0, 0, 0, 0, false, null, false);
         }
 
-        long startLoh = lohSizes[0].Bytes;
-        long peakLoh  = lohSizes.Max(x => x.Bytes);
-        long endLoh   = lohSizes[^1].Bytes;
+        long startLoh = c.LohSizes[0].Bytes;
+        long peakLoh  = c.LohSizes.Max(x => x.Bytes);
+        long endLoh   = c.LohSizes[^1].Bytes;
         long growth   = peakLoh - startLoh;
 
-        // Trend detection: compare first-third average vs last-third average
         bool isTrendingUp = false;
-        if (lohSizes.Count >= 3)
+        if (c.LohSizes.Count >= 3)
         {
-            int third = Math.Max(1, lohSizes.Count / 3);
-            double firstAvg = lohSizes.Take(third).Average(x => (double)x.Bytes);
-            double lastAvg  = lohSizes.Skip(lohSizes.Count - third).Average(x => (double)x.Bytes);
-            isTrendingUp = lastAvg > firstAvg * 1.1; // >10% growth = trending
+            int third = Math.Max(1, c.LohSizes.Count / 3);
+            double firstAvg = c.LohSizes.Take(third).Average(x => (double)x.Bytes);
+            double lastAvg  = c.LohSizes.Skip(c.LohSizes.Count - third).Average(x => (double)x.Bytes);
+            isTrendingUp = lastAvg > firstAvg * 1.1;
         }
 
-        // Build sparkline (one data point per HeapStats = one per GC)
         IReadOnlyList<double>? timeline = null;
-        if (lohSizes.Count > 1)
+        if (c.LohSizes.Count > 1)
         {
-            // Map to per-second buckets
             var perSecond = new Dictionary<int, double>();
-            foreach (var (ms, bytes) in lohSizes)
+            foreach (var (ms, bytes) in c.LohSizes)
             {
                 int bucket = (int)(ms / 1000.0);
-                perSecond[bucket] = bytes; // last LOH size in that second
+                perSecond[bucket] = bytes;
             }
             int minB = perSecond.Keys.Min(), maxB = perSecond.Keys.Max();
             var tl = new double[maxB - minB + 1];
-            // Forward-fill gaps
             double lastVal = 0;
             for (int b = 0; b <= maxB - minB; b++)
             {
@@ -131,19 +121,26 @@ public sealed class LohTraceAnalyzer
                       (isTrendingUp ? "  ⚠ growing" : "");
 
         return new LohTraceData(info, processFilter,
-            startLoh, peakLoh, endLoh, growth, lohSizes.Count,
-            gen2WithGrowth, isTrendingUp, timeline, HasData: true);
+            startLoh, peakLoh, endLoh, growth, c.LohSizes.Count,
+            c.Gen2WithGrowth, isTrendingUp, timeline, HasData: true);
     }
 
-    private static long SafeLong(TraceEvent ev, string field)
+    public LohTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                 string? processFilter = null, Action<string>? progress = null)
     {
-        try { return (long)Convert.ChangeType(ev.PayloadByName(field), typeof(long)); } catch { return 0; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new LohTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, 0, 0, false, null, false);
+        }
     }
 
-    private static string FormatBytes(long b)
-    {
-        if (b >= 1L << 30) return $"{b / (double)(1 << 30):F2} GB";
-        if (b >= 1L << 20) return $"{b / (double)(1 << 20):F1} MB";
-        return $"{b / (double)(1 << 10):F1} KB";
-    }
+
 }

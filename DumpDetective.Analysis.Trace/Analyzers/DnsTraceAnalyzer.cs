@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -28,90 +29,86 @@ public sealed class DnsTraceAnalyzer
         }
     }
 
-    public DnsTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                 string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var pending     = new Dictionary<int, (double StartMs, string Host)>();
-        var byHost      = new Dictionary<string, HostAcc>(StringComparer.OrdinalIgnoreCase);
-        var slowList    = new List<DnsSlowResolution>();
-        var failTimeline = new Dictionary<int, int>();
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<int, (double StartMs, string Host)> Pending = new();
+        internal readonly Dictionary<string, HostAcc> ByHost = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly List<DnsSlowResolution> SlowList = new();
+        internal readonly Dictionary<int, int> FailTimeline = new();
+        internal int Total;
+        internal int Failed;
+        internal double TotalMs;
+        internal double MaxMs;
 
-        int total = 0, failed = 0;
-        double totalMs = 0, maxMs = 0;
-        long evTotal = trace.EventCount;
-        long evProcessed = 0;
-        long lastProgressMs = 0;
-        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind = ComputeDnsKind(evName);
+            if (kind == 0) return;
+
+            string host = SafeStr(ev, "HostName");
+            if (host.Length == 0) host = SafeStr(ev, "Host");
+            if (host.Length == 0) host = SafeStr(ev, "Name");
+            if (host.Length == 0) host = "(unknown)";
+
+            if (kind == 1) // start
             {
-                evProcessed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{total:N0} DNS lookups  \u2022  {failed:N0} failed");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                Pending[threadId] = (timestampMs, host);
+            }
+            else if (kind == 2 && Pending.TryGetValue(threadId, out var start)) // stop
+            {
+                Pending.Remove(threadId);
+                string resolvedHost = host.Length > 1 ? host : start.Host;
+                double ms = timestampMs - start.StartMs;
+                Total++;
+                TotalMs += ms;
+                if (ms > MaxMs) MaxMs = ms;
 
-                string evName = ev.EventName ?? "";
-                if (!evKind.TryGetValue(evName, out byte kind))
-                    evKind[evName] = kind = ComputeDnsKind(evName);
-                if (kind == 0) continue;
+                if (!ByHost.TryGetValue(resolvedHost, out var acc))
+                    ByHost[resolvedHost] = acc = new HostAcc();
+                acc.Count++;
+                acc.TotalMs += ms;
+                if (ms > acc.MaxMs) acc.MaxMs = ms;
 
-                string host = SafeStr(ev, "HostName");
-                if (host.Length == 0) host = SafeStr(ev, "Host");
-                if (host.Length == 0) host = SafeStr(ev, "Name");
-                if (host.Length == 0) host = "(unknown)";
+                if (ms >= SlowDnsMs)
+                    SlowList.Add(new DnsSlowResolution(resolvedHost, ms, false,
+                        start.StartMs));
+            }
+            else if (kind == 3) // fail
+            {
+                Failed++;
+                if (!ByHost.TryGetValue(host, out var acc))
+                    ByHost[host] = acc = new HostAcc();
+                acc.Failures++;
+                SlowList.Add(new DnsSlowResolution(host, 0, true,
+                    timestampMs));
 
-                if (kind == 1) // start
-                {
-                    pending[ev.ThreadID] = (ev.TimeStampRelativeMSec, host);
-                }
-                else if (kind == 2 && pending.TryGetValue(ev.ThreadID, out var start)) // stop
-                {
-                    pending.Remove(ev.ThreadID);
-                    string resolvedHost = host.Length > 1 ? host : start.Host;
-                    double ms = ev.TimeStampRelativeMSec - start.StartMs;
-                    total++;
-                    totalMs += ms;
-                    if (ms > maxMs) maxMs = ms;
-
-                    if (!byHost.TryGetValue(resolvedHost, out var acc))
-                        byHost[resolvedHost] = acc = new HostAcc();
-                    acc.Count++;
-                    acc.TotalMs += ms;
-                    if (ms > acc.MaxMs) acc.MaxMs = ms;
-
-                    if (ms >= SlowDnsMs)
-                        slowList.Add(new DnsSlowResolution(resolvedHost, ms, false,
-                            start.StartMs));
-                }
-                else if (kind == 3) // fail
-                {
-                    failed++;
-                    if (!byHost.TryGetValue(host, out var acc))
-                        byHost[host] = acc = new HostAcc();
-                    acc.Failures++;
-                    slowList.Add(new DnsSlowResolution(host, 0, true,
-                        ev.TimeStampRelativeMSec));
-
-                    int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                    failTimeline.TryGetValue(bucket, out int pv);
-                    failTimeline[bucket] = pv + 1;
-                }
+                int bucket = (int)(timestampMs / 1000.0);
+                FailTimeline.TryGetValue(bucket, out int pv);
+                FailTimeline[bucket] = pv + 1;
             }
         }
-        catch (Exception ex)
-        {
-            return new DnsTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, [], [], null, false);
-        }
 
-        if (total == 0 && failed == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeDnsKind(eventName); return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public DnsTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                     string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Total == 0 && c.Failed == 0)
         {
             return new DnsTraceData(
                 $"{traceFileName}  |  0 DNS events — collect with " +
@@ -119,9 +116,9 @@ public sealed class DnsTraceAnalyzer
                 processFilter, 0, 0, 0, 0, [], [], null, false);
         }
 
-        double avg = total > 0 ? totalMs / total : 0;
+        double avg = c.Total > 0 ? c.TotalMs / c.Total : 0;
 
-        var topHosts = byHost
+        var topHosts = c.ByHost
             .OrderByDescending(kv => kv.Value.Count)
             .Take(top)
             .Select(kv => new DnsHostSummary(kv.Key, kv.Value.Count, kv.Value.Failures,
@@ -129,23 +126,33 @@ public sealed class DnsTraceAnalyzer
                 kv.Value.MaxMs))
             .ToList();
 
-        var topSlow = slowList.OrderByDescending(s => s.DurationMs).Take(top).ToList();
+        var topSlow = c.SlowList.OrderByDescending(s => s.DurationMs).Take(top).ToList();
 
-        IReadOnlyList<double>? timeline = null;
-        if (failTimeline.Count > 1)
-        {
-            int minB = failTimeline.Keys.Min(), maxB = failTimeline.Keys.Max();
-            var tl = new double[maxB - minB + 1];
-            foreach (var kv in failTimeline) tl[kv.Key - minB] = kv.Value;
-            timeline = tl;
-        }
+        var timeline = BuildTimeline(c.FailTimeline);
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {total:N0} resolutions  •  {failed} failures  •  avg {avg:F1} ms";
+                      $"  |  {c.Total:N0} resolutions  •  {c.Failed} failures  •  avg {avg:F1} ms";
 
         return new DnsTraceData(info, processFilter,
-            total, failed, avg, maxMs, topHosts, topSlow, timeline, HasData: true);
+            c.Total, c.Failed, avg, c.MaxMs, topHosts, topSlow, timeline, HasData: true);
+    }
+
+    public DnsTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                 string? processFilter = null, Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new DnsTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, [], [], null, false);
+        }
     }
 
     /// <summary>Classify event name once: 0=skip, 1=start, 2=stop, 3=fail.</summary>
@@ -164,10 +171,6 @@ public sealed class DnsTraceAnalyzer
         return 0;
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
-    {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
-    }
 
     private sealed class HostAcc { public int Count, Failures; public double TotalMs, MaxMs; }
 }

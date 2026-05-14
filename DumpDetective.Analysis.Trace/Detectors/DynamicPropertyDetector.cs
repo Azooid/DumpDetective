@@ -40,7 +40,7 @@ public sealed class DynamicPropertyDetector : ITracePatternDetector
 
     public TraceFinding Analyze(CallTreeNode node)
     {
-        var evidence = CollectEvidence(node);
+        var evidence = DetectorHelpers.CollectPatternEvidence(node, Patterns);
         bool hasDictDispatch = evidence.Any(e =>
             e.Contains("Dictionary", StringComparison.OrdinalIgnoreCase) ||
             e.Contains("Hashtable", StringComparison.OrdinalIgnoreCase));
@@ -73,26 +73,4 @@ public sealed class DynamicPropertyDetector : ITracePatternDetector
             EvidenceFrames: [.. evidence]);
     }
 
-    private static List<string> CollectEvidence(CallTreeNode node)
-    {
-        var evidence = new List<string>(4);
-        CollectEvidenceRecursive(node, evidence, depth: 0);
-        return evidence;
-    }
-
-    private static void CollectEvidenceRecursive(CallTreeNode node, List<string> evidence, int depth)
-    {
-        if (depth > 3) return;
-        for (int i = 0; i < Patterns.Length; i++)
-        {
-            if (node.Method.Contains(Patterns[i], StringComparison.OrdinalIgnoreCase)
-                && !evidence.Contains(node.Method))
-            {
-                evidence.Add(node.Method);
-                break;
-            }
-        }
-        for (int c = 0; c < node.Children.Count && evidence.Count < 6; c++)
-            CollectEvidenceRecursive(node.Children[c], evidence, depth + 1);
-    }
 }

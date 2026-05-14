@@ -357,14 +357,6 @@ public static class CorrelationEngine
     // ─────────────────────────────────────────────────────────────────────────
     // Helpers
     // ─────────────────────────────────────────────────────────────────────────
-    private static string FormatBytes(long bytes)
-    {
-        if (bytes >= 1L << 30) return $"{bytes / (double)(1 << 30):F2} GB";
-        if (bytes >= 1L << 20) return $"{bytes / (double)(1 << 20):F1} MB";
-        if (bytes >= 1L << 10) return $"{bytes / (double)(1 << 10):F1} KB";
-        return $"{bytes} B";
-    }
-
     private static string TrimType(string name) =>
         name.Length <= 50 ? name : "…" + name[^49..];
 

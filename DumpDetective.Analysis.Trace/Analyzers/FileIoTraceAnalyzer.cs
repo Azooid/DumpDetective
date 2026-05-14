@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -28,122 +29,115 @@ public sealed class FileIoTraceAnalyzer
         }
     }
 
-    public FileIoTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                    string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        // pending I/O: key = (ThreadID, IrpPtr) → (startMs, opType, filePath)
-        var pending = new Dictionary<string, (double StartMs, string Op, string File)>(StringComparer.Ordinal);
-        var byFile  = new Dictionary<string, FileAcc>(StringComparer.OrdinalIgnoreCase);
-        var slowOps = new List<FileIoSlowOp>();
-        var perSecond = new Dictionary<int, long>();
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<string, (double StartMs, string Op, string File)> Pending = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, FileAcc> ByFile = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly List<FileIoSlowOp> SlowOps = new();
+        internal readonly Dictionary<int, long> PerSecond = new();
+        internal int Reads, Writes, Other;
+        internal long ReadBytes, WriteBytes;
 
-        int reads = 0, writes = 0, other = 0;
-        long readBytes = 0, writeBytes = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind =
+                    evName.StartsWith("FileIO",   StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    evName.StartsWith("File/",    StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    evName.Contains("KernelFile", StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    (byte)0;
+            if (kind == 0) return;
+
+            string filePath = SafeStr(ev, "FileName");
+            if (filePath.Length == 0) filePath = SafeStr(ev, "OpenPath");
+            if (filePath.Length == 0) filePath = "(unknown)";
+
+            long bytes = SafeLong(ev, "IoSize");
+            if (bytes <= 0) bytes = SafeLong(ev, "Size");
+
+            string key = $"{threadId}-{SafeStr(ev, "IrpPtr")}";
+
+            bool isRead   = evName.Contains("Read",   StringComparison.OrdinalIgnoreCase);
+            bool isWrite  = evName.Contains("Write",  StringComparison.OrdinalIgnoreCase);
+            bool isCreate = evName.Contains("Create", StringComparison.OrdinalIgnoreCase);
+            bool isClose  = evName.Contains("Close",  StringComparison.OrdinalIgnoreCase);
+
+            if (!isRead && !isWrite) { if (isCreate || isClose) Other++; return; }
+
+            string opType = isRead ? "Read" : "Write";
+
+            double elapsed = SafeDouble(ev, "ElapsedTime");
+            if (elapsed > 0)
             {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                if (isRead)  { Reads++;  ReadBytes  += bytes; }
+                else         { Writes++; WriteBytes += bytes; }
+
+                if (!ByFile.TryGetValue(filePath, out var acc))
+                    ByFile[filePath] = acc = new FileAcc();
+                if (isRead) { acc.Reads++; acc.ReadBytes += bytes; acc.TotalMs += elapsed; }
+                else        { acc.Writes++; acc.WriteBytes += bytes; acc.TotalMs += elapsed; }
+
+                if (elapsed >= SlowIoMs)
+                    SlowOps.Add(new FileIoSlowOp(filePath, opType, elapsed, bytes,
+                        timestampMs));
+
+                int bucket = (int)(timestampMs / 1000.0);
+                PerSecond.TryGetValue(bucket, out long bv);
+                PerSecond[bucket] = bv + bytes;
+            }
+            else
+            {
+                bool isEnd = evName.Contains("End",  StringComparison.OrdinalIgnoreCase) ||
+                             evName.Contains("Stop", StringComparison.OrdinalIgnoreCase);
+                if (!isEnd)
                 {
-                    progress($"{reads:N0} reads  \u2022  {writes:N0} writes");
-                    lastProgressMs = Environment.TickCount64;
+                    Pending[key] = (timestampMs, opType, filePath);
                 }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string evName = ev.EventName ?? "";
-                bool isFileEvent =
-                    evName.StartsWith("FileIO",   StringComparison.OrdinalIgnoreCase) ||
-                    evName.StartsWith("File/",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("KernelFile", StringComparison.OrdinalIgnoreCase);
-                if (!isFileEvent) continue;
-
-                string filePath = SafeStr(ev, "FileName");
-                if (filePath.Length == 0) filePath = SafeStr(ev, "OpenPath");
-                if (filePath.Length == 0) filePath = "(unknown)";
-
-                long bytes = SafeLong(ev, "IoSize");
-                if (bytes <= 0) bytes = SafeLong(ev, "Size");
-
-                string key = $"{ev.ThreadID}-{SafeStr(ev, "IrpPtr")}";
-
-                bool isRead   = evName.Contains("Read",   StringComparison.OrdinalIgnoreCase);
-                bool isWrite  = evName.Contains("Write",  StringComparison.OrdinalIgnoreCase);
-                bool isCreate = evName.Contains("Create", StringComparison.OrdinalIgnoreCase);
-                bool isClose  = evName.Contains("Close",  StringComparison.OrdinalIgnoreCase);
-
-                // Attempt to pair Begin→End for latency measurement
-                if (!isRead && !isWrite) { if (isCreate || isClose) other++; continue; }
-
-                string opType = isRead ? "Read" : "Write";
-
-                // Use elapsed field if present (some providers directly emit ElapsedTime)
-                double elapsed = SafeDouble(ev, "ElapsedTime");
-                if (elapsed > 0)
+                else if (Pending.TryGetValue(key, out var startInfo))
                 {
-                    if (isRead)  { reads++;  readBytes  += bytes; }
-                    else         { writes++; writeBytes += bytes; }
+                    Pending.Remove(key);
+                    double ms = timestampMs - startInfo.StartMs;
+                    string fp = startInfo.File.Length > 1 ? startInfo.File : filePath;
 
-                    if (!byFile.TryGetValue(filePath, out var acc))
-                        byFile[filePath] = acc = new FileAcc();
-                    if (isRead) { acc.Reads++; acc.ReadBytes += bytes; acc.TotalMs += elapsed; }
-                    else        { acc.Writes++; acc.WriteBytes += bytes; acc.TotalMs += elapsed; }
+                    if (startInfo.Op == "Read") { Reads++;  ReadBytes  += bytes; }
+                    else                         { Writes++; WriteBytes += bytes; }
 
-                    if (elapsed >= SlowIoMs)
-                        slowOps.Add(new FileIoSlowOp(filePath, opType, elapsed, bytes,
-                            ev.TimeStampRelativeMSec));
+                    if (!ByFile.TryGetValue(fp, out var acc))
+                        ByFile[fp] = acc = new FileAcc();
+                    if (startInfo.Op == "Read") { acc.Reads++; acc.ReadBytes += bytes; acc.TotalMs += ms; }
+                    else                         { acc.Writes++; acc.WriteBytes += bytes; acc.TotalMs += ms; }
 
-                    int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                    perSecond.TryGetValue(bucket, out long bv);
-                    perSecond[bucket] = bv + bytes;
-                }
-                else
-                {
-                    // Half-duplex: track start/stop pairs
-                    bool isEnd = evName.Contains("End",  StringComparison.OrdinalIgnoreCase) ||
-                                 evName.Contains("Stop", StringComparison.OrdinalIgnoreCase);
-                    if (!isEnd)
-                    {
-                        pending[key] = (ev.TimeStampRelativeMSec, opType, filePath);
-                    }
-                    else if (pending.TryGetValue(key, out var startInfo))
-                    {
-                        pending.Remove(key);
-                        double ms = ev.TimeStampRelativeMSec - startInfo.StartMs;
-                        string fp = startInfo.File.Length > 1 ? startInfo.File : filePath;
+                    if (ms >= SlowIoMs)
+                        SlowOps.Add(new FileIoSlowOp(fp, startInfo.Op, ms, bytes,
+                            startInfo.StartMs));
 
-                        if (startInfo.Op == "Read") { reads++;  readBytes  += bytes; }
-                        else                         { writes++; writeBytes += bytes; }
-
-                        if (!byFile.TryGetValue(fp, out var acc))
-                            byFile[fp] = acc = new FileAcc();
-                        if (startInfo.Op == "Read") { acc.Reads++; acc.ReadBytes += bytes; acc.TotalMs += ms; }
-                        else                         { acc.Writes++; acc.WriteBytes += bytes; acc.TotalMs += ms; }
-
-                        if (ms >= SlowIoMs)
-                            slowOps.Add(new FileIoSlowOp(fp, startInfo.Op, ms, bytes,
-                                startInfo.StartMs));
-
-                        int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                        perSecond.TryGetValue(bucket, out long bv);
-                        perSecond[bucket] = bv + bytes;
-                    }
+                    int bucket = (int)(timestampMs / 1000.0);
+                    PerSecond.TryGetValue(bucket, out long bv);
+                    PerSecond[bucket] = bv + bytes;
                 }
             }
         }
-        catch (Exception ex)
-        {
-            return new FileIoTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, 0, 0, [], [], null, false);
-        }
 
-        if (reads == 0 && writes == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = eventName.StartsWith("FileIO", StringComparison.OrdinalIgnoreCase) || eventName.StartsWith("File/", StringComparison.OrdinalIgnoreCase) || eventName.Contains("KernelFile", StringComparison.OrdinalIgnoreCase) ? (byte)1 : (byte)0; return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public FileIoTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                        string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Reads == 0 && c.Writes == 0)
         {
             bool isNetTrace = traceFileName.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase);
             string guidance = isNetTrace
@@ -157,7 +151,7 @@ public sealed class FileIoTraceAnalyzer
                 processFilter, 0, 0, 0, 0, 0, 0, [], [], null, false);
         }
 
-        var topFiles = byFile
+        var topFiles = c.ByFile
             .OrderByDescending(kv => kv.Value.ReadBytes + kv.Value.WriteBytes)
             .Take(top)
             .Select(kv => new FileIoFileSummary(kv.Key,
@@ -165,40 +159,43 @@ public sealed class FileIoTraceAnalyzer
                 kv.Value.ReadBytes + kv.Value.WriteBytes, kv.Value.TotalMs))
             .ToList();
 
-        var topSlow = slowOps.OrderByDescending(o => o.DurationMs).Take(top).ToList();
+        var topSlow = c.SlowOps.OrderByDescending(o => o.DurationMs).Take(top).ToList();
 
         IReadOnlyList<double>? timeline = null;
-        if (perSecond.Count > 1)
+        if (c.PerSecond.Count > 1)
         {
-            int minB = perSecond.Keys.Min(), maxB = perSecond.Keys.Max();
+            int minB = c.PerSecond.Keys.Min(), maxB = c.PerSecond.Keys.Max();
             var tl = new double[maxB - minB + 1];
-            foreach (var kv in perSecond) tl[kv.Key - minB] = kv.Value / 1024.0; // KB/s
+            foreach (var kv in c.PerSecond) tl[kv.Key - minB] = kv.Value / 1024.0; // KB/s
             timeline = tl;
         }
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {reads:N0} reads  •  {writes:N0} writes  •  {topSlow.Count} slow ops";
+                      $"  |  {c.Reads:N0} reads  •  {c.Writes:N0} writes  •  {topSlow.Count} slow ops";
 
         return new FileIoTraceData(info, processFilter,
-            reads, writes, other, readBytes, writeBytes, topSlow.Count,
+            c.Reads, c.Writes, c.Other, c.ReadBytes, c.WriteBytes, topSlow.Count,
             topSlow, topFiles, timeline, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public FileIoTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                    string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new FileIoTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, 0, 0, [], [], null, false);
+        }
     }
 
-    private static long SafeLong(TraceEvent ev, string field)
-    {
-        try { return (long)Convert.ChangeType(ev.PayloadByName(field), typeof(long)); } catch { return 0; }
-    }
-
-    private static double SafeDouble(TraceEvent ev, string field)
-    {
-        try { return (double)Convert.ChangeType(ev.PayloadByName(field), typeof(double)); } catch { return 0; }
-    }
 
     private sealed class FileAcc
     {

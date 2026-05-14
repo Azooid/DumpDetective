@@ -141,10 +141,39 @@ public sealed class TraceAnalyzeCommand : ICommand
                 (processFilter is not null ? $" | Process: {processFilter}" : ""),
                 navLevel: 1);
 
-            // ── Phase 1: run all sub-analyzers ──────────────────────────────────
+            // ── Phase 1: single-pass event dispatch + per-analyzer completion ─────
+            // Build one consumer per sub-analyzer, run ONE event loop over the file,
+            // then complete each analyzer from its accumulated state.
+            var consumerPairs = new List<(ITraceSubAnalyzer Sub, ITraceEventConsumer Consumer)>();
             foreach (var sub in _subAnalyzers)
             {
-                if (sub.HasCorrelationPhase) continue;
+                if (sub.HasCorrelationPhase || !sub.SupportsConsumer) continue;
+                var consumer = sub.CreateConsumer(runParams, traceFileName);
+                if (consumer is not null)
+                    consumerPairs.Add((sub, consumer));
+            }
+
+            if (consumerPairs.Count > 0)
+            {
+                var consumers = consumerPairs.Select(x => x.Consumer).ToList();
+                DispatchStats dispatchStats = default;
+                CommandBase.RunStatus("Scanning trace events...", update =>
+                    dispatchStats = TraceEventDispatcher.Dispatch(trace!, consumers, update));
+                results["__dispatch_stats__"] = dispatchStats;
+            }
+
+            foreach (var (sub, consumer) in consumerPairs)
+            {
+                string? traceInfo = null;
+                RunAnalyzer(sub.Key,
+                    _ => traceInfo = sub.CompleteFromConsumer(consumer, traceFileName, runParams, captured, results),
+                    () => traceInfo);
+            }
+
+            // Non-consumer analyzers (e.g. anomaly-trace reads from the results dict)
+            foreach (var sub in _subAnalyzers)
+            {
+                if (sub.HasCorrelationPhase || sub.SupportsConsumer) continue;
                 string? traceInfo = null;
                 RunAnalyzer(sub.Key,
                     update => traceInfo = sub.Run(trace!, traceFileName, runParams, captured, results, s => update($"{sub.Key}  {s}")),
@@ -212,6 +241,13 @@ public sealed class TraceAnalyzeCommand : ICommand
                         ReportDocReplay.Replay(doc, sink);
                 }
             }
+
+            // ── Event Type Inventory ──────────────────────────────────────────
+            // Appendix: every distinct event name seen in the trace, sorted by
+            // volume — useful for understanding what providers were active and
+            // which sub-analyzers cover which event streams.
+            if (results.GetValueOrDefault("__dispatch_stats__") is DispatchStats ds)
+                TraceEventTypesSection.Render(sink, ds);
 
             foreach (var p in outputPaths.Where(p =>
                 !p.Equals("console", StringComparison.OrdinalIgnoreCase)))

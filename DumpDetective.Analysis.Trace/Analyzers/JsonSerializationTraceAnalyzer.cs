@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -25,8 +26,6 @@ namespace DumpDetective.Analysis.Trace.Analyzers;
 /// </summary>
 public sealed class JsonSerializationTraceAnalyzer
 {
-    private const long TickSizeBytes = 100_000; // ~100 KB per GCAllocationTick
-
     // ── Well-known JSON type prefixes / short names ──────────────────────────
     // Used against GCAllocationTick TypeName field.
     private static readonly string[] s_jsonTypePrefixes =
@@ -79,223 +78,213 @@ public sealed class JsonSerializationTraceAnalyzer
         }
     }
 
+    // ── Consumer — holds all per-event mutable state ─────────────────────────
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
+    {
+        private readonly string? _processFilter = processFilter;
+
+        internal readonly Dictionary<string, AllocAcc>  AllocByType   = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, CallerAcc> CallerByFrame = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly Dictionary<string, LibAcc>    LibAlloc      = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, int>       LibCpu        = new(StringComparer.Ordinal);
+        internal int  TotalAllocTicks;
+        internal long TotalAllocBytes;
+        internal long JsonAllocBytes;
+        internal int  TotalCpuSamples;
+        internal int  JsonCpuSamples;
+
+        // Classification indices — each unique name classified once
+        internal readonly Dictionary<string, string?> FrameLibIndex = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, string?> TypeLibIndex  = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, (bool IsAlloc, bool IsCpu)> EvTypeIndex
+            = new(StringComparer.OrdinalIgnoreCase);
+
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        {
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvTypeIndex.TryGetValue(evName, out var evType))
+            {
+                bool a =
+                    evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
+                    evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
+                bool c =
+                    evName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    evName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
+                EvTypeIndex[evName] = evType = (a, c);
+            }
+
+            if (evType.IsAlloc)
+            {
+                TotalAllocTicks++;
+                string typeName = SafeStr(ev, "TypeName");
+                if (typeName.Length == 0) typeName = SafeStr(ev, "AllocationTypeName");
+                if (typeName.Length == 0) typeName = "(unknown)";
+
+                long bytes = SafeLong(ev, "AllocationAmount64");
+                if (bytes <= 0) bytes = SafeLong(ev, "AllocationAmount");
+                if (bytes <= 0) bytes = GcAllocTickSizeBytes;
+                TotalAllocBytes += bytes;
+
+                if (!TypeLibIndex.TryGetValue(typeName, out var library))
+                    TypeLibIndex[typeName] = library = ClassifyTypeLibrary(typeName);
+                if (library is null) return;
+
+                JsonAllocBytes += bytes;
+                if (!AllocByType.TryGetValue(typeName, out var tAcc))
+                    AllocByType[typeName] = tAcc = new AllocAcc(library);
+                tAcc.Ticks++;
+                tAcc.Bytes += bytes;
+
+                if (!LibAlloc.TryGetValue(library, out var lAcc))
+                    LibAlloc[library] = lAcc = new LibAcc();
+                lAcc.Ticks++;
+                lAcc.Bytes += bytes;
+
+                string callerFrame = FindAllocCaller(ev, typeName, FrameLibIndex);
+                string callerKey   = $"{callerFrame}|{library}";
+                if (!CallerByFrame.TryGetValue(callerKey, out var cAcc))
+                    CallerByFrame[callerKey] = cAcc = new CallerAcc(callerFrame, library);
+                cAcc.AllocTicks++;
+                cAcc.AllocBytes += bytes;
+                return;
+            }
+
+            if (!evType.IsCpu) return;
+
+            TotalCpuSamples++;
+            var callStack = ev.CallStack();
+            if (callStack is null) return;
+
+            string? hitLibrary     = null;
+            string? callerFrameCpu = null;
+            bool    inJsonZone     = false;
+
+            for (var cur = callStack; cur is not null; cur = cur.Caller)
+            {
+                string method = cur.CodeAddress.FullMethodName ?? "";
+                if (method.Length == 0) continue;
+
+                if (!FrameLibIndex.TryGetValue(method, out var frameLibrary))
+                    FrameLibIndex[method] = frameLibrary = ClassifyFrameLibrary(method);
+                if (frameLibrary is not null)
+                {
+                    inJsonZone = true;
+                    hitLibrary ??= frameLibrary;
+                }
+                else if (inJsonZone)
+                {
+                    callerFrameCpu = method;
+                    break;
+                }
+            }
+
+            if (hitLibrary is null) return;
+
+            JsonCpuSamples++;
+            LibCpu.TryGetValue(hitLibrary, out int prevCpu);
+            LibCpu[hitLibrary] = prevCpu + 1;
+
+            if (callerFrameCpu is not null)
+            {
+                string callerKey = $"{callerFrameCpu}|{hitLibrary}";
+                if (!CallerByFrame.TryGetValue(callerKey, out var cAcc))
+                    CallerByFrame[callerKey] = cAcc = new CallerAcc(callerFrameCpu, hitLibrary);
+                cAcc.CpuSamples++;
+            }
+        }
+
+        public bool WantsEvent(string eventName) => eventName.IndexOf("AllocationTick", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("SampledProfile", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null) => new Consumer(processFilter);
+
+    public JsonSerializationTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName,
+                                                   int top = 20, string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        bool hasData = c.TotalAllocTicks > 0 || c.TotalCpuSamples > 0;
+        if (!hasData)
+            return Empty($"{traceFileName}  |  No allocation or CPU sample events found — see collection guidance", processFilter);
+
+        bool hasJson = c.JsonAllocBytes > 0 || c.JsonCpuSamples > 0;
+        if (!hasJson)
+        {
+            string noJsonInfo = $"{traceFileName}" +
+                (processFilter is not null ? $"  |  process: {processFilter}" : "") +
+                $"  |  {c.TotalCpuSamples:N0} CPU samples  •  {c.TotalAllocTicks:N0} alloc ticks  •  no JSON frames detected";
+            return new JsonSerializationTraceData(noJsonInfo, processFilter,
+                c.TotalAllocTicks, 0, c.TotalAllocBytes,
+                c.TotalCpuSamples, 0, 0,
+                [], [], [], HasData: true);
+        }
+
+        double jsonCpuPct = c.TotalCpuSamples > 0
+            ? c.JsonCpuSamples * 100.0 / c.TotalCpuSamples
+            : 0;
+
+        var allLibraries = new HashSet<string>(c.LibAlloc.Keys, StringComparer.Ordinal);
+        foreach (var k in c.LibCpu.Keys) allLibraries.Add(k);
+
+        var byLibrary = allLibraries
+            .Select(lib =>
+            {
+                c.LibAlloc.TryGetValue(lib, out var lAlloc);
+                c.LibCpu.TryGetValue(lib, out int lCpu);
+                double libCpuPct = c.TotalCpuSamples > 0 ? lCpu * 100.0 / c.TotalCpuSamples : 0;
+                return new JsonLibrarySummary(lib,
+                    lAlloc?.Bytes ?? 0, lAlloc?.Ticks ?? 0, lCpu, libCpuPct);
+            })
+            .OrderByDescending(l => l.AllocBytes + l.CpuSamples * GcAllocTickSizeBytes)
+            .ToList();
+
+        var topTypes = c.AllocByType
+            .OrderByDescending(kv => kv.Value.Bytes)
+            .Take(top)
+            .Select(kv => new JsonTypeAllocSummary(
+                kv.Key, kv.Value.Library, kv.Value.Ticks, kv.Value.Bytes,
+                c.JsonAllocBytes > 0 ? kv.Value.Bytes * 100.0 / c.JsonAllocBytes : 0))
+            .ToList();
+
+        var topCallers = c.CallerByFrame.Values
+            .OrderByDescending(ca => ca.AllocBytes + ca.CpuSamples * GcAllocTickSizeBytes)
+            .Take(top)
+            .Select(ca => new JsonCallerSummary(
+                ca.Frame, ca.Library, ca.AllocBytes, ca.AllocTicks, ca.CpuSamples))
+            .ToList();
+
+        string info = $"{traceFileName}" +
+                      (processFilter is not null ? $"  |  process: {processFilter}" : "") +
+                      $"  |  JSON CPU: {jsonCpuPct:F1}%  •  JSON alloc: ~{FormatBytes(c.JsonAllocBytes)}";
+
+        return new JsonSerializationTraceData(
+            info, processFilter,
+            c.TotalAllocTicks, c.JsonAllocBytes, c.TotalAllocBytes,
+            c.TotalCpuSamples, c.JsonCpuSamples, jsonCpuPct,
+            topTypes, topCallers, byLibrary, HasData: true);
+    }
+
     public JsonSerializationTraceData Analyze(TraceLog trace, string traceFileName,
                                                int top = 20, string? processFilter = null,
                                                Action<string>? progress = null)
     {
-        // Accumulators keyed by type name (alloc) or frame (CPU)
-        var allocByType    = new Dictionary<string, AllocAcc>(StringComparer.Ordinal);
-        var callerByFrame  = new Dictionary<string, CallerAcc>(StringComparer.OrdinalIgnoreCase);
-        var libAlloc       = new Dictionary<string, LibAcc>(StringComparer.Ordinal);
-        var libCpu         = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        int totalAllocTicks = 0;
-        long totalAllocBytes = 0;
-        long jsonAllocBytes  = 0;
-
-        int totalCpuSamples = 0;
-        int jsonCpuSamples  = 0;
-
-        // ── Classification indices — raw event/frame/type → label, built once during this pass ──
-        // Each unique method name / type name / event name is classified exactly once;
-        // all subsequent occurrences are O(1) dictionary hits, eliminating millions of
-        // redundant string searches (critical: 1.5 M CPU samples × ~30 frames each).
-        var frameLibIndex = new Dictionary<string, string?>(StringComparer.Ordinal);
-        var typeLibIndex  = new Dictionary<string, string?>(StringComparer.Ordinal);
-        var evTypeIndex   = new Dictionary<string, (bool IsAlloc, bool IsCpu)>(StringComparer.OrdinalIgnoreCase);
-
-        long total     = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-
         try
         {
-            foreach (var ev in trace.Events)
-            {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{totalAllocTicks:N0} alloc ticks  \u2022  {totalCpuSamples:N0} CPU samples");
-                    lastProgressMs = Environment.TickCount64;
-                }
-
-                if (processFilter is not null &&
-                    !(ev.ProcessName ?? "").Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string evName = ev.EventName ?? "";
-
-                // ── Event-type index: classify each unique event name once ─────────────
-                if (!evTypeIndex.TryGetValue(evName, out var evType))
-                {
-                    bool a =
-                        evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
-                        evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
-                        evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
-                    bool c =
-                        evName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        evName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                        evName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
-                    evTypeIndex[evName] = evType = (a, c);
-                }
-
-                // ── GCAllocationTick ───────────────────────────────────────────────────
-                if (evType.IsAlloc)
-                {
-                    totalAllocTicks++;
-                    string typeName  = SafeStr(ev, "TypeName");
-                    if (typeName.Length == 0) typeName = SafeStr(ev, "AllocationTypeName");
-                    if (typeName.Length == 0) typeName = "(unknown)";
-
-                    long bytes = SafeLong(ev, "AllocationAmount64");
-                    if (bytes <= 0) bytes = SafeLong(ev, "AllocationAmount");
-                    if (bytes <= 0) bytes = TickSizeBytes;
-                    totalAllocBytes += bytes;
-
-                    if (!typeLibIndex.TryGetValue(typeName, out var library))
-                        typeLibIndex[typeName] = library = ClassifyTypeLibrary(typeName);
-                    if (library is null) continue; // not a JSON type
-
-                    jsonAllocBytes += bytes;
-                    if (!allocByType.TryGetValue(typeName, out var tAcc))
-                        allocByType[typeName] = tAcc = new AllocAcc(library);
-                    tAcc.Ticks++;
-                    tAcc.Bytes += bytes;
-
-                    if (!libAlloc.TryGetValue(library, out var lAcc))
-                        libAlloc[library] = lAcc = new LibAcc();
-                    lAcc.Ticks++;
-                    lAcc.Bytes += bytes;
-
-                    // Caller for allocation: innermost non-JSON, non-runtime user frame
-                    string callerFrame = FindAllocCaller(ev, typeName, frameLibIndex);
-                    string callerKey   = $"{callerFrame}|{library}";
-                    if (!callerByFrame.TryGetValue(callerKey, out var cAcc))
-                        callerByFrame[callerKey] = cAcc = new CallerAcc(callerFrame, library);
-                    cAcc.AllocTicks++;
-                    cAcc.AllocBytes += bytes;
-                    continue;
-                }
-
-                // ── CPU sample ────────────────────────────────────────────────────────
-                if (!evType.IsCpu) continue;
-
-                totalCpuSamples++;
-                var callStack = ev.CallStack();
-                if (callStack is null) continue;
-
-                // Walk the stack — find the deepest JSON frame and the first non-JSON
-                // user caller above it.
-                //
-                // Performance: break as soon as we have both hitLibrary + callerFrameCpu
-                // so we never walk all the way to the root once the caller is identified.
-                // This is the main speedup — no depth cap is needed.
-                string? hitLibrary     = null;
-                string? callerFrameCpu = null;
-                bool    inJsonZone     = false;
-
-                for (var cur = callStack; cur is not null; cur = cur.Caller)
-                {
-                    string method = cur.CodeAddress.FullMethodName ?? "";
-                    if (method.Length == 0) continue;
-
-                    if (!frameLibIndex.TryGetValue(method, out var frameLibrary))
-                        frameLibIndex[method] = frameLibrary = ClassifyFrameLibrary(method);
-                    if (frameLibrary is not null)
-                    {
-                        inJsonZone = true;
-                        hitLibrary ??= frameLibrary;
-                    }
-                    else if (inJsonZone)
-                    {
-                        // First non-JSON frame above the JSON zone = the caller we want.
-                        callerFrameCpu = method;
-                        break; // have everything — no need to walk further
-                    }
-                }
-
-                if (hitLibrary is null) continue; // no JSON frames in this sample
-
-                jsonCpuSamples++;
-                libCpu.TryGetValue(hitLibrary, out int prevCpu);
-                libCpu[hitLibrary] = prevCpu + 1;
-
-                if (callerFrameCpu is not null)
-                {
-                    string callerKey = $"{callerFrameCpu}|{hitLibrary}";
-                    if (!callerByFrame.TryGetValue(callerKey, out var cAcc))
-                        callerByFrame[callerKey] = cAcc = new CallerAcc(callerFrameCpu, hitLibrary);
-                    cAcc.CpuSamples++;
-                }
-            }
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
         }
         catch (Exception ex)
         {
             return Empty($"Failed during event pass: {ex.Message}", processFilter);
         }
-
-        bool hasData = totalAllocTicks > 0 || totalCpuSamples > 0;
-        if (!hasData)
-            return Empty($"{traceFileName}  |  No allocation or CPU sample events found — see collection guidance", processFilter);
-
-        bool hasJson = jsonAllocBytes > 0 || jsonCpuSamples > 0;
-        if (!hasJson)
-        {
-            string noJsonInfo = $"{traceFileName}" +
-                (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                $"  |  {totalCpuSamples:N0} CPU samples  •  {totalAllocTicks:N0} alloc ticks  •  no JSON frames detected";
-            return new JsonSerializationTraceData(noJsonInfo, processFilter,
-                totalAllocTicks, 0, totalAllocBytes,
-                totalCpuSamples, 0, 0,
-                [], [], [], HasData: true);
-        }
-
-        double jsonCpuPct = totalCpuSamples > 0
-            ? jsonCpuSamples * 100.0 / totalCpuSamples
-            : 0;
-
-        // ── Assemble per-library summaries ────────────────────────────────────
-        var allLibraries = new HashSet<string>(libAlloc.Keys, StringComparer.Ordinal);
-        foreach (var k in libCpu.Keys) allLibraries.Add(k);
-
-        var byLibrary = allLibraries
-            .Select(lib =>
-            {
-                libAlloc.TryGetValue(lib, out var lAlloc);
-                libCpu.TryGetValue(lib, out int lCpu);
-                double libCpuPct = totalCpuSamples > 0 ? lCpu * 100.0 / totalCpuSamples : 0;
-                return new JsonLibrarySummary(lib,
-                    lAlloc?.Bytes ?? 0, lAlloc?.Ticks ?? 0, lCpu, libCpuPct);
-            })
-            .OrderByDescending(l => l.AllocBytes + l.CpuSamples * TickSizeBytes)
-            .ToList();
-
-        // ── Top allocating types ──────────────────────────────────────────────
-        var topTypes = allocByType
-            .OrderByDescending(kv => kv.Value.Bytes)
-            .Take(top)
-            .Select(kv => new JsonTypeAllocSummary(
-                kv.Key, kv.Value.Library, kv.Value.Ticks, kv.Value.Bytes,
-                jsonAllocBytes > 0 ? kv.Value.Bytes * 100.0 / jsonAllocBytes : 0))
-            .ToList();
-
-        // ── Top callers ───────────────────────────────────────────────────────
-        var topCallers = callerByFrame.Values
-            .OrderByDescending(c => c.AllocBytes + c.CpuSamples * TickSizeBytes)
-            .Take(top)
-            .Select(c => new JsonCallerSummary(
-                c.Frame, c.Library, c.AllocBytes, c.AllocTicks, c.CpuSamples))
-            .ToList();
-
-        string info = $"{traceFileName}" +
-                      (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  JSON CPU: {jsonCpuPct:F1}%  •  JSON alloc: ~{FormatBytes(jsonAllocBytes)}";
-
-        return new JsonSerializationTraceData(
-            info, processFilter,
-            totalAllocTicks, jsonAllocBytes, totalAllocBytes,
-            totalCpuSamples, jsonCpuSamples, jsonCpuPct,
-            topTypes, topCallers, byLibrary, HasData: true);
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -384,24 +373,6 @@ public sealed class JsonSerializationTraceAnalyzer
         name.StartsWith("KERNELBASE!",             StringComparison.Ordinal) ||
         name.StartsWith("[GC]",                    StringComparison.Ordinal);
 
-    private static string SafeStr(TraceEvent ev, string field)
-    {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
-    }
-
-    private static long SafeLong(TraceEvent ev, string field)
-    {
-        try { return (long)Convert.ChangeType(ev.PayloadByName(field), typeof(long)); } catch { return 0; }
-    }
-
-
-    private static string FormatBytes(long bytes) => bytes switch
-    {
-        >= 1_073_741_824 => $"{bytes / 1_073_741_824.0:F1} GB",
-        >= 1_048_576     => $"{bytes / 1_048_576.0:F1} MB",
-        >= 1_024         => $"{bytes / 1_024.0:F1} KB",
-        _                => $"{bytes} B",
-    };
 
     private static JsonSerializationTraceData Empty(string info, string? filter) =>
         new(info, filter, 0, 0, 0, 0, 0, 0, [], [], [], HasData: false);

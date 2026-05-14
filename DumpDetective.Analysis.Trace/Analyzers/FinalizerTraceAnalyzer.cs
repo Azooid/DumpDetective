@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -25,151 +26,145 @@ public sealed class FinalizerTraceAnalyzer
         }
     }
 
-    public FinalizerTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                       string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        // Track finalizer events per type
-        var byType = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<string, int> ByType = new(StringComparer.OrdinalIgnoreCase);
+        internal double? SuspendStart;
+        internal int GcIndex;
+        internal readonly List<FinalizerBurstEntry> Bursts = new();
+        internal readonly Dictionary<int, (double StartMs, int Count, string TopType)> PendingBurst = new();
+        internal readonly Dictionary<int, int> PerSecond = new();
+        internal int TotalEvents;
 
-        // Track GC suspension windows to detect long finalizer periods
-        double? suspendStart = null;
-        int gcIndex = 0;
-        var bursts = new List<FinalizerBurstEntry>();
-        var pendingBurst = new Dictionary<int, (double StartMs, int Count, string TopType)>();
-
-        // Per-second finalizer event count for sparkline
-        var perSecond = new Dictionary<int, int>();
-
-        int totalEvents = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind =
+                    evName.EndsWith("GC/SuspendEEStart", StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("SuspendEEStart",    StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    evName.EndsWith("GC/RestartEEStop",  StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("RestartEEStop",     StringComparison.OrdinalIgnoreCase) ? (byte)2 :
+                    evName.EndsWith("FinalizeObject",    StringComparison.OrdinalIgnoreCase) ? (byte)3 :
+                    (byte)0;
+            if (kind == 0) return;
+
+            if (kind == 1)
             {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{totalEvents:N0} finalizer events  \u2022  {byType.Count} types");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                string evName = ev.EventName ?? "";
-
-                // Track GC suspends — the time between SuspendEEStart and RestartEEStop
-                // is the STW window in which the finalizer thread runs.
-                if (evName.EndsWith("GC/SuspendEEStart", StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("SuspendEEStart",    StringComparison.OrdinalIgnoreCase))
-                {
-                    suspendStart = ev.TimeStampRelativeMSec;
-                    gcIndex++;
-                    continue;
-                }
-
-                if ((evName.EndsWith("GC/RestartEEStop", StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("RestartEEStop",    StringComparison.OrdinalIgnoreCase)) &&
-                    suspendStart.HasValue)
-                {
-                    double burstMs = ev.TimeStampRelativeMSec - suspendStart.Value;
-                    if (pendingBurst.TryGetValue(gcIndex, out var pb))
-                    {
-                        bursts.Add(new FinalizerBurstEntry(gcIndex, suspendStart.Value,
-                            pb.Count, burstMs, pb.TopType));
-                        pendingBurst.Remove(gcIndex);
-                    }
-                    suspendStart = null;
-                    continue;
-                }
-
-                // GC/FinalizeObject — payload: TypeName
-                if (!evName.EndsWith("FinalizeObject", StringComparison.OrdinalIgnoreCase)) continue;
-
-                string typeName = SafeStr(ev, "TypeName");
-                if (typeName.Length == 0) typeName = SafeStr(ev, "Type");
-                if (typeName.Length == 0) typeName = "(unknown)";
-
-                totalEvents++;
-
-                byType.TryGetValue(typeName, out int prev);
-                byType[typeName] = prev + 1;
-
-                // Associate with current burst window
-                if (!pendingBurst.TryGetValue(gcIndex, out var cur))
-                    pendingBurst[gcIndex] = (ev.TimeStampRelativeMSec, 1, typeName);
-                else
-                    pendingBurst[gcIndex] = (cur.StartMs, cur.Count + 1,
-                        cur.Count < byType.GetValueOrDefault(cur.TopType) ? typeName : cur.TopType);
-
-                // Per-second bucket for sparkline
-                int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                perSecond.TryGetValue(bucket, out int pv);
-                perSecond[bucket] = pv + 1;
+                SuspendStart = timestampMs;
+                GcIndex++;
+                return;
             }
-        }
-        catch (Exception ex)
-        {
-            return new FinalizerTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, false, [], [], null, false);
+
+            if (kind == 2 && SuspendStart.HasValue)
+            {
+                double burstMs = timestampMs - SuspendStart.Value;
+                if (PendingBurst.TryGetValue(GcIndex, out var pb))
+                {
+                    Bursts.Add(new FinalizerBurstEntry(GcIndex, SuspendStart.Value,
+                        pb.Count, burstMs, pb.TopType));
+                    PendingBurst.Remove(GcIndex);
+                }
+                SuspendStart = null;
+                return;
+            }
+
+            // kind == 3: FinalizeObject
+            string typeName = SafeStr(ev, "TypeName");
+            if (typeName.Length == 0) typeName = SafeStr(ev, "Type");
+            if (typeName.Length == 0) typeName = "(unknown)";
+
+            TotalEvents++;
+
+            ByType.TryGetValue(typeName, out int prev);
+            ByType[typeName] = prev + 1;
+
+            if (!PendingBurst.TryGetValue(GcIndex, out var cur))
+                PendingBurst[GcIndex] = (timestampMs, 1, typeName);
+            else
+                PendingBurst[GcIndex] = (cur.StartMs, cur.Count + 1,
+                    cur.Count < ByType.GetValueOrDefault(cur.TopType) ? typeName : cur.TopType);
+
+            int bucket = (int)(timestampMs / 1000.0);
+            PerSecond.TryGetValue(bucket, out int pv);
+            PerSecond[bucket] = pv + 1;
         }
 
-        if (totalEvents == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.EndsWith("GC/SuspendEEStart", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("SuspendEEStart", StringComparison.OrdinalIgnoreCase) ? (byte)1 : eventName.EndsWith("GC/RestartEEStop", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("RestartEEStop", StringComparison.OrdinalIgnoreCase) ? (byte)2 : eventName.EndsWith("FinalizeObject", StringComparison.OrdinalIgnoreCase) ? (byte)3 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public FinalizerTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                           string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.TotalEvents == 0)
         {
             return new FinalizerTraceData(
                 $"{traceFileName}  |  0 FinalizeObject events — collect with --providers Microsoft-Windows-DotNETRuntime:0x1:5",
                 processFilter, 0, 0, 0, 0, false, [], [], null, false);
         }
 
-        var topTypes = byType
+        var topTypes = c.ByType
             .OrderByDescending(kv => kv.Value)
             .Take(top)
             .Select(kv => new FinalizerTypeSummary(kv.Key, kv.Value,
-                totalEvents > 0 ? kv.Value * 100.0 / totalEvents : 0))
+                c.TotalEvents > 0 ? kv.Value * 100.0 / c.TotalEvents : 0))
             .ToList();
 
-        var topBursts = bursts
+        var topBursts = c.Bursts
             .OrderByDescending(b => b.FinalizerCount)
             .Take(top)
             .ToList();
 
-        double maxBurstMs = bursts.Count > 0 ? bursts.Max(b => b.BurstDurationMs) : 0;
-        double avgBurstMs = bursts.Count > 0 ? bursts.Average(b => b.BurstDurationMs) : 0;
+        double maxBurstMs = c.Bursts.Count > 0 ? c.Bursts.Max(b => b.BurstDurationMs) : 0;
+        double avgBurstMs = c.Bursts.Count > 0 ? c.Bursts.Average(b => b.BurstDurationMs) : 0;
 
-        // Detect growing queue: last third of bursts has more events than first third
         bool isGrowing = false;
-        if (bursts.Count >= 6)
+        if (c.Bursts.Count >= 6)
         {
-            int third = bursts.Count / 3;
-            double firstAvg = bursts.Take(third).Average(b => b.FinalizerCount);
-            double lastAvg  = bursts.Skip(bursts.Count - third).Average(b => b.FinalizerCount);
+            int third = c.Bursts.Count / 3;
+            double firstAvg = c.Bursts.Take(third).Average(b => b.FinalizerCount);
+            double lastAvg  = c.Bursts.Skip(c.Bursts.Count - third).Average(b => b.FinalizerCount);
             isGrowing = lastAvg > firstAvg * 1.5;
         }
 
-        // Build sparkline
-        IReadOnlyList<double>? timeline = null;
-        if (perSecond.Count > 1)
-        {
-            int minB = perSecond.Keys.Min(), maxB = perSecond.Keys.Max();
-            var tl = new double[maxB - minB + 1];
-            foreach (var kv in perSecond) tl[kv.Key - minB] = kv.Value;
-            timeline = tl;
-        }
+        var timeline = BuildTimeline(c.PerSecond);
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {totalEvents:N0} finalization events  •  {byType.Count} types";
+                      $"  |  {c.TotalEvents:N0} finalization events  •  {c.ByType.Count} types";
 
         return new FinalizerTraceData(info, processFilter,
-            totalEvents, bursts.Count, maxBurstMs, avgBurstMs, isGrowing,
+            c.TotalEvents, c.Bursts.Count, maxBurstMs, avgBurstMs, isGrowing,
             topTypes, topBursts, timeline, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public FinalizerTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                       string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new FinalizerTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, false, [], [], null, false);
+        }
     }
+
 }

@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -28,106 +29,93 @@ public sealed class TaskSchedulerTraceAnalyzer
         }
     }
 
-    public TaskSchedulerTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                           string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        // pending: TaskId → (scheduledMs, frame)
-        var pendingTasks = new Dictionary<int, (double ScheduledMs, string Frame)>();
-        // pending waits: ThreadID → startMs
-        var pendingWaits = new Dictionary<int, double>();
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<int, (double ScheduledMs, string Frame)> PendingTasks = new();
+        internal readonly Dictionary<int, double> PendingWaits = new();
+        internal int Scheduled, Completed, Cancelled;
+        internal readonly List<LongRunningTask> LongRunning = new();
+        internal double MaxDuration, TotalDuration, MaxWait;
+        internal readonly Dictionary<int, int> PerSecond = new();
 
-        int scheduled = 0, completed = 0, cancelled = 0;
-        var longRunning = new List<LongRunningTask>();
-        double maxDuration = 0, totalDuration = 0;
-        double maxWait = 0;
-        var perSecond = new Dictionary<int, int>();
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-        var evKind = new Dictionary<string, byte>(StringComparer.OrdinalIgnoreCase);
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind = ComputeTaskSchedulerKind(evName);
+            if (kind == 0) return;
+
+            if (kind == 1)
             {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                Scheduled++;
+                int taskId = SafeInt(ev, "TaskID");
+                if (taskId == 0) taskId = threadId ^ (int)(timestampMs);
+                string frame = TopUserFrame(ev);
+                PendingTasks[taskId] = (timestampMs, frame);
+
+                int bucket = (int)(timestampMs / 1000.0);
+                PerSecond.TryGetValue(bucket, out int pv);
+                PerSecond[bucket] = pv + 1;
+                return;
+            }
+
+            if (kind == 2)
+            {
+                int taskId = SafeInt(ev, "TaskID");
+                bool isCancelled = SafeStr(ev, "IsExceptional") == "True" ||
+                                   evName.Contains("Cancel", StringComparison.OrdinalIgnoreCase);
+                if (isCancelled) Cancelled++;
+                else Completed++;
+
+                if (taskId != 0 && PendingTasks.TryGetValue(taskId, out var pending))
                 {
-                    progress($"{scheduled:N0} scheduled  \u2022  {completed:N0} done");
-                    lastProgressMs = Environment.TickCount64;
+                    double duration = timestampMs - pending.ScheduledMs;
+                    PendingTasks.Remove(taskId);
+                    TotalDuration += duration;
+                    if (duration > MaxDuration) MaxDuration = duration;
+                    if (duration >= SlowTaskMs)
+                        LongRunning.Add(new LongRunningTask(taskId, threadId,
+                            pending.ScheduledMs, duration, pending.Frame));
                 }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                return;
+            }
 
-                string evName = ev.EventName ?? "";
-                if (!evKind.TryGetValue(evName, out byte kind))
-                    evKind[evName] = kind = ComputeTaskSchedulerKind(evName);
-                if (kind == 0) continue;
+            if (kind == 3)
+            {
+                PendingWaits[threadId] = timestampMs;
+                return;
+            }
 
-                // Task Scheduled
-                if (kind == 1)
+            if (kind == 4)
+            {
+                if (PendingWaits.TryGetValue(threadId, out double waitStart))
                 {
-                    scheduled++;
-                    int taskId = SafeInt(ev, "TaskID");
-                    if (taskId == 0) taskId = ev.ThreadID ^ (int)(ev.TimeStampRelativeMSec);
-                    string frame = TopUserFrame(ev);
-                    pendingTasks[taskId] = (ev.TimeStampRelativeMSec, frame);
-
-                    int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                    perSecond.TryGetValue(bucket, out int pv);
-                    perSecond[bucket] = pv + 1;
-                    continue;
-                }
-
-                // Task Completed
-                if (kind == 2)
-                {
-                    int taskId = SafeInt(ev, "TaskID");
-                    bool isCancelled = SafeStr(ev, "IsExceptional") == "True" ||
-                                       evName.Contains("Cancel", StringComparison.OrdinalIgnoreCase);
-                    if (isCancelled) cancelled++;
-                    else completed++;
-
-                    if (taskId != 0 && pendingTasks.TryGetValue(taskId, out var pending))
-                    {
-                        double duration = ev.TimeStampRelativeMSec - pending.ScheduledMs;
-                        pendingTasks.Remove(taskId);
-                        totalDuration += duration;
-                        if (duration > maxDuration) maxDuration = duration;
-                        if (duration >= SlowTaskMs)
-                            longRunning.Add(new LongRunningTask(taskId, ev.ThreadID,
-                                pending.ScheduledMs, duration, pending.Frame));
-                    }
-                    continue;
-                }
-
-                // Task WaitBegin
-                if (kind == 3)
-                {
-                    pendingWaits[ev.ThreadID] = ev.TimeStampRelativeMSec;
-                    continue;
-                }
-
-                // Task WaitEnd
-                if (kind == 4)
-                {
-                    if (pendingWaits.TryGetValue(ev.ThreadID, out double waitStart))
-                    {
-                        double waitMs = ev.TimeStampRelativeMSec - waitStart;
-                        if (waitMs > maxWait) maxWait = waitMs;
-                        pendingWaits.Remove(ev.ThreadID);
-                    }
+                    double waitMs = timestampMs - waitStart;
+                    if (waitMs > MaxWait) MaxWait = waitMs;
+                    PendingWaits.Remove(threadId);
                 }
             }
         }
-        catch (Exception ex)
-        {
-            return new TaskSchedulerTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, 0, 0, 0, [], null, false);
-        }
 
-        if (scheduled == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeTaskSchedulerKind(eventName); return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public TaskSchedulerTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                               string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Scheduled == 0)
         {
             return new TaskSchedulerTraceData(
                 $"{traceFileName}  |  0 Task events — collect with " +
@@ -135,27 +123,37 @@ public sealed class TaskSchedulerTraceAnalyzer
                 processFilter, 0, 0, 0, 0, 0, 0, 0, [], null, false);
         }
 
-        int totalFinished = completed + cancelled;
-        double avg = totalFinished > 0 ? totalDuration / totalFinished : 0;
+        int totalFinished = c.Completed + c.Cancelled;
+        double avg = totalFinished > 0 ? c.TotalDuration / totalFinished : 0;
 
-        var topLong = longRunning.OrderByDescending(t => t.DurationMs).Take(top).ToList();
+        var topLong = c.LongRunning.OrderByDescending(t => t.DurationMs).Take(top).ToList();
 
-        IReadOnlyList<double>? timeline = null;
-        if (perSecond.Count > 1)
-        {
-            int minB = perSecond.Keys.Min(), maxB = perSecond.Keys.Max();
-            var tl = new double[maxB - minB + 1];
-            foreach (var kv in perSecond) tl[kv.Key - minB] = kv.Value;
-            timeline = tl;
-        }
+        var timeline = BuildTimeline(c.PerSecond);
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {scheduled:N0} tasks  •  {longRunning.Count} slow (>{SlowTaskMs/1000:F0}s)";
+                      $"  |  {c.Scheduled:N0} tasks  •  {c.LongRunning.Count} slow (>{SlowTaskMs/1000:F0}s)";
 
         return new TaskSchedulerTraceData(info, processFilter,
-            scheduled, completed, cancelled, longRunning.Count,
-            maxDuration, avg, maxWait, topLong, timeline, HasData: true);
+            c.Scheduled, c.Completed, c.Cancelled, c.LongRunning.Count,
+            c.MaxDuration, avg, c.MaxWait, topLong, timeline, HasData: true);
+    }
+
+    public TaskSchedulerTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                           string? processFilter = null, Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new TaskSchedulerTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, 0, 0, 0, [], null, false);
+        }
     }
 
     /// <summary>Classify event name once: 0=skip, 1=scheduled, 2=completed, 3=waitbegin, 4=waitend.</summary>
@@ -173,15 +171,6 @@ public sealed class TaskSchedulerTraceAnalyzer
         return 0;
     }
 
-    private static int SafeInt(TraceEvent ev, string field)
-    {
-        try { return (int)Convert.ChangeType(ev.PayloadByName(field), typeof(int)); } catch { return 0; }
-    }
-
-    private static string SafeStr(TraceEvent ev, string field)
-    {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
-    }
 
     private static string TopUserFrame(TraceEvent ev)
     {

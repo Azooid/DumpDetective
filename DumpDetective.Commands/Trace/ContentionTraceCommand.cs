@@ -39,6 +39,22 @@ public sealed class ContentionTraceCommand : ICommand, ITraceSubAnalyzer
         return d.TraceInfo;
     }
 
+    public bool SupportsConsumer => true;
+
+    public ITraceEventConsumer? CreateConsumer(TraceRunParams p, string traceFileName)
+        => _analyzer.CreateConsumer(p.ProcessFilter);
+
+    public string? CompleteFromConsumer(ITraceEventConsumer consumer, string traceFileName,
+        TraceRunParams p, Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var d = _analyzer.BuildResult(consumer, traceFileName, p.Top, p.ProcessFilter);
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
+
     private const string Help = """
         Usage: DumpDetective contention-trace <trace-file> [options]
 

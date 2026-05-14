@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -27,82 +28,72 @@ public sealed class ProcessLifecycleAnalyzer
         }
     }
 
-    public ProcessLifecycleData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                         string? processFilter = null, Action<string>? progress = null)
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var events = new List<ProcessEvent>();
-        // Track last stop per process name for restart detection
-        var lastStop = new Dictionary<string, double>(StringComparer.OrdinalIgnoreCase);
+        private readonly string? _processFilter = processFilter;
+        internal readonly List<ProcessEvent> Events = new();
+        internal readonly Dictionary<string, double> LastStop = new(StringComparer.OrdinalIgnoreCase);
+        internal int Restarts, Abnormal;
 
-        int restarts = 0, abnormal = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            bool isStart =
+                evName.EndsWith("Process/Start",  StringComparison.OrdinalIgnoreCase) ||
+                evName.EndsWith("ProcessStart",   StringComparison.OrdinalIgnoreCase) ||
+                evName.Contains("ProcessStart/Start", StringComparison.OrdinalIgnoreCase);
+            bool isStop =
+                evName.EndsWith("Process/Stop",   StringComparison.OrdinalIgnoreCase) ||
+                evName.EndsWith("ProcessStop",    StringComparison.OrdinalIgnoreCase) ||
+                evName.Contains("ProcessStop/Stop",  StringComparison.OrdinalIgnoreCase);
+
+            if (!isStart && !isStop) return;
+
+            string procName = SafeStr(ev, "ImageFileName");
+            if (procName.Length == 0) procName = processName;
+            if (procName.Length == 0) procName = "(unknown)";
+
+            if (_processFilter is not null &&
+                !procName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            int? exitCode = null;
+            if (isStop)
             {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{events.Count:N0} process events");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                string evName = ev.EventName ?? "";
-                bool isStart =
-                    evName.EndsWith("Process/Start",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ProcessStart",   StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("ProcessStart/Start", StringComparison.OrdinalIgnoreCase);
-                bool isStop =
-                    evName.EndsWith("Process/Stop",   StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ProcessStop",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("ProcessStop/Stop",  StringComparison.OrdinalIgnoreCase);
+                try { exitCode = (int)Convert.ChangeType(ev.PayloadByName("ExitCode"), typeof(int)); } catch { }
+            }
 
-                if (!isStart && !isStop) continue;
+            string eventType = isStart ? "Start" : "Stop";
+            Events.Add(new ProcessEvent(procName, ev.ProcessID, eventType,
+                timestampMs, exitCode));
 
-                string procName = SafeStr(ev, "ImageFileName");
-                if (procName.Length == 0) procName = ev.ProcessName ?? "";
-                if (procName.Length == 0) procName = "(unknown)";
+            if (isStart && LastStop.TryGetValue(procName, out double stopMs))
+            {
+                if (timestampMs - stopMs < RestartWindowMs)
+                    Restarts++;
+                LastStop.Remove(procName);
+            }
 
-                // Apply process filter if provided
-                if (processFilter is not null &&
-                    !procName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                int? exitCode = null;
-                if (isStop)
-                {
-                    try { exitCode = (int)Convert.ChangeType(ev.PayloadByName("ExitCode"), typeof(int)); } catch { }
-                }
-
-                string eventType = isStart ? "Start" : "Stop";
-                events.Add(new ProcessEvent(procName, ev.ProcessID, eventType,
-                    ev.TimeStampRelativeMSec, exitCode));
-
-                if (isStart && lastStop.TryGetValue(procName, out double stopMs))
-                {
-                    if (ev.TimeStampRelativeMSec - stopMs < RestartWindowMs)
-                        restarts++;
-                    lastStop.Remove(procName);
-                }
-
-                if (isStop)
-                {
-                    lastStop[procName] = ev.TimeStampRelativeMSec;
-                    // Abnormal exit: non-zero exit code or specific codes (0xC0000005 = access violation)
-                    if (exitCode.HasValue && exitCode != 0)
-                        abnormal++;
-                }
+            if (isStop)
+            {
+                LastStop[procName] = timestampMs;
+                if (exitCode.HasValue && exitCode != 0)
+                    Abnormal++;
             }
         }
-        catch (Exception ex)
-        {
-            return new ProcessLifecycleData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, [], [], false);
-        }
 
-        if (events.Count == 0)
+        public bool WantsEvent(string eventName) => eventName.Contains("Process", StringComparison.OrdinalIgnoreCase);
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public ProcessLifecycleData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                             string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Events.Count == 0)
         {
             return new ProcessLifecycleData(
                 $"{traceFileName}  |  0 process lifecycle events — collect with " +
@@ -110,10 +101,10 @@ public sealed class ProcessLifecycleAnalyzer
                 processFilter, 0, 0, 0, 0, [], [], false);
         }
 
-        int totalStarts = events.Count(e => e.EventType == "Start");
-        int totalStops  = events.Count(e => e.EventType == "Stop");
+        int totalStarts = c.Events.Count(e => e.EventType == "Start");
+        int totalStops  = c.Events.Count(e => e.EventType == "Stop");
 
-        var groups = events
+        var groups = c.Events
             .GroupBy(e => e.ProcessName, StringComparer.OrdinalIgnoreCase)
             .OrderByDescending(g => g.Count())
             .Take(top)
@@ -122,7 +113,6 @@ public sealed class ProcessLifecycleAnalyzer
                 int s  = g.Count(e => e.EventType == "Start");
                 int st = g.Count(e => e.EventType == "Stop");
                 int ab = g.Count(e => e.EventType == "Stop" && e.ExitCode.HasValue && e.ExitCode != 0);
-                // Approximate restarts per group
                 int r  = Math.Max(0, Math.Min(s, st) - (ab > 0 ? 0 : 0));
                 return new ProcessGroupSummary(g.Key, s, st, r, ab);
             })
@@ -131,16 +121,29 @@ public sealed class ProcessLifecycleAnalyzer
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  filter: {processFilter}" : "") +
                       $"  |  {totalStarts} starts  •  {totalStops} stops" +
-                      (restarts > 0 ? $"  •  {restarts} restarts" : "") +
-                      (abnormal > 0 ? $"  •  {abnormal} abnormal exits" : "");
+                      (c.Restarts > 0 ? $"  •  {c.Restarts} restarts" : "") +
+                      (c.Abnormal > 0 ? $"  •  {c.Abnormal} abnormal exits" : "");
 
         return new ProcessLifecycleData(info, processFilter,
-            totalStarts, totalStops, restarts, abnormal,
-            events.OrderBy(e => e.TimeMs).ToList(), groups, HasData: true);
+            totalStarts, totalStops, c.Restarts, c.Abnormal,
+            c.Events.OrderBy(e => e.TimeMs).ToList(), groups, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public ProcessLifecycleData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                         string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new ProcessLifecycleData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, [], [], false);
+        }
     }
+
 }

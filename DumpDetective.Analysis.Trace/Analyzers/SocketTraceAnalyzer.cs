@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -28,102 +29,94 @@ public sealed class SocketTraceAnalyzer
         }
     }
 
-    public SocketTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                    string? processFilter = null, Action<string>? progress = null)
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var pending = new Dictionary<int, (double StartMs, string Endpoint)>();
-        var byHost  = new Dictionary<string, HostAcc>(StringComparer.OrdinalIgnoreCase);
-        var slowConnects = new List<SocketConnectEntry>();
-        var perSecond    = new Dictionary<int, int>();
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<int, (double StartMs, string Endpoint)> Pending = new();
+        internal readonly Dictionary<string, HostAcc> ByHost = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly List<SocketConnectEntry> SlowConnects = new();
+        internal readonly Dictionary<int, int> PerSecond = new();
+        internal int Connects, Failures;
+        internal double TotalMs, MaxMs;
 
-        int connects = 0, failures = 0;
-        double totalMs = 0, maxMs = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            bool isConnStart =
+                evName.Contains("Socket") &&
+                evName.Contains("Connect") &&
+                (evName.EndsWith("Start",  StringComparison.OrdinalIgnoreCase) ||
+                 evName.EndsWith("Begin",  StringComparison.OrdinalIgnoreCase));
+            bool isConnStop =
+                evName.Contains("Socket") &&
+                evName.Contains("Connect") &&
+                (evName.EndsWith("Stop",   StringComparison.OrdinalIgnoreCase) ||
+                 evName.EndsWith("End",    StringComparison.OrdinalIgnoreCase));
+            bool isConnFail =
+                evName.Contains("Socket") &&
+                (evName.Contains("ConnectFailed", StringComparison.OrdinalIgnoreCase) ||
+                 evName.Contains("Error",         StringComparison.OrdinalIgnoreCase));
+
+            if (!isConnStart && !isConnStop && !isConnFail) return;
+
+            string endpoint = SafeStr(ev, "Address");
+            if (endpoint.Length == 0) endpoint = SafeStr(ev, "RemoteEndPoint");
+            if (endpoint.Length == 0) endpoint = SafeStr(ev, "Host");
+            if (endpoint.Length == 0) endpoint = "(unknown)";
+
+            string host = endpoint.Contains(':') ? endpoint[..endpoint.LastIndexOf(':')] : endpoint;
+
+            if (isConnStart)
             {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{connects:N0} connects  \u2022  {failures:N0} failures");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                Pending[threadId] = (timestampMs, endpoint);
+                int bucket = (int)(timestampMs / 1000.0);
+                PerSecond.TryGetValue(bucket, out int pv);
+                PerSecond[bucket] = pv + 1;
+            }
+            else if (isConnStop && Pending.TryGetValue(threadId, out var start))
+            {
+                Pending.Remove(threadId);
+                double ms = timestampMs - start.StartMs;
+                Connects++;
+                TotalMs += ms;
+                if (ms > MaxMs) MaxMs = ms;
 
-                string evName = ev.EventName ?? "";
-                bool isConnStart =
-                    evName.Contains("Socket") &&
-                    evName.Contains("Connect") &&
-                    (evName.EndsWith("Start",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Begin",  StringComparison.OrdinalIgnoreCase));
-                bool isConnStop =
-                    evName.Contains("Socket") &&
-                    evName.Contains("Connect") &&
-                    (evName.EndsWith("Stop",   StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("End",    StringComparison.OrdinalIgnoreCase) ||
-                     evName.EndsWith("Stop",   StringComparison.OrdinalIgnoreCase));
-                bool isConnFail =
-                    evName.Contains("Socket") &&
-                    (evName.Contains("ConnectFailed", StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Error",         StringComparison.OrdinalIgnoreCase));
+                if (!ByHost.TryGetValue(host, out var acc))
+                    ByHost[host] = acc = new HostAcc();
+                acc.Count++;
+                acc.TotalMs += ms;
 
-                if (!isConnStart && !isConnStop && !isConnFail) continue;
-
-                string endpoint = SafeStr(ev, "Address");
-                if (endpoint.Length == 0) endpoint = SafeStr(ev, "RemoteEndPoint");
-                if (endpoint.Length == 0) endpoint = SafeStr(ev, "Host");
-                if (endpoint.Length == 0) endpoint = "(unknown)";
-
-                string host = endpoint.Contains(':') ? endpoint[..endpoint.LastIndexOf(':')] : endpoint;
-
-                if (isConnStart)
-                {
-                    pending[ev.ThreadID] = (ev.TimeStampRelativeMSec, endpoint);
-                    int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                    perSecond.TryGetValue(bucket, out int pv);
-                    perSecond[bucket] = pv + 1;
-                }
-                else if (isConnStop && pending.TryGetValue(ev.ThreadID, out var start))
-                {
-                    pending.Remove(ev.ThreadID);
-                    double ms = ev.TimeStampRelativeMSec - start.StartMs;
-                    connects++;
-                    totalMs += ms;
-                    if (ms > maxMs) maxMs = ms;
-
-                    if (!byHost.TryGetValue(host, out var acc))
-                        byHost[host] = acc = new HostAcc();
-                    acc.Count++;
-                    acc.TotalMs += ms;
-
-                    if (ms >= SlowConnectMs)
-                        slowConnects.Add(new SocketConnectEntry(start.Endpoint, ms, false,
-                            start.StartMs));
-                }
-                else if (isConnFail)
-                {
-                    failures++;
-                    if (!byHost.TryGetValue(host, out var acc))
-                        byHost[host] = acc = new HostAcc();
-                    acc.Failures++;
-                    slowConnects.Add(new SocketConnectEntry(endpoint, 0, true,
-                        ev.TimeStampRelativeMSec));
-                }
+                if (ms >= SlowConnectMs)
+                    SlowConnects.Add(new SocketConnectEntry(start.Endpoint, ms, false,
+                        start.StartMs));
+            }
+            else if (isConnFail)
+            {
+                Failures++;
+                if (!ByHost.TryGetValue(host, out var acc))
+                    ByHost[host] = acc = new HostAcc();
+                acc.Failures++;
+                SlowConnects.Add(new SocketConnectEntry(endpoint, 0, true,
+                    timestampMs));
             }
         }
-        catch (Exception ex)
-        {
-            return new SocketTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, 0, 0, [], [], null, false);
-        }
 
-        if (connects == 0 && failures == 0)
+        public bool WantsEvent(string eventName) => eventName.Contains("Socket", StringComparison.OrdinalIgnoreCase);
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public SocketTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                        string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Connects == 0 && c.Failures == 0)
         {
             return new SocketTraceData(
                 $"{traceFileName}  |  0 socket events — collect with " +
@@ -131,39 +124,45 @@ public sealed class SocketTraceAnalyzer
                 processFilter, 0, 0, 0, 0, 0, [], [], null, false);
         }
 
-        double avg = connects > 0 ? totalMs / connects : 0;
+        double avg = c.Connects > 0 ? c.TotalMs / c.Connects : 0;
 
-        var topHosts = byHost
+        var topHosts = c.ByHost
             .OrderByDescending(kv => kv.Value.Count)
             .Take(top)
             .Select(kv => new SocketHostSummary(kv.Key, kv.Value.Count, kv.Value.Failures,
                 kv.Value.TotalMs, kv.Value.Count > 0 ? kv.Value.TotalMs / kv.Value.Count : 0))
             .ToList();
 
-        var topSlow = slowConnects.OrderByDescending(s => s.DurationMs).Take(top).ToList();
+        var topSlow = c.SlowConnects.OrderByDescending(s => s.DurationMs).Take(top).ToList();
 
-        IReadOnlyList<double>? timeline = null;
-        if (perSecond.Count > 1)
-        {
-            int minB = perSecond.Keys.Min(), maxB = perSecond.Keys.Max();
-            var tl = new double[maxB - minB + 1];
-            foreach (var kv in perSecond) tl[kv.Key - minB] = kv.Value;
-            timeline = tl;
-        }
+        var timeline = BuildTimeline(c.PerSecond);
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {connects:N0} connects  •  {failures} failures  •  avg {avg:F1} ms";
+                      $"  |  {c.Connects:N0} connects  •  {c.Failures} failures  •  avg {avg:F1} ms";
 
         return new SocketTraceData(info, processFilter,
-            connects, failures, avg, maxMs, topSlow.Count,
+            c.Connects, c.Failures, avg, c.MaxMs, topSlow.Count,
             topSlow, topHosts, timeline, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public SocketTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                    string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new SocketTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, 0, 0, [], [], null, false);
+        }
     }
+
 
     private sealed class HostAcc { public int Count, Failures; public double TotalMs; }
 }

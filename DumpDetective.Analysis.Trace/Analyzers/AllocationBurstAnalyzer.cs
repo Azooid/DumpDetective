@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -26,62 +27,58 @@ public sealed class AllocationBurstAnalyzer
         }
     }
 
-    public AllocationBurstData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
+        private readonly string? _processFilter = processFilter;
         // 500 ms buckets: key = (int)(ms / 500)
-        var buckets = new Dictionary<int, BucketAcc>();
+        internal readonly Dictionary<int, BucketAcc> Buckets = new();
+        internal int TickCount;
 
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
-        int tickCount = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
-            {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{tickCount:N0} alloc ticks");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
 
-                string evName = ev.EventName ?? "";
-                bool isTick =
-                    evName.Contains("AllocationTick", StringComparison.OrdinalIgnoreCase) ||
+            if (!EvKind.TryGetValue(evName, out bool isTick))
+                EvKind[evName] = isTick =
+                    evName.Contains("AllocationTick",    StringComparison.OrdinalIgnoreCase) ||
                     evName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase);
-                if (!isTick) continue;
+            if (!isTick) return;
 
-                tickCount++;
-                long bytes = 0;
-                try { bytes = (long)Convert.ChangeType(ev.PayloadByName("AllocationAmount"), typeof(long)); } catch { }
-                if (bytes <= 0) bytes = 100 * 1024; // default ~100 KB per tick
+            TickCount++;
+            long bytes = 0;
+            try { bytes = (long)Convert.ChangeType(ev.PayloadByName("AllocationAmount"), typeof(long)); } catch { }
+            if (bytes <= 0) bytes = 100 * 1024; // default ~100 KB per tick
 
-                string typeName = SafeStr(ev, "TypeName");
-                if (typeName.Length == 0) typeName = "(unknown)";
+            string typeName = SafeStr(ev, "TypeName");
+            if (typeName.Length == 0) typeName = "(unknown)";
 
-                int bucket = (int)(ev.TimeStampRelativeMSec / 500.0);
-                if (!buckets.TryGetValue(bucket, out var acc))
-                    buckets[bucket] = acc = new BucketAcc();
-                acc.Bytes += bytes;
-                acc.Count++;
-                if (!acc.TypeCounts.TryGetValue(typeName, out long prev))
-                    acc.TypeCounts[typeName] = prev;
-                acc.TypeCounts[typeName] = prev + bytes;
-            }
-        }
-        catch (Exception ex)
-        {
-            return new AllocationBurstData($"Failed: {ex.Message}", processFilter,
-                0, 0, 0, [], null, false);
+            int bucket = (int)(timestampMs / 500.0);
+            if (!Buckets.TryGetValue(bucket, out var acc))
+                Buckets[bucket] = acc = new BucketAcc();
+            acc.Bytes += bytes;
+            acc.Count++;
+            if (!acc.TypeCounts.TryGetValue(typeName, out long prev))
+                acc.TypeCounts[typeName] = prev;
+            acc.TypeCounts[typeName] = prev + bytes;
         }
 
-        if (buckets.Count == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.Contains("AllocationTick", StringComparison.OrdinalIgnoreCase) || eventName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase); return v; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public AllocationBurstData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                            string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Buckets.Count == 0)
         {
             return new AllocationBurstData(
                 $"{traceFileName}  |  0 allocation ticks — collect with --providers " +
@@ -90,7 +87,7 @@ public sealed class AllocationBurstAnalyzer
         }
 
         // Build sorted rate list (KB/s per 500ms window = bytes / 500ms * 1000ms = bytes * 2 / 1024)
-        var rates = buckets.OrderBy(kv => kv.Key)
+        var rates = c.Buckets.OrderBy(kv => kv.Key)
                            .Select(kv => (BucketMs: kv.Key * 500.0,
                                           RateKbPerSec: kv.Value.Bytes * 2.0 / 1024.0,
                                           TopType: kv.Value.TypeCounts.OrderByDescending(x => x.Value).First().Key,
@@ -142,9 +139,9 @@ public sealed class AllocationBurstAnalyzer
         IReadOnlyList<double>? timeline = null;
         if (rates.Count > 1)
         {
-            int minB = buckets.Keys.Min() / 2, maxB = buckets.Keys.Max() / 2;
+            int minB = c.Buckets.Keys.Min() / 2, maxB = c.Buckets.Keys.Max() / 2;
             var tl = new double[maxB - minB + 1];
-            foreach (var kv in buckets)
+            foreach (var kv in c.Buckets)
             {
                 int secBucket = kv.Key / 2 - minB;
                 tl[secBucket] += kv.Value.Bytes * 2.0 / 1024.0;
@@ -160,10 +157,23 @@ public sealed class AllocationBurstAnalyzer
             bursts.Count, peakRate, avgRate, topBursts, timeline, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public AllocationBurstData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                        string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new AllocationBurstData($"Failed: {ex.Message}", processFilter,
+                0, 0, 0, [], null, false);
+        }
     }
+
 
     private sealed class BucketAcc
     {

@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -28,96 +29,87 @@ public sealed class OpenTelemetryTraceAnalyzer
         }
     }
 
-    public OpenTelemetryTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                           string? processFilter = null, Action<string>? progress = null)
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var pending     = new Dictionary<string, (double StartMs, string Op, bool IsError)>(StringComparer.Ordinal);
-        var byOp        = new Dictionary<string, OpAcc>(StringComparer.OrdinalIgnoreCase);
-        var slowList    = new List<OtelSlowActivity>();
-        var errTimeline = new Dictionary<int, int>();
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<string, (double StartMs, string Op, bool IsError)> Pending = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, OpAcc> ByOp = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly List<OtelSlowActivity> SlowList = new();
+        internal readonly Dictionary<int, int> ErrTimeline = new();
+        internal int Total, TotalErrors;
 
-        int total = 0, totalErrors = 0;
-        long evTotal = trace.EventCount;
-        long evProcessed = 0;
-        long lastProgressMs = 0;
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            bool isDiagSrc = ev.ProviderName.Contains("DiagnosticSource",    StringComparison.OrdinalIgnoreCase) ||
+                             ev.ProviderName.Contains("System.Diagnostics",  StringComparison.OrdinalIgnoreCase) ||
+                             evName.Contains("Activity",                     StringComparison.OrdinalIgnoreCase);
+            if (!isDiagSrc) return;
+
+            bool isStart = evName.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
+                           evName.EndsWith("Begin", StringComparison.OrdinalIgnoreCase);
+            bool isStop  = evName.EndsWith("Stop",  StringComparison.OrdinalIgnoreCase) ||
+                           evName.EndsWith("End",   StringComparison.OrdinalIgnoreCase);
+
+            if (!isStart && !isStop) return;
+
+            string opName = SafeStr(ev, "OperationName");
+            if (opName.Length == 0) opName = SafeStr(ev, "Name");
+            if (opName.Length == 0) opName = evName;
+
+            string actId = SafeStr(ev, "ActivityId");
+            if (actId.Length == 0) actId = $"{threadId}_{opName}";
+
+            bool hasError = SafeStr(ev, "Error").Length > 0 ||
+                            SafeStr(ev, "Status").Equals("Error", StringComparison.OrdinalIgnoreCase);
+
+            if (isStart)
             {
-                evProcessed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
+                Pending[actId] = (timestampMs, opName, hasError);
+            }
+            else if (isStop && Pending.TryGetValue(actId, out var start))
+            {
+                Pending.Remove(actId);
+                double ms = timestampMs - start.StartMs;
+                bool isError = start.IsError || hasError ||
+                               SafeStr(ev, "Status").Equals("Error", StringComparison.OrdinalIgnoreCase);
+
+                Total++;
+                if (isError) TotalErrors++;
+
+                if (!ByOp.TryGetValue(start.Op, out var acc))
+                    ByOp[start.Op] = acc = new OpAcc();
+                acc.Count++;
+                acc.TotalMs += ms;
+                if (ms > acc.MaxMs) acc.MaxMs = ms;
+                if (isError) acc.Errors++;
+
+                if (isError)
                 {
-                    progress($"{total:N0} activities");
-                    lastProgressMs = Environment.TickCount64;
+                    int bucket = (int)(timestampMs / 1000.0);
+                    ErrTimeline.TryGetValue(bucket, out int pv);
+                    ErrTimeline[bucket] = pv + 1;
                 }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
 
-                string evName = ev.EventName ?? "";
-                bool isDiagSrc = ev.ProviderName.Contains("DiagnosticSource",    StringComparison.OrdinalIgnoreCase) ||
-                                 ev.ProviderName.Contains("System.Diagnostics",  StringComparison.OrdinalIgnoreCase) ||
-                                 evName.Contains("Activity",                     StringComparison.OrdinalIgnoreCase);
-                if (!isDiagSrc) continue;
-
-                bool isStart = evName.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
-                               evName.EndsWith("Begin", StringComparison.OrdinalIgnoreCase);
-                bool isStop  = evName.EndsWith("Stop",  StringComparison.OrdinalIgnoreCase) ||
-                               evName.EndsWith("End",   StringComparison.OrdinalIgnoreCase);
-
-                if (!isStart && !isStop) continue;
-
-                string opName = SafeStr(ev, "OperationName");
-                if (opName.Length == 0) opName = SafeStr(ev, "Name");
-                if (opName.Length == 0) opName = evName;
-
-                string actId  = SafeStr(ev, "ActivityId");
-                if (actId.Length == 0) actId  = $"{ev.ThreadID}_{opName}";
-
-                bool hasError = SafeStr(ev, "Error").Length > 0 ||
-                                SafeStr(ev, "Status").Equals("Error", StringComparison.OrdinalIgnoreCase);
-
-                if (isStart)
-                {
-                    pending[actId] = (ev.TimeStampRelativeMSec, opName, hasError);
-                }
-                else if (isStop && pending.TryGetValue(actId, out var start))
-                {
-                    pending.Remove(actId);
-                    double ms = ev.TimeStampRelativeMSec - start.StartMs;
-                    bool isError = start.IsError || hasError ||
-                                   SafeStr(ev, "Status").Equals("Error", StringComparison.OrdinalIgnoreCase);
-
-                    total++;
-                    if (isError) totalErrors++;
-
-                    if (!byOp.TryGetValue(start.Op, out var acc))
-                        byOp[start.Op] = acc = new OpAcc();
-                    acc.Count++;
-                    acc.TotalMs += ms;
-                    if (ms > acc.MaxMs) acc.MaxMs = ms;
-                    if (isError) acc.Errors++;
-
-                    if (isError)
-                    {
-                        int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                        errTimeline.TryGetValue(bucket, out int pv);
-                        errTimeline[bucket] = pv + 1;
-                    }
-
-                    if (ms >= SlowActivityMs)
-                        slowList.Add(new OtelSlowActivity(start.Op, ms, isError, start.StartMs));
-                }
+                if (ms >= SlowActivityMs)
+                    SlowList.Add(new OtelSlowActivity(start.Op, ms, isError, start.StartMs));
             }
         }
-        catch (Exception ex)
-        {
-            return new OpenTelemetryTraceData($"Failed: {ex.Message}", processFilter,
-                0, 0, [], [], null, false);
-        }
 
-        if (total == 0)
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public OpenTelemetryTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                               string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Total == 0)
         {
             return new OpenTelemetryTraceData(
                 $"{traceFileName}  |  0 Activity events — collect with " +
@@ -125,7 +117,7 @@ public sealed class OpenTelemetryTraceAnalyzer
                 processFilter, 0, 0, [], [], null, false);
         }
 
-        var topOps = byOp
+        var topOps = c.ByOp
             .OrderByDescending(kv => kv.Value.Count)
             .Take(top)
             .Select(kv => new OtelOperationSummary(kv.Key,
@@ -134,29 +126,35 @@ public sealed class OpenTelemetryTraceAnalyzer
                 kv.Value.MaxMs))
             .ToList();
 
-        var topSlow = slowList.OrderByDescending(s => s.DurationMs).Take(top).ToList();
+        var topSlow = c.SlowList.OrderByDescending(s => s.DurationMs).Take(top).ToList();
 
-        IReadOnlyList<double>? timeline = null;
-        if (errTimeline.Count > 1)
-        {
-            int minB = errTimeline.Keys.Min(), maxB = errTimeline.Keys.Max();
-            var tl = new double[maxB - minB + 1];
-            foreach (var kv in errTimeline) tl[kv.Key - minB] = kv.Value;
-            timeline = tl;
-        }
+        var timeline = BuildTimeline(c.ErrTimeline);
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {total:N0} activities  •  {totalErrors} errors  •  {topSlow.Count} slow";
+                      $"  |  {c.Total:N0} activities  •  {c.TotalErrors} errors  •  {topSlow.Count} slow";
 
         return new OpenTelemetryTraceData(info, processFilter,
-            total, totalErrors, topOps, topSlow, timeline, HasData: true);
+            c.Total, c.TotalErrors, topOps, topSlow, timeline, HasData: true);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public OpenTelemetryTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                           string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new OpenTelemetryTraceData($"Failed: {ex.Message}", processFilter,
+                0, 0, [], [], null, false);
+        }
     }
+
 
     private sealed class OpAcc { public int Count, Errors; public double TotalMs, MaxMs; }
 }

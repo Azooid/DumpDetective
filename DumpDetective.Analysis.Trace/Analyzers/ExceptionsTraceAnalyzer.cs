@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -24,65 +25,61 @@ public sealed class ExceptionsTraceAnalyzer
         }
     }
 
-    public ExceptionsTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var byType  = new Dictionary<string, TypeAcc>(StringComparer.Ordinal);
-        var events  = new List<ExceptionEvent>();
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<string, TypeAcc> ByType = new(StringComparer.Ordinal);
+        internal readonly List<ExceptionEvent> Events = new();
 
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
-            {
-                processed++;
-                if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-                {
-                    progress($"{events.Count:N0} exceptions  \u2022  {byType.Count} unique types");
-                    lastProgressMs = Environment.TickCount64;
-                }
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
 
-                string evName = ev.EventName ?? "";
-
-                bool isEx =
+            if (!EvKind.TryGetValue(evName, out bool isEx))
+                EvKind[evName] = isEx =
                     evName.EndsWith("Exception/Start",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ExceptionThrown",     StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("Exception",           StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("ExceptionThrown",    StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("Exception",          StringComparison.OrdinalIgnoreCase) ||
                     evName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isEx) return;
 
-                if (!isEx) continue;
+            string exType = SafeStr(ev, "ExceptionType");
+            if (exType.Length == 0) exType = SafeStr(ev, "Type");
+            if (exType.Length == 0) exType = "(unknown)";
 
-                string exType = SafeStr(ev, "ExceptionType");
-                if (exType.Length == 0) exType = SafeStr(ev, "Type");
-                if (exType.Length == 0) exType = "(unknown)";
+            string msg   = SafeStr(ev, "ExceptionMessage");
+            if (msg.Length == 0) msg = SafeStr(ev, "Message");
+            string frame = TopUserFrame(ev);
 
-                string msg     = SafeStr(ev, "ExceptionMessage");
-                if (msg.Length == 0) msg = SafeStr(ev, "Message");
-                string frame   = TopUserFrame(ev);
+            Events.Add(new ExceptionEvent(exType, msg, timestampMs, frame, threadId));
 
-                events.Add(new ExceptionEvent(exType, msg, ev.TimeStampRelativeMSec, frame, ev.ThreadID));
-
-                if (!byType.TryGetValue(exType, out var acc))
-                    byType[exType] = acc = new TypeAcc(msg, frame);
-                acc.Count++;
-            }
-        }
-        catch (Exception ex)
-        {
-            return new ExceptionsTraceData($"Failed: {ex.Message}", processFilter, 0, 0, [], []);
+            if (!ByType.TryGetValue(exType, out var acc))
+                ByType[exType] = acc = new TypeAcc(msg, frame);
+            acc.Count++;
         }
 
-        if (events.Count == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("Exception", StringComparison.OrdinalIgnoreCase) || eventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public ExceptionsTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                            string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Events.Count == 0)
             return new ExceptionsTraceData(
                 $"{traceFileName}  |  0 exception events — collect with --providers Microsoft-Windows-DotNETRuntime:0x8014:5",
                 processFilter, 0, 0, [], []);
 
-        var topTypes = byType
+        var topTypes = c.ByType
             .OrderByDescending(kv => kv.Value.Count)
             .Take(top)
             .Select(kv => new ExceptionTypeSummary(kv.Key, kv.Value.Count,
@@ -90,43 +87,49 @@ public sealed class ExceptionsTraceAnalyzer
                                                     kv.Value.TopFrame))
             .ToList();
 
-        var recentEvents = events
+        var recentEvents = c.Events
             .OrderByDescending(e => e.TimeMs)
             .Take(top)
             .ToList();
 
         // ── Exception rate timeline ────────────────────────────────────────────
-        // Bucket all event timestamps into per-second counts for a sparkline.
         IReadOnlyList<double> rateTimeline = [];
-        if (events.Count > 1)
+        if (c.Events.Count > 1)
         {
             var perSecond = new Dictionary<int, int>();
-            foreach (var ev in events)
+            foreach (var ev in c.Events)
             {
                 int bucket = (int)(ev.TimeMs / 1000.0);
                 perSecond.TryGetValue(bucket, out int prev);
                 perSecond[bucket] = prev + 1;
             }
-            int minB = perSecond.Keys.Min();
-            int maxB = perSecond.Keys.Max();
-            var tl = new double[maxB - minB + 1];
-            foreach (var kv in perSecond)
-                tl[kv.Key - minB] = kv.Value;
-            rateTimeline = tl;
+            rateTimeline = BuildTimeline(perSecond) ?? [];
         }
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {events.Count:N0} exceptions  •  {byType.Count} unique types";
+                      $"  |  {c.Events.Count:N0} exceptions  •  {c.ByType.Count} unique types";
 
         return new ExceptionsTraceData(info, processFilter,
-            events.Count, byType.Count, topTypes, recentEvents, rateTimeline);
+            c.Events.Count, c.ByType.Count, topTypes, recentEvents, rateTimeline);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public ExceptionsTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                        string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new ExceptionsTraceData($"Failed: {ex.Message}", processFilter, 0, 0, [], []);
+        }
     }
+
 
     private static string TopUserFrame(TraceEvent ev)
     {
@@ -156,8 +159,6 @@ public sealed class ExceptionsTraceAnalyzer
         return "(no stack)";
     }
 
-    private static string Truncate(string s, int max) =>
-        s.Length <= max ? s : s[..max] + "…";
 
     private sealed class TypeAcc(string firstMsg, string topFrame)
     {

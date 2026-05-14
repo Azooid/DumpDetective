@@ -2,6 +2,7 @@ using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
+
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
 /// <summary>
@@ -11,8 +12,6 @@ namespace DumpDetective.Analysis.Trace.Analyzers;
 /// </summary>
 public sealed class AllocTraceAnalyzer
 {
-    private const long TickSizeBytes = 100_000; // ~100 KB per tick
-
     public AllocTraceData Analyze(string tracePath, int top = 20, string? processFilter = null)
     {
         try
@@ -27,37 +26,29 @@ public sealed class AllocTraceAnalyzer
         }
     }
 
-    public AllocTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                   string? processFilter = null, Action<string>? progress = null)
+    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var byType     = new Dictionary<string, TypeAcc>(StringComparer.Ordinal);
-        var byCallSite = new Dictionary<string, CallSiteAcc>(StringComparer.Ordinal);
-        int totalTicks = 0;
-        long total = trace.EventCount;
-        long processed = 0;
-        long lastProgressMs = 0;
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<string, TypeAcc> ByType = new(StringComparer.Ordinal);
+        internal readonly Dictionary<string, CallSiteAcc> ByCallSite = new(StringComparer.Ordinal);
+        internal int TotalTicks;
 
-        foreach (var ev in trace.Events)
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            processed++;
-            if (progress is not null && Environment.TickCount64 - lastProgressMs >= 200)
-            {
-                progress($"{totalTicks:N0} alloc ticks  \u2022  {byType.Count} types");
-                lastProgressMs = Environment.TickCount64;
-            }
-            if (processFilter is not null &&
-                !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                continue;
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
 
-            string evName = ev.EventName ?? "";
-            bool isAlloc =
-                evName.EndsWith("GCAllocationTick",     StringComparison.OrdinalIgnoreCase) ||
-                evName.EndsWith("GC/AllocationTick",    StringComparison.OrdinalIgnoreCase) ||
-                evName.IndexOf("AllocationTick",        StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!EvKind.TryGetValue(evName, out bool isAlloc))
+                EvKind[evName] = isAlloc =
+                    evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
+                    evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isAlloc) return;
 
-            if (!isAlloc) continue;
-
-            totalTicks++;
+            TotalTicks++;
 
             string typeName = SafeStr(ev, "TypeName");
             if (typeName.Length == 0) typeName = SafeStr(ev, "AllocationTypeName");
@@ -65,29 +56,41 @@ public sealed class AllocTraceAnalyzer
 
             long allocBytes = SafeLong(ev, "AllocationAmount64");
             if (allocBytes <= 0) allocBytes = SafeLong(ev, "AllocationAmount");
-            if (allocBytes <= 0) allocBytes = TickSizeBytes;
+            if (allocBytes <= 0) allocBytes = GcAllocTickSizeBytes;
 
-            if (!byType.TryGetValue(typeName, out var tAcc))
-                byType[typeName] = tAcc = new TypeAcc();
+            if (!ByType.TryGetValue(typeName, out var tAcc))
+                ByType[typeName] = tAcc = new TypeAcc();
             tAcc.Ticks++;
             tAcc.Bytes += allocBytes;
 
             string frame = TopUserFrame(ev, typeName);
             string key   = $"{frame}|{typeName}";
-            if (!byCallSite.TryGetValue(key, out var csAcc))
-                byCallSite[key] = csAcc = new CallSiteAcc(frame, typeName);
+            if (!ByCallSite.TryGetValue(key, out var csAcc))
+                ByCallSite[key] = csAcc = new CallSiteAcc(frame, typeName);
             csAcc.Ticks++;
             csAcc.Bytes += allocBytes;
         }
 
-        if (totalTicks == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("GCAllocationTick", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) || eventName.IndexOf("AllocationTick", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public AllocTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                       string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.TotalTicks == 0)
             return new AllocTraceData(
                 $"{traceFileName}  |  0 allocation ticks — collect with --profile gc-verbose or --providers Microsoft-Windows-DotNETRuntime:0x1:5",
                 processFilter, 0, 0, [], []);
 
-        long estimatedTotal = byType.Values.Sum(a => a.Bytes);
+        long estimatedTotal = c.ByType.Values.Sum(a => a.Bytes);
 
-        var topTypes = byType
+        var topTypes = c.ByType
             .OrderByDescending(kv => kv.Value.Bytes)
             .Take(top)
             .Select(kv => new AllocTypeSummary(
@@ -95,7 +98,7 @@ public sealed class AllocTraceAnalyzer
                 estimatedTotal > 0 ? kv.Value.Bytes * 100.0 / estimatedTotal : 0))
             .ToList();
 
-        var topCallSites = byCallSite
+        var topCallSites = c.ByCallSite
             .OrderByDescending(kv => kv.Value.Bytes)
             .Take(top)
             .Select(kv => new AllocCallSiteSummary(kv.Value.Frame, kv.Value.TypeName,
@@ -104,20 +107,27 @@ public sealed class AllocTraceAnalyzer
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {totalTicks:N0} alloc ticks  •  ~{FormatBytes(estimatedTotal)} estimated";
+                      $"  |  {c.TotalTicks:N0} alloc ticks  •  ~{FormatBytes(estimatedTotal)} estimated";
 
-        return new AllocTraceData(info, processFilter, totalTicks, estimatedTotal, topTypes, topCallSites);
+        return new AllocTraceData(info, processFilter, c.TotalTicks, estimatedTotal, topTypes, topCallSites);
     }
 
-    private static string SafeStr(TraceEvent ev, string field)
+    public AllocTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                   string? processFilter = null, Action<string>? progress = null)
     {
-        try { return ev.PayloadByName(field)?.ToString() ?? ""; } catch { return ""; }
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new AllocTraceData($"Failed: {ex.Message}", processFilter, 0, 0, [], []);
+        }
     }
 
-    private static long SafeLong(TraceEvent ev, string field)
-    {
-        try { return (long)Convert.ChangeType(ev.PayloadByName(field), typeof(long)); } catch { return 0; }
-    }
 
     private static string TopUserFrame(TraceEvent ev, string typeName)
     {
@@ -145,14 +155,6 @@ public sealed class AllocTraceAnalyzer
         }
         return "(no stack)";
     }
-
-    private static string FormatBytes(long bytes) => bytes switch
-    {
-        >= 1L << 30 => $"{bytes / (double)(1L << 30):F1} GB",
-        >= 1L << 20 => $"{bytes / (double)(1L << 20):F1} MB",
-        >= 1L << 10 => $"{bytes / (double)(1L << 10):F1} KB",
-        _           => $"{bytes} B"
-    };
 
     private sealed class TypeAcc    { public int Ticks; public long Bytes; }
     private sealed class CallSiteAcc(string frame, string typeName)
