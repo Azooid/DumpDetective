@@ -469,7 +469,7 @@ Cli ─────────────────────────�
 | `weak-refs` | — | Yes |
 | `thread-analysis` | — | Yes |
 | `thread-pool` | — | Yes |
-| `thread-pool-starvation` | — | Yes |
+| `threadpool-starvation` | — | Yes |
 | `deadlock-detection` | — | Yes |
 | `async-stacks` | — | Yes |
 | `exception-analysis` | — | Yes |

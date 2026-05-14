@@ -1,8 +1,10 @@
-using DumpDetective.Core.Utilities;
+﻿using DumpDetective.Core.Utilities;
+
+using Microsoft.Diagnostics.Tracing.Etlx;
 
 namespace DumpDetective.Commands.Trace;
 
-public sealed class ThreadPoolStarvationCommand : ICommand
+public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly ThreadPoolStarvationAnalyzer _analyzer;
     private readonly ThreadPoolStarvationReport   _report;
@@ -18,6 +20,38 @@ public sealed class ThreadPoolStarvationCommand : ICommand
     public string Name               => "threadpool-starvation";
     public string Description        => "Detect thread-pool starvation by parsing a .nettrace or .etl trace file.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Category             => "Threads & Concurrency";
+    public CommandKind Kind               => CommandKind.Trace;
+    public string Key                  => Name;
+    public string SectionTitle         => "Thread Pool Starvation";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, progress);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
+
+    public bool SupportsConsumer => true;
+
+    public ITraceEventConsumer? CreateConsumer(TraceRunParams p, string traceFileName)
+        => _analyzer.CreateConsumer();
+
+    public string? CompleteFromConsumer(ITraceEventConsumer consumer, string traceFileName,
+        TraceRunParams p, Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var d = _analyzer.BuildResult(consumer, traceFileName, p.Top);
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective threadpool-starvation <trace-file> [options]
@@ -66,19 +100,38 @@ public sealed class ThreadPoolStarvationCommand : ICommand
             return 1;
         }
 
-        using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
+        // Resolve companion ETL → base so TraceLog.OpenOrConvert auto-merges all companions.
+        string resolved = EtlPathHelper.ResolveToBase(tracePath);
+        if (!string.Equals(resolved, tracePath, StringComparison.OrdinalIgnoreCase))
+        {
+            AnsiConsole.MarkupLine($"[dim]↪ Companion ETL detected. Using base file: {Markup.Escape(Path.GetFileName(resolved))}[/]");
+            tracePath = resolved;
+        }
+        var companions = EtlPathHelper.FindCompanionNames(tracePath!);
+        if (companions.Count > 0)
+            AnsiConsole.MarkupLine($"[dim]  + {companions.Count} companion file(s) will be auto-merged: {Markup.Escape(string.Join(", ", companions))}[/]");
+
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         try
         {
             if (!CommandBase.SuppressVerbose)
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath))}");
 
-            var data = _analyzer.Analyze(tracePath, top);
-            _report.Render(data, sink, top);
+            TraceLog? trace = null;
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
 
-            foreach (var p in a.EffectiveOutputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            ThreadPoolStarvationData? data = null;
+            CommandBase.RunStatus(Name, update =>
+                data = _analyzer.Analyze(trace!, Path.GetFileName(tracePath!), top, s => update($"{Name}  {s}")));
+
+            _report.Render(data!, sink, top);
+
+            foreach (var p in outputPaths)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
-            if (a.EffectiveOutputPaths.Count == 0 && sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
             return 0;
         }
         catch (Exception ex)

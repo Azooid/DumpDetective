@@ -1,4 +1,5 @@
-using DumpDetective.Analysis.Memory;
+﻿using DumpDetective.Analysis.Memory;
+using DumpDetective.Commands.Trace;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using Spectre.Console;
@@ -14,18 +15,20 @@ public sealed class CloseCommand : ICommand
     public string Name               => "close";
     public string Description        => "Delete all analysis cache files for a dump file.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Cache Lifecycle";
 
     private const string Help = """
         Usage: DumpDetective close <dump-file-or-directory> [options]
 
         Deletes all analysis cache files created by 'load' or 'analyze --full'.
-        When a directory is given, caches for every .dmp and .mdmp file in it are removed.
+        When a directory is given, caches for every .dmp, .mdmp, and .etl file in it are removed.
 
 
           .ddcache\<dump-name>\     — entire cache directory (stringGroups.bin,
                                       fragmentation.bin, gc-roots.bin,
                                       static-roots.bin, hot-addr-types.bin,
                                       <name>.bfs.idx, <name>.parent.map)
+          .ddcache\<etl-name>\      — ETL trace cache (<name>.etlx)
 
         Options:
           --dry-run   Show what would be deleted without deleting
@@ -52,29 +55,36 @@ public sealed class CloseCommand : ICommand
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (dumps.Count == 0)
+            // Exclude companion ETL files — they share the base ETL's cache dir.
+            var etls = Directory.EnumerateFiles(target, "*.etl", SearchOption.TopDirectoryOnly)
+                .Where(f => EtlPathHelper.ResolveToBase(f) == f)
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (dumps.Count == 0 && etls.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[yellow]⚠[/] No .dmp or .mdmp files found in: {Markup.Escape(target)}");
+                AnsiConsole.MarkupLine($"[yellow]⚠[/] No .dmp, .mdmp, or .etl files found in: {Markup.Escape(target)}");
                 return 0;
             }
 
-            AnsiConsole.MarkupLine($"[bold]Found {dumps.Count} dump file(s) in[/] {Markup.Escape(target)}");
+            var all = dumps.Concat(etls).ToList();
+            AnsiConsole.MarkupLine($"[bold]Found {dumps.Count} dump(s) + {etls.Count} ETL(s) in[/] {Markup.Escape(target)}");
             AnsiConsole.WriteLine();
 
             long totalBytes = 0;
             int  exitCode   = 0;
-            for (int i = 0; i < dumps.Count; i++)
+            for (int i = 0; i < all.Count; i++)
             {
-                AnsiConsole.MarkupLine($"[bold dim]── [[{i + 1}/{dumps.Count}]] {Markup.Escape(Path.GetFileName(dumps[i]))} ──[/]");
-                int result = RunSingle(dumps[i], dryRun, out long freed);
+                AnsiConsole.MarkupLine($"[bold dim]── [[{i + 1}/{all.Count}]] {Markup.Escape(Path.GetFileName(all[i]))} ──[/]");
+                int result = RunSingle(all[i], dryRun, out long freed);
                 totalBytes += freed;
                 if (result != 0) exitCode = result;
                 AnsiConsole.WriteLine();
             }
 
             AnsiConsole.MarkupLine(exitCode == 0
-                ? $"[green]✓[/] Done. Freed {FormatBytes(totalBytes)} across {dumps.Count} dump(s)."
-                : $"[yellow]⚠[/] Completed with errors ({dumps.Count} dump(s) processed).");
+                ? $"[green]✓[/] Done. Freed {FormatBytes(totalBytes)} across {all.Count} file(s)."
+                : $"[yellow]⚠[/] Completed with errors ({all.Count} file(s) processed).");
             return exitCode;
         }
 
@@ -87,11 +97,15 @@ public sealed class CloseCommand : ICommand
         return RunSingle(target, dryRun, out _);
     }
 
-    private static int RunSingle(string dumpPath, bool dryRun, out long freedBytes)
+    private static int RunSingle(string filePath, bool dryRun, out long freedBytes)
     {
-        string dumpDir  = Path.GetDirectoryName(dumpPath)!;
-        string dumpName = Path.GetFileNameWithoutExtension(dumpPath);
-        string cacheDir = Path.Combine(dumpDir, ".ddcache", dumpName);
+        // For ETL companion files, resolve to base so we delete the right cache dir.
+        if (filePath.EndsWith(".etl", StringComparison.OrdinalIgnoreCase))
+            filePath = EtlPathHelper.ResolveToBase(filePath);
+
+        string fileDir  = Path.GetDirectoryName(filePath)!;
+        string fileName = Path.GetFileNameWithoutExtension(filePath);
+        string cacheDir = Path.Combine(fileDir, ".ddcache", fileName);
 
         if (dryRun)
             AnsiConsole.MarkupLine("[dim]-- dry run: nothing will be deleted --[/]");

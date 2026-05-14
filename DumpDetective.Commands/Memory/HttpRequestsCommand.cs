@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class HttpRequestsCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class HttpRequestsCommand : ICommand
     public string Name               => "http-requests";
     public string Description        => "Detect HttpClient leaks and in-flight HTTP request objects.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Infrastructure / Network";
 
     private const string Help = """
         Usage: DumpDetective http-requests <dump-file> [options]
@@ -41,7 +42,7 @@ public sealed class HttpRequestsCommand : ICommand
     {
         CommandBase.RenderHeader("HTTP Objects", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink, showAddr);

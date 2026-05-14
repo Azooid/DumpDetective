@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -25,7 +25,6 @@ public sealed class ThreadPoolStarvationAnalyzer
 
     public ThreadPoolStarvationData Analyze(string tracePath, int top = 10)
     {
-        CommandBase.RunStatus($"Parsing trace: {Path.GetFileName(tracePath)}...", () => { });
         try
         {
             using var trace = TraceLog.OpenOrConvert(tracePath, new TraceLogOptions { ConversionLog = TextWriter.Null });
@@ -38,27 +37,24 @@ public sealed class ThreadPoolStarvationAnalyzer
         }
     }
 
-    public ThreadPoolStarvationData Analyze(TraceLog trace, string traceFileName, int top = 10)
+    private sealed class Consumer() : ITraceEventConsumer
     {
-        var events      = new List<WaitEventSummary>();
-        var adjustments = new List<TpAdjustmentRecord>();
-        var eventCounts = new Dictionary<string, int>(StringComparer.Ordinal);
-        int starvCount  = 0;
-        uint tpMax = 0, tpFinal = 0;
-        int totalEvents = 0;
+        internal readonly List<WaitEventSummary> Events = new();
+        internal readonly List<TpAdjustmentRecord> Adjustments = new();
+        internal readonly Dictionary<string, int> EventCounts = new(StringComparer.Ordinal);
+        internal int StarvCount;
+        internal uint TpMax, TpFinal;
 
-        foreach (var ev in trace.Events)
+        public void Consume(Microsoft.Diagnostics.Tracing.TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            totalEvents++;
-            string evName = ev.EventName ?? "?";
-            if (!eventCounts.TryGetValue(evName, out int cnt)) cnt = 0;
-            eventCounts[evName] = cnt + 1;
+            if (!EventCounts.TryGetValue(evName, out int cnt)) cnt = 0;
+            EventCounts[evName] = cnt + 1;
 
             if (evName.Contains("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase))
             {
                 int src = TryGetInt(ev, "WaitSource");
-                events.Add(new WaitEventSummary(
-                    ThreadId:       ev.ThreadID,
+                Events.Add(new WaitEventSummary(
+                    ThreadId:       threadId,
                     WaitSourceName: WaitSourceNames.GetValueOrDefault(src, $"Unknown({src})"),
                     TopFrames:      []));
             }
@@ -68,16 +64,25 @@ public sealed class ThreadPoolStarvationAnalyzer
                 uint   newCount   = (uint)TryGetInt(ev, "NewWorkerThreadCount");
                 double avgThrough = TryGetDouble(ev, "AverageThroughput");
                 string rName      = AdjustmentReasonNames.GetValueOrDefault(reason, $"#{reason}");
-                if (rName == "Starvation") starvCount++;
-                if (newCount > tpMax) tpMax = newCount;
-                tpFinal = newCount;
-                adjustments.Add(new TpAdjustmentRecord(ev.TimeStamp.ToString("HH:mm:ss.fff"),
+                if (rName == "Starvation") StarvCount++;
+                if (newCount > TpMax) TpMax = newCount;
+                TpFinal = newCount;
+                Adjustments.Add(new TpAdjustmentRecord(ev.TimeStamp.ToString("HH:mm:ss.fff"),
                     newCount, rName, avgThrough));
             }
         }
 
-        // Group WaitHandle events by thread/source, top N
-        var groupedEvents = events
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer() => new Consumer();
+
+    public ThreadPoolStarvationData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 10)
+    {
+        var c = (Consumer)consumer;
+        int totalEvents = c.EventCounts.Values.Sum();
+
+        var groupedEvents = c.Events
             .GroupBy(e => (e.ThreadId, e.WaitSourceName))
             .OrderByDescending(g => g.Count())
             .Take(top)
@@ -86,7 +91,24 @@ public sealed class ThreadPoolStarvationAnalyzer
 
         string info = $"{traceFileName}  |  events: {totalEvents:N0}";
         return new ThreadPoolStarvationData(info, totalEvents, groupedEvents,
-            adjustments.TakeLast(50).ToList(), starvCount, tpMax, tpFinal, eventCounts);
+            c.Adjustments.TakeLast(50).ToList(), c.StarvCount, c.TpMax, c.TpFinal, c.EventCounts);
+    }
+
+    public ThreadPoolStarvationData Analyze(TraceLog trace, string traceFileName, int top = 10,
+                                             Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer();
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top);
+        }
+        catch (Exception ex)
+        {
+            return new ThreadPoolStarvationData($"Failed: {ex.Message}", 0, [], [], 0, 0, 0,
+                new Dictionary<string, int>());
+        }
     }
 
     private static int TryGetInt(Microsoft.Diagnostics.Tracing.TraceEvent ev, string field)

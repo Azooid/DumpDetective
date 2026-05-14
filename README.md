@@ -15,7 +15,8 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 
 - One-command health report (`analyze`) with a score and prioritized findings.
 - Deep memory diagnostics (`memory-leak`, `high-refs`, `gc-roots`, `object-inspect`).
-- Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`).
+- Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`, `async-trace`, `jit-trace`, `http-trace`, `sql-trace`). Recent versions cache repeated trace event-name classification inside the slowest analyzers so long traces spend less time on string matching.
+- Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 correlation rules that require both files to confirm root causes.
 - Multi-dump trend analysis for comparing behavior over time.
 - Interactive HTML reports with grouped navigation, charts, dark mode, and paged tables.
 - Export and replay support across HTML, Markdown, text, JSON, and compressed binary.
@@ -25,9 +26,13 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 
 If you are new, use this path:
 
-1. Run one full report on your dump: `DumpDetective analyze app.dmp --full`.
-2. Open the generated HTML and check top findings, memory-leak, and high-refs sections first.
-3. If needed, zoom in with targeted commands like `object-inspect`, `gc-roots`, or trace commands on `.nettrace` / `.etl` files.
+1. Load a dump or dump folder to build the local caches: `DumpDetective load path\to\folder-or-file`.
+2. Run the command you need against the dump path: `DumpDetective <command> <path>`.
+3. If you're working with a trace, run the combined analyzer first: `DumpDetective trace-analyze path\to\trace.nettrace`.
+4. If you want the quickest first pass on a dump, run one full report: `DumpDetective analyze app.dmp --full`.
+5. Open the generated HTML and check top findings, memory-leak, and high-refs sections first.
+6. If needed, zoom in with targeted commands like `object-inspect`, `gc-roots`, or other trace commands on `.nettrace` / `.etl` files.
+7. When you're done, clean up cache files you no longer need with `DumpDetective close <dump-or-folder>` to free storage.
 
 ## Contents
 
@@ -185,12 +190,16 @@ DumpDetective diff week1.bin week2.bin -o delta.html
 3. Run a single trace command for deeper drill-down.
 
 ```bash
-# Combined trace analysis (CPU + alloc + GC + exceptions + contention + starvation)
+# Combined trace analysis (all 10 analyzers)
 DumpDetective trace-analyze app.nettrace
+
+# Cross-source analysis using both trace and dump
+DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
 
 # Focused trace commands
 DumpDetective cpu-trace app.nettrace --output cpu-report.html
 DumpDetective gc-trace perf.etl --process w3wp --top 50 --output gc-report.html
+DumpDetective sql-trace perf.etl --process w3wp --slow-ms 500 --output sql-report.html
 DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
 ```
 
@@ -219,7 +228,7 @@ Detailed command references:
 | Health / orchestration | `analyze`, `trend-analysis` | dump files |
 | Report replay / comparison | `render`, `diff` | saved `.json` / `.bin` |
 | Memory dump analysis | `heap-stats`, `gen-summary`, `memory-leak`, `gc-roots`, `object-inspect`, `load`, `close`, and related dump commands | `.dmp`, `.mdmp` |
-| Trace analysis | `trace-analyze`, `cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation` | `.nettrace`, `.etl` |
+| Trace analysis | `trace-analyze`, `trace-dump-analyze`, `cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`, `async-trace`, `jit-trace`, `http-trace`, `sql-trace` | `.nettrace`, `.etl` (+ `.dmp` for `trace-dump-analyze`) |
 
 The sections below follow that same split: high-level workflows first, then dump-only commands, then trace-only commands.
 
@@ -553,7 +562,7 @@ The BFS index is built in 3 passes with 8 parallel workers. Pass 1 enumerates al
 | **Total build** | **211.9 s** | **217.1 s** | **237.2 s** |
 | Load (subsequent runs) | 9.8 s | 10.2 s | 11.5 s |
 
-With caches loaded, all 23 sub-reports in `analyze --full` complete in **6–7 s per dump** — versus 230–300 s without caches for the five BFS-heavy sub-reports. See [Performance & Resource Expectations](#performance--resource-expectations) for a full before/after benchmark.
+With caches loaded, all 23 sub-reports in `analyze --full` complete in **6–7 s per dump** — versus 230–300 s without caches for the five BFS-heavy sub-reports. Trace analyzers also cache repeated event-name classification so large `.nettrace` / `.etl` files avoid re-evaluating the same provider/event strings on every event. See [Performance & Resource Expectations](#performance--resource-expectations) for a full before/after benchmark.
 
 **Cache tradeoff (~100 M object heap):**
 
@@ -610,17 +619,22 @@ DumpDetective close D:\dumps
 
 ### Trace Commands
 
-These commands accept a trace file, not a memory dump. Supported trace inputs are `.nettrace` and `.etl`.
+These commands accept a trace file, not a memory dump. Supported trace inputs are `.nettrace` and `.etl`. `trace-dump-analyze` additionally requires a `.dmp` file.
 
 | Command | Description |
 |---|---|
-| `trace-analyze` | Combined trace report that opens the trace once and runs the supported trace analyzers in sequence |
+| `trace-analyze` | Combined trace report that opens the trace once and runs all ten trace analyzers in sequence |
+| `trace-dump-analyze` | Cross-source analysis: trace + dump together with 10 correlation rules |
 | `cpu-trace` | CPU hot path, top methods, and call tree analysis |
 | `alloc-trace` | Allocation hotspot analysis based on `GCAllocationTick` events |
 | `gc-trace` | GC pause analysis, trigger reasons, and per-collection heap metrics |
 | `exceptions-trace` | First-chance exception volume, type breakdown, and flood detection |
 | `contention-trace` | Lock contention hotspot and wait-time analysis |
 | `threadpool-starvation` | ThreadPool starvation detection from wait and adjustment events |
+| `async-trace` | Async Task scheduling, sync-over-async hotspots, continuation call sites |
+| `jit-trace` | JIT compilation time, slowest methods, top modules by compilation load |
+| `http-trace` | HTTP request latency, top endpoints, error rates |
+| `sql-trace` | SQL/EF query latency, slow query list, per-database summary |
 
 ### `trace-analyze`
 
@@ -650,6 +664,10 @@ Options:
 - `exceptions-trace` for exception flood detection.
 - `contention-trace` for lock hotspots and wait times.
 - `threadpool-starvation` for ThreadPool starvation signals.
+- `async-trace` for async Task scheduling and sync-over-async blocking.
+- `jit-trace` for JIT compilation cost and warm-up overhead.
+- `http-trace` for HTTP request latency and error rates.
+- `sql-trace` for SQL/EF query latency and slow queries.
 
 **Examples:**
 ```bash
@@ -669,6 +687,10 @@ DumpDetective gc-trace perf.etl --process w3wp --top 50 --output gc.html
 DumpDetective exceptions-trace app.nettrace --output exceptions.html
 DumpDetective contention-trace perf.etl --process w3wp --output contention.html
 DumpDetective threadpool-starvation perf.nettrace --top 50 --output starvation.html
+DumpDetective async-trace app.nettrace --output async.html
+DumpDetective jit-trace app.nettrace --output jit.html
+DumpDetective http-trace perf.etl --process w3wp --slow-ms 500 --output http.html
+DumpDetective sql-trace perf.etl --process w3wp --slow-ms 500 --output sql.html
 ```
 
 Common trace use cases:
@@ -679,6 +701,11 @@ Common trace use cases:
 - Use `exceptions-trace` when a service is throwing at high volume or hiding error floods.
 - Use `contention-trace` when threads are blocked on locks and you need hotspot call sites.
 - Use `threadpool-starvation` when the runtime is under worker-thread pressure or sync-over-async blocking is suspected.
+- Use `async-trace` when you need to detect `.Wait()` / `.Result` call sites and async scheduling delays.
+- Use `jit-trace` when cold-start or warm-up is taking too long.
+- Use `http-trace` when HTTP endpoint latency or error rates are elevated.
+- Use `sql-trace` when SQL query performance or connection pool pressure is suspected.
+- Use `trace-dump-analyze` when you have both a trace and a dump from the same incident — it surfaces the highest-confidence root causes by cross-correlating both sources.
 
 ---
 
@@ -686,7 +713,7 @@ Common trace use cases:
 
 Specify an output file with `-o` / `--output`, or use `--format` without a filename:
 
-| Extension / keyword | `--format` value | Format |
+| Extension | `--format` value | Format |
 |---|---|---|
 | `.html` | `html` | Interactive HTML — sticky sidebar nav, grouped/collapsible sub-report navigation, built-in charts, sortable/filterable paged tables, **dark mode toggle**, styled alert cards |
 | `.md` | `md` | Markdown — suitable for wiki pages or GitHub |
@@ -774,7 +801,7 @@ DumpDetective.slnx
 
 DumpDetective.Core/               Models, interfaces, shared utilities
   Interfaces/
-    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Run, BuildReport
+    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Category, Kind, Run, BuildReport
     IRenderSink.cs                Format-agnostic output interface
     IHeapObjectConsumer.cs        Heap-walk consumer interface
   Models/
@@ -833,7 +860,6 @@ DumpDetective.Reporting/          Output format implementations
     HtmlSink.cs                   Self-contained HTML; inline CSS/JS; sticky nav; virtual scroll
     MarkdownSink.cs
     TextSink.cs
-    ConsoleSink.cs
     JsonSink.cs
     BinSink.cs                    Brotli-compressed JSON
     CaptureSink.cs
@@ -863,8 +889,9 @@ DumpDetective.Commands/           ICommand implementations
 
 DumpDetective.Cli/                Entry point -- the AOT executable
   Program.cs                      Top-level statements; --debug flag; default HTML output injection
-  CommandRegistry.cs              Single source of truth for all ICommand instances
-  HelpPrinter.cs                  Formats --help output
+  CommandRegistry.cs              Single source of truth for all ICommand instances; LPT-ordered for parallel analyze --full
+  TraceCommandRegistry.cs         Single source of truth for all trace ICommand instances
+  HelpPrinter.cs                  Dynamic --help output grouped by ICommand.Category, sectioned by ICommand.Kind
 
 DumpDetective.DiagnosticScenarios/  Standalone console app — per-scenario dump generation for tests
   Program.cs                      Entry point: runs a named scenario, captures a heap dump, exits

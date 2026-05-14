@@ -43,7 +43,7 @@ public sealed class FinalizerQueueCommand : ICommand
     {
         CommandBase.RenderHeader("Finalizer Queue", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx, collectAddresses: showAddr);
         _report.Render(data, sink, top, showAddr);

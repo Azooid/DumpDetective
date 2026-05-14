@@ -24,7 +24,7 @@ Each result row shows the object's address, type, own size, retained size, domin
 
 **Source-type breakdown** uses the `SharedReferrerCache` — a child→parent map shared between `HighRefsAnalyzer` and `MemoryLeakAnalyzer`. Whichever analyzer runs first in a session builds it via a dedicated secondary heap walk; the other gets it instantly from the session cache. For each hot address, the analyzer looks up all parent addresses in the map and counts them by type name to produce `TopSources` and `DistinctSourceTypes`.
 
-**Retained sizes** are exact when a `BfsIndexCache` is available (built by `build-bfs` or `load`). Each candidate's address is looked up in the pre-computed BFS index for its exclusive retained byte count. Without the cache, the analyzer approximates retained size by summing the direct children's sizes, capped at 2,000 children to avoid runaway on huge arrays.
+**Retained sizes** are exact when a `BfsIndexCache` is available (built by `load`). Each candidate's address is looked up in the pre-computed BFS index for its exclusive retained byte count. Without the cache, the analyzer approximates retained size by summing the direct children's sizes, capped at 2,000 children to avoid runaway on huge arrays.
 
 **Reference histogram** is built from the full `InboundCounts` dictionary in a single pass, bucketing all objects into ranges: 1–10, 11–100, 101–1K, 1K–10K, 10K+.
 

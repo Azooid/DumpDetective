@@ -11,6 +11,10 @@
     "Load": {
       "commandName": "Project",
       "commandLineArgs": "load \"D:\\Dump\\prod\\w3wp.exe_260421_175618.dmp\" --full --debug --force"
+    },
+    "CPU": {
+      "commandName": "Project",
+      "commandLineArgs": "trace-analyze \"D:\\Dump\\API\\29_04_2026\\HighCPU_05.etl\" --debug"
     }
   }
 }

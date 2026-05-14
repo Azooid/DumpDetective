@@ -28,7 +28,7 @@ For array fields, the element type and length are read, and up to `--max-array` 
 
 ## Disk cache
 
-Uses `BfsIndexCache` (`.ddcache/<dumpName>/<dumpName>.bfs.idx`) for retained-size computation if present. Run `build-bfs` before heavy use of `--retained` to avoid per-field BFS from scratch.
+Uses `BfsIndexCache` (`.ddcache/<dumpName>/<dumpName>.bfs.idx`) for retained-size computation if present. Run `load` before heavy use of `--retained` to avoid per-field BFS from scratch.
 
 ---
 

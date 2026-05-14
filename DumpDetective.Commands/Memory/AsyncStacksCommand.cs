@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class AsyncStacksCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class AsyncStacksCommand : ICommand
     public string Name               => "async-stacks";
     public string Description        => "Enumerate async state machines and detect suspended task backlog.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Threads / Concurrency";
 
     private const string Help = """
         Usage: DumpDetective async-stacks <dump-file> [options]
@@ -45,7 +46,7 @@ public sealed class AsyncStacksCommand : ICommand
     {
         CommandBase.RenderHeader("Async State Machines", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink, top, showAddr);

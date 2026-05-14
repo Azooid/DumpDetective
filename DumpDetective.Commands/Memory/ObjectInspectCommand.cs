@@ -1,10 +1,11 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ObjectInspectCommand : ICommand
 {
     public string Name               => "object-inspect";
     public string Description        => "Deep-inspect a managed object by address: type, fields, gen, finalizer status.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Targeted / Interactive";
 
     private const string Help = """
         Usage: DumpDetective object-inspect <dump-file> --address <hex> [options]
@@ -31,7 +32,7 @@ public sealed class ObjectInspectCommand : ICommand
         int   maxArr  = a.GetInt("max-array", 10);
 
         var addrStr = a.GetOption("address") ?? a.GetOption("x");
-        if (addrStr is null || !TryParseHex(addrStr, out address))
+        if (addrStr is null || !DumpHelpers.TryParseHex(addrStr, out address))
         {
             AnsiConsole.MarkupLine("[bold red]✗[/] --address is required.");
             return 1;
@@ -142,11 +143,5 @@ public sealed class ObjectInspectCommand : ICommand
             ObjectInspectRenderer.Render(ctx, obj, sink, depth, 0, maxArray, finQueue, pinnedAddrs, visited,
                                          retained, retainedCap);
         }
-    }
-
-    private static bool TryParseHex(string s, out ulong value)
-    {
-        s = s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s[2..] : s;
-        return ulong.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out value);
     }
 }

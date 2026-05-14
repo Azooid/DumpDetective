@@ -1,5 +1,7 @@
 using DumpDetective.Core.Interfaces;
+using DumpDetective.Core.Models;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Tracing;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -55,17 +57,54 @@ public sealed class CpuTraceReport
                     "Sustained high CPU often indicates an algorithmic bottleneck rather than a single hot method.");
         }
 
+        // CPU utilisation over time — sparkline (one point per second, in CPU %)
+        if (data.SamplesTimeline is { Count: > 2 } timeline)
+            sink.Sparkline(timeline, "CPU utilisation over time (per-second)", "%");
+
         if (data.TotalSamples == 0)
         {
             sink.Alert(AlertLevel.Warning, "No CPU samples found in trace.",
-                "Ensure the trace was collected with CPU sampling enabled.",
-                "dotnet-trace: use --profile cpu-sampling\nPerfView: check 'Cpu Samples' in the collection dialog");
+                "To capture CPU samples, re-collect with one of the following:",
+                "dotnet-trace:\n" +
+                "  dotnet-trace collect --profile cpu-sampling\n\n" +
+                "PerfView:\n" +
+                "  PerfView.exe /ClrEvents:Stack,Default /NoGui collect");
             return;
+        }
+
+        // Warn when a large fraction of samples are unresolved.
+        // Case A — ManagedModule: CLR rundown events absent, managed methods unattributed.
+        // Case B — [unresolved]:  no module info at all (PerfView <<<?!?>>>); bulk of samples in
+        //          traces collected without proper ETW providers. This is the dominant case when
+        //          the call tree looks empty despite a high sample count.
+        if (data.UnresolvedSamples > 0 && data.TotalSamples > 0)
+        {
+            double unresolvedPct = data.UnresolvedSamples * 100.0 / data.TotalSamples;
+            if (unresolvedPct >= 5.0)
+            {
+                sink.Alert(AlertLevel.Warning,
+                    $"Symbol resolution incomplete: {unresolvedPct:F1}% of samples " +
+                    $"({data.UnresolvedSamples:N0} / {data.TotalSamples:N0}) could not be attributed " +
+                    "to a named method. These appear in the call tree as '\u003cunresolved\u003e' or " +
+                    "'\u003cmanaged, no symbols\u003e' and dominate the exclusive-CPU column.",
+                    "The trace is missing CLR rundown events and/or kernel symbol data. " +
+                    "Re-collect with one of the commands below to get full attribution:",
+                    "dotnet-trace (managed + rundown):\n" +
+                    "  dotnet-trace collect --profile cpu-sampling --clrevents default+rundown\n\n" +
+                    "PerfView (full symbol resolution):\n" +
+                    "  PerfView.exe /ClrEvents:Stack,Default,Rundown /NoGui collect\n\n" +
+                    "xperf / WPR:\n" +
+                    "  wpr -start CPU -start DotNet\n" +
+                    "  wpr -stop trace.etl");
+            }
         }
 
         RenderHotPath(sink, data);
         RenderTopMethods(sink, data, top);
         RenderCallTree(sink, data, top);
+        RenderSemanticFindings(sink, data);
+        RenderHotChains(sink, data);
+        RenderCategoryScores(sink, data);
     }
 
     // ── Hot Path ─────────────────────────────────────────────────────────────
@@ -138,10 +177,118 @@ public sealed class CpuTraceReport
             topN: top);
     }
 
+    // ── Semantic Findings ────────────────────────────────────────────────────
+
+    private static void RenderSemanticFindings(IRenderSink sink, CpuTraceData data)
+    {
+        if (data.SemanticFindings is not { Count: > 0 } findings) return;
+
+        sink.Section("Semantic Findings", "cpu-semantic-findings");
+        sink.Alert(AlertLevel.Info,
+            "Semantic findings identify architectural patterns and framework-specific bottlenecks — not just hot methods.",
+            detail: "Each finding names the pattern, explains the root cause, and provides actionable advice.");
+
+        var rows = new List<string[]>(findings.Count);
+        for (int i = 0; i < findings.Count; i++)
+        {
+            var f = findings[i];
+            string severity = f.Severity switch
+            {
+                Core.Models.FindingSeverity.Critical => "Critical",
+                Core.Models.FindingSeverity.Warning  => "Warning",
+                _                                    => "Info"
+            };
+            rows.Add([severity, f.Category, f.Headline, $"{f.Score}/100",
+                      f.Advice ?? ""]);
+        }
+
+        sink.Table(
+            ["Severity", "Category", "Finding", "Score", "Advice"],
+            rows,
+            $"{findings.Count} semantic pattern(s) detected");
+
+        // Emit an alert for any Critical/Warning findings
+        for (int i = 0; i < findings.Count; i++)
+        {
+            var f = findings[i];
+            if (f.Severity == Core.Models.FindingSeverity.Info) continue;
+
+            var level = f.Severity == Core.Models.FindingSeverity.Critical
+                ? AlertLevel.Critical
+                : AlertLevel.Warning;
+
+            sink.Alert(level, f.Headline, f.Detail, f.Advice);
+        }
+    }
+
+    // ── Hot Chains ────────────────────────────────────────────────────────────
+
+    private static void RenderHotChains(IRenderSink sink, CpuTraceData data)
+    {
+        if (data.HotChains is not { Count: > 0 } chains) return;
+
+        sink.Section("Hot Chains", "cpu-hot-chains");
+        sink.Alert(AlertLevel.Info,
+            "A hot chain traces from a significant entry-point (high inclusive%) down to the leaf burning the most exclusive CPU.",
+            detail: "This is your root-cause chain: the entry point that owns the work, and the method actually executing it.");
+
+        var rows = new List<string[]>(chains.Count);
+        for (int i = 0; i < chains.Count; i++)
+        {
+            var c = chains[i];
+            // Full chain — all frames, IL noise cleaned, no truncation
+            var parts = new string[c.Chain.Count];
+            for (int j = 0; j < c.Chain.Count; j++) parts[j] = CleanIlMethod(c.Chain[j]);
+            string chainStr = string.Join(" → ", parts);
+            rows.Add([
+                CleanIlMethod(c.RootMethod),
+                $"{c.OwnerPct:F1}%",
+                CleanIlMethod(c.ExclusiveHotMethod),
+                $"{c.HotPct:F1}%",
+                chainStr,
+            ]);
+        }
+
+        sink.Table(
+            ["Entry Point", "Owns (Incl%)", "Hot Leaf", "Hot Leaf (Excl%)", "Chain"],
+            rows,
+            $"{chains.Count} hot chain(s) — entry point → hot executing method");
+    }
+
+    // ── Category Scores ───────────────────────────────────────────────────────
+
+    private static void RenderCategoryScores(IRenderSink sink, CpuTraceData data)
+    {
+        if (data.CategoryScores is not { Count: > 0 } scores) return;
+
+        sink.Section("Diagnostic Category Scores", "cpu-category-scores");
+        sink.Alert(AlertLevel.Info,
+            "Category scores (0–100) summarise the severity of each detected pattern. Higher = more urgent.",
+            detail: "Scores are derived from inclusive CPU% combined with pattern confidence. Focus on categories scoring ≥ 75 first.");
+
+        var rows = new List<string[]>(scores.Count);
+        for (int i = 0; i < scores.Count; i++)
+        {
+            var s = scores[i];
+            string urgency = s.Score switch { >= 85 => "High", >= 65 => "Medium", _ => "Low" };
+            rows.Add([s.Category, $"{s.Score}/100", urgency,
+                      s.FindingCount.ToString(), TrimMethod(s.TopFinding.Headline, 80)]);
+        }
+
+        sink.Table(
+            ["Category", "Score", "Urgency", "Findings", "Top Finding"],
+            rows,
+            "Categories ranked by score");
+    }
+
     // ── Helpers ──────────────────────────────────────────────────────────────
+
+    private static string CleanIlMethod(string method) =>
+        TraceReportHelpers.CleanIlMethod(method);
 
     private static string TrimMethod(string method, int maxLen)
     {
+        method = CleanIlMethod(method);
         if (method.Length <= maxLen) return method;
 
         // Strategy: keep ClassName.MethodName(…) — drop namespace prefix and param details.

@@ -75,10 +75,17 @@
 
         a.addEventListener('click', function (e) {
           e.preventDefault();
-          const willOpen = !subWrap.classList.contains('open');
-          subWrap.classList.toggle('open');
-          subWrap.dataset.userOpen = willOpen ? '1' : '0';
-          if (!willOpen) subWrap.dataset.autoOpen = '0';
+          // Always navigate to the chapter anchor
+          const target = document.getElementById(id);
+          if (target) target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          // Only toggle open/close if sub-items are present (use local ref, not outer variable)
+          const localItems = subWrap.querySelector('.nav-sub-items');
+          if (localItems && localItems.children.length > 0) {
+            const willOpen = !subWrap.classList.contains('open');
+            subWrap.classList.toggle('open');
+            subWrap.dataset.userOpen = willOpen ? '1' : '0';
+            if (!willOpen) subWrap.dataset.autoOpen = '0';
+          }
         });
 
         subWrap.dataset.userOpen = '0';
@@ -105,6 +112,15 @@
       a.textContent = shortTitle(raw);
       a.title = raw;
       curL2Items.appendChild(a);
+    }
+  });
+
+  // Post-process: nav-sub-chapters with no sub-items have no expand arrow,
+  // so mark them so CSS can hide the toggle indicator.
+  nav.querySelectorAll('.nav-sub-chapters').forEach(function (sc) {
+    const items = sc.querySelector('.nav-sub-items');
+    if (!items || items.children.length === 0) {
+      sc.classList.add('nav-sub-empty');
     }
   });
 })();

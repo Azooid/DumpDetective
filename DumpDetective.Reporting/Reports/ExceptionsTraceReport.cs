@@ -30,10 +30,18 @@ public sealed class ExceptionsTraceReport
         if (data.TotalThrown == 0)
         {
             sink.Alert(AlertLevel.Warning, "No exception events found in trace.",
-                "Collect with exception events enabled.",
-                "dotnet-trace: use --profile exceptions\ndotnet-trace: add --providers 'Microsoft-Windows-DotNETRuntime:0x8014:5'");
+                "To capture exception events, re-collect with one of the following:",
+                "dotnet-trace:\n" +
+                "  dotnet-trace collect --profile exceptions\n" +
+                "  dotnet-trace collect --providers 'Microsoft-Windows-DotNETRuntime:0x8014:5'\n\n" +
+                "PerfView:\n" +
+                "  PerfView.exe /ClrEvents:Exception,Stack,Default /NoGui collect");
             return;
         }
+
+        // Exception rate over time — sparkline
+        if (data.RateTimeline is { Count: > 2 } rateTl)
+            sink.Sparkline(rateTl, "Exception rate over time (exceptions/second)", "/s");
 
         if (data.TotalThrown > 10_000)
             sink.Alert(AlertLevel.Critical,
@@ -72,6 +80,37 @@ public sealed class ExceptionsTraceReport
             typeRows,
             $"Top {typeRows.Count} exception types  |  {data.TotalThrown:N0} total across {data.UniqueTypes} unique types");
 
+        // Pattern-specific alerts
+        foreach (var t in data.TopTypes)
+        {
+            if (t.ExceptionType.EndsWith("IndexOutOfRangeException", StringComparison.Ordinal)
+                && t.TopFrame.Contains("FieldNameLookup", StringComparison.OrdinalIgnoreCase))
+            {
+                sink.Alert(AlertLevel.Warning,
+                    $"EF6 FieldNameLookup uses IndexOutOfRangeException for control flow ({t.Count:N0} occurrences).",
+                    detail: "This is normal EF6 behavior: it resolves column ordinals by throwing IndexOutOfRangeException and catching it on each row. " +
+                            "The exception itself is not a bug, but it adds measurable CPU overhead at scale. " +
+                            "Consider upgrading to EF Core, which uses a dictionary-based ordinal lookup with no exception overhead.");
+                break;
+            }
+        }
+
+        foreach (var t in data.TopTypes)
+        {
+            if (t.ExceptionType.EndsWith("FileNotFoundException", StringComparison.Ordinal)
+                && (t.TopFrame.Contains("SafeLoadReferencedAssembly", StringComparison.OrdinalIgnoreCase)
+                    || t.TopFrame.Contains("MetadataAssemblyHelper", StringComparison.OrdinalIgnoreCase)
+                    || t.TopFrame.Contains("ResolveAssembly", StringComparison.OrdinalIgnoreCase)))
+            {
+                sink.Alert(AlertLevel.Warning,
+                    $"FileNotFoundException flood from assembly probing ({t.Count:N0} occurrences).",
+                    detail: "The runtime is repeatedly failing to load optional or reflection-scanned assemblies (e.g. UnityEngine, Azure SDKs, plugin directories). " +
+                            "Each failed probe throws FileNotFoundException internally, adding exception overhead. " +
+                            "Review assembly binding redirects, add explicit <bindingRedirect> or <probing> exclusions, or suppress probing for known-missing assemblies via a custom AssemblyResolve handler.");
+                break;
+            }
+        }
+
         // Most recent events
         sink.Section("Recent Exceptions (most recent first)", "exceptions-events");
         var evRows = data.RecentEvents.Take(top).Select(e => new[]
@@ -92,5 +131,5 @@ public sealed class ExceptionsTraceReport
         s.Length <= max ? s : s[..max] + "…";
 
     private static string TrimFrame(string s, int max) =>
-        s.Length <= max ? s : "…" + s[^(max - 1)..];
+        TraceReportHelpers.TrimFrame(s, max);
 }

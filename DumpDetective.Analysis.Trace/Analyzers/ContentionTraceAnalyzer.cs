@@ -1,4 +1,4 @@
-﻿using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -24,83 +24,125 @@ public sealed class ContentionTraceAnalyzer
         }
     }
 
-    public ContentionTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                        string? processFilter = null)
+    private static readonly Dictionary<string, byte> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
-        var pending  = new Dictionary<int, double>();
-        var events   = new List<ContentionEvent>();
-        var hotspots = new Dictionary<string, HotspotAcc>(StringComparer.Ordinal);
+        private readonly string? _processFilter = processFilter;
+        internal readonly Dictionary<int, (double StartMs, string Frame)> Pending = new();
+        internal readonly List<ContentionEvent> Events = new();
+        internal readonly Dictionary<string, HotspotAcc> Hotspots = new(StringComparer.Ordinal);
 
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            if (!EvKind.TryGetValue(evName, out byte kind))
+                EvKind[evName] = kind =
+                    evName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("ContentionStart",  StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    evName.EndsWith("Contention/Stop",  StringComparison.OrdinalIgnoreCase) ||
+                    evName.EndsWith("ContentionStop",   StringComparison.OrdinalIgnoreCase) ? (byte)2 :
+                    (byte)0;
+            if (kind == 0) return;
+
+            if (kind == 1)
             {
-                if (processFilter is not null &&
-                    !ev.ProcessName.Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
+                // Capture the call stack NOW — it is on the Start event, not Stop.
+                Pending[threadId] = (timestampMs, TopFrame(ev));
+                return;
+            }
 
-                string evName = ev.EventName ?? "";
+            if (kind == 2)
+            {
+                if (!Pending.TryGetValue(threadId, out var entry)) return;
+                Pending.Remove(threadId);
 
-                if (evName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ContentionStart",  StringComparison.OrdinalIgnoreCase))
-                {
-                    pending[ev.ThreadID] = ev.TimeStampRelativeMSec;
-                    continue;
-                }
+                double waitMs = timestampMs - entry.StartMs;
+                string frame  = entry.Frame;
 
-                if (evName.EndsWith("Contention/Stop", StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ContentionStop",  StringComparison.OrdinalIgnoreCase))
-                {
-                    if (!pending.TryGetValue(ev.ThreadID, out double startMs)) continue;
-                    pending.Remove(ev.ThreadID);
+                Events.Add(new ContentionEvent(threadId, waitMs, entry.StartMs, frame));
 
-                    double waitMs  = ev.TimeStampRelativeMSec - startMs;
-                    string frame   = TopFrame(ev);
-
-                    events.Add(new ContentionEvent(ev.ThreadID, waitMs, startMs, frame));
-
-                    if (!hotspots.TryGetValue(frame, out var acc))
-                        hotspots[frame] = acc = new HotspotAcc();
-                    acc.Count++;
-                    acc.TotalMs += waitMs;
-                    if (waitMs > acc.MaxMs) acc.MaxMs = waitMs;
-                    continue;
-                }
+                if (!Hotspots.TryGetValue(frame, out var acc))
+                    Hotspots[frame] = acc = new HotspotAcc();
+                acc.Count++;
+                acc.TotalMs += waitMs;
+                if (waitMs > acc.MaxMs) acc.MaxMs = waitMs;
             }
         }
-        catch (Exception ex)
-        {
-            return new ContentionTraceData($"Failed: {ex.Message}", processFilter, 0, 0, 0, 0, 0, [], []);
-        }
 
-        if (events.Count == 0)
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ContentionStart", StringComparison.OrdinalIgnoreCase) ? (byte)1 : eventName.EndsWith("Contention/Stop", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ContentionStop", StringComparison.OrdinalIgnoreCase) ? (byte)2 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+
+        public void OnComplete() { }
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null)
+        => new Consumer(processFilter);
+
+    public ContentionTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                            string? processFilter = null)
+    {
+        var c = (Consumer)consumer;
+        if (c.Events.Count == 0)
             return new ContentionTraceData(
                 $"{traceFileName}  |  0 contention events — collect with --providers Microsoft-Windows-DotNETRuntime:0x4000:4",
                 processFilter, 0, 0, 0, 0, 0, [], []);
 
-        double totalWait    = events.Sum(e => e.WaitMs);
-        double maxWait      = events.Max(e => e.WaitMs);
-        double avgWait      = totalWait / events.Count;
-        int    threadsHit   = events.Select(e => e.ThreadId).Distinct().Count();
+        double totalWait    = c.Events.Sum(e => e.WaitMs);
+        double maxWait      = c.Events.Max(e => e.WaitMs);
+        double avgWait      = totalWait / c.Events.Count;
+        int    threadsHit   = c.Events.Select(e => e.ThreadId).Distinct().Count();
 
-        var topHotspots = hotspots
+        var topHotspots = c.Hotspots
             .OrderByDescending(kv => kv.Value.TotalMs)
             .Take(top)
             .Select(kv => new ContentionHotspot(kv.Key, kv.Value.Count, kv.Value.TotalMs, kv.Value.MaxMs))
             .ToList();
 
-        var recentEvents = events
+        var recentEvents = c.Events
             .OrderByDescending(e => e.WaitMs)
             .Take(top)
             .ToList();
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {events.Count:N0} contentions  •  {totalWait:F1} ms total wait";
+                      $"  |  {c.Events.Count:N0} contentions  •  {totalWait:F1} ms total wait";
+
+        // ── Contention wait-time timeline ──────────────────────────────────────
+        IReadOnlyList<double> waitTimeline = [];
+        if (c.Events.Count > 1)
+        {
+            var perSecond = new Dictionary<int, double>();
+            foreach (var ev in c.Events)
+            {
+                int bucket = (int)(ev.TimeMs / 1000.0);
+                perSecond.TryGetValue(bucket, out double prev);
+                perSecond[bucket] = prev + ev.WaitMs;
+            }
+            waitTimeline = BuildTimeline(perSecond) ?? [];
+        }
 
         return new ContentionTraceData(info, processFilter,
-            events.Count, totalWait, maxWait, avgWait, threadsHit,
-            topHotspots, recentEvents);
+            c.Events.Count, totalWait, maxWait, avgWait, threadsHit,
+            topHotspots, recentEvents, waitTimeline);
+    }
+
+    public ContentionTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                        string? processFilter = null, Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            return BuildResult(c, traceFileName, top, processFilter);
+        }
+        catch (Exception ex)
+        {
+            return new ContentionTraceData($"Failed: {ex.Message}", processFilter, 0, 0, 0, 0, 0, [], []);
+        }
     }
 
     private static string TopFrame(TraceEvent ev)

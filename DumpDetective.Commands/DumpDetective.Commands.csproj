@@ -22,6 +22,7 @@
     <Using Include="DumpDetective.Core.Utilities" />
     <Using Include="DumpDetective.Analysis.Memory" />
     <Using Include="DumpDetective.Analysis.Memory.Analyzers" />
+    <Using Include="DumpDetective.Analysis.Trace" />
     <Using Include="DumpDetective.Analysis.Trace.Analyzers" />
     <Using Include="DumpDetective.Core.Models.CommandData" />
     <Using Include="DumpDetective.Reporting" />

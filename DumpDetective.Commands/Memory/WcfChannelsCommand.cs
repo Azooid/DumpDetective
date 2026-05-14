@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class WcfChannelsCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class WcfChannelsCommand : ICommand
     public string Name               => "wcf-channels";
     public string Description        => "Enumerate WCF channel objects and alert on faulted channels.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Infrastructure / Network";
 
     private const string Help = """
         Usage: DumpDetective wcf-channels <dump-file> [options]
@@ -41,7 +42,7 @@ public sealed class WcfChannelsCommand : ICommand
     {
         CommandBase.RenderHeader("WCF Channels", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink, showAddr);

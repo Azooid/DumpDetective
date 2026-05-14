@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using DumpDetective.Analysis.Memory;
@@ -17,6 +17,7 @@ public sealed class RenderCommand : ICommand
     public string Name               => "render";
     public string Description        => "Convert a saved JSON/BIN report to any output format without re-analyzing.";
     public bool   IncludeInFullAnalyze => false; // replay only
+    public string Category             => "Replay / Comparison";
 
     private const string Help = """
         Usage: DumpDetective render <data.json|data.bin> [options]

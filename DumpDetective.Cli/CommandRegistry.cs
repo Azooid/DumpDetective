@@ -1,8 +1,6 @@
 using DumpDetective.Analysis.Memory.Analyzers;
-using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Commands;
 using DumpDetective.Commands.Memory;
-using DumpDetective.Commands.Trace;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Reporting.Reports;
 
@@ -142,37 +140,7 @@ public static class CommandRegistry
                 new GcRootsAnalyzer(),
                 new GcRootsReport()),
 
-            new ThreadPoolStarvationCommand(
-                new ThreadPoolStarvationAnalyzer(),
-                new ThreadPoolStarvationReport()),
-
-            new CpuTraceCommand(
-                new CpuTraceAnalyzer(),
-                new CpuTraceReport()),
-
-            new GcTraceCommand(
-                new GcTraceAnalyzer(),
-                new GcTraceReport()),
-
-            new ContentionTraceCommand(
-                new ContentionTraceAnalyzer(),
-                new ContentionTraceReport()),
-
-            new ExceptionsTraceCommand(
-                new ExceptionsTraceAnalyzer(),
-                new ExceptionsTraceReport()),
-
-            new AllocTraceCommand(
-                new AllocTraceAnalyzer(),
-                new AllocTraceReport()),
-
-            new TraceAnalyzeCommand(
-                new CpuTraceAnalyzer(),             new CpuTraceReport(),
-                new AllocTraceAnalyzer(),           new AllocTraceReport(),
-                new GcTraceAnalyzer(),              new GcTraceReport(),
-                new ContentionTraceAnalyzer(),      new ContentionTraceReport(),
-                new ExceptionsTraceAnalyzer(),      new ExceptionsTraceReport(),
-                new ThreadPoolStarvationAnalyzer(), new ThreadPoolStarvationReport()),
+            ..TraceCommandRegistry.All,
 
             // ── targeted / interactive ─────────────────────────────────────────
             new TypeInstancesCommand(

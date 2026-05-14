@@ -9,7 +9,7 @@ namespace DumpDetective.Core.Utilities;
 ///   - All non-flag positionals (in order) → <see cref="Positionals"/>.
 ///   - <c>--output</c> / <c>-o</c> → <see cref="OutputPath"/>.
 ///   - <c>--format</c> → <see cref="Format"/>. Selects output format without requiring a full filename.
-///     When <c>--output</c> is absent and <c>--format</c> is not <c>console</c>, synthesizes an output
+///     When <c>--output</c> is absent, synthesizes an output
 ///     path as <c>&lt;dump-basename&gt;.&lt;format&gt;</c>.
 ///   - <c>--help</c> / <c>-h</c> → <see cref="Help"/> = <see langword="true"/>.
 ///   - Repeatable options (e.g. <c>--ignore-event foo --ignore-event bar</c>) →
@@ -58,7 +58,6 @@ public sealed class CliArgs
 
                 foreach (var fmt in formats)
                 {
-                    if (fmt.Equals("console", StringComparison.OrdinalIgnoreCase)) continue;
                     if (!coveredExts.Add(fmt)) continue;
                     result.Add(Path.ChangeExtension(basePath, fmt));
                 }
@@ -71,7 +70,6 @@ public sealed class CliArgs
                 var dir   = Path.GetDirectoryName(DumpPath) ?? ".";
                 var fn    = Path.GetFileNameWithoutExtension(DumpPath).Replace(' ', '_');
                 var paths = formats
-                    .Where(f => !f.Equals("console", StringComparison.OrdinalIgnoreCase))
                     .Select(f => Path.Combine(dir, fn + "." + f))
                     .ToArray();
                 return paths;   // empty array when every format is "console"
@@ -85,7 +83,7 @@ public sealed class CliArgs
     public bool                  Help        { get; }
 
     /// <summary>
-    /// Output format requested via <c>--format</c> (e.g. <c>html</c>, <c>md</c>, <c>json</c>, <c>bin</c>, <c>console</c>).
+    /// Output format requested via <c>--format</c> (e.g. <c>html</c>, <c>md</c>, <c>json</c>, <c>bin</c>).
     /// <see langword="null"/> when not specified.
     /// </summary>
     public string?               Format      { get; }

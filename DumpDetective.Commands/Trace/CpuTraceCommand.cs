@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory.Analyzers;
+﻿using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -6,9 +6,11 @@ using DumpDetective.Reporting;
 using DumpDetective.Reporting.Reports;
 using Spectre.Console;
 
+using Microsoft.Diagnostics.Tracing.Etlx;
+
 namespace DumpDetective.Commands.Trace;
 
-public sealed class CpuTraceCommand : ICommand
+public sealed class CpuTraceCommand : ICommand, ITraceSubAnalyzer
 {
     private readonly CpuTraceAnalyzer _analyzer;
     private readonly CpuTraceReport   _report;
@@ -22,6 +24,38 @@ public sealed class CpuTraceCommand : ICommand
     public string Name               => "cpu-trace";
     public string Description        => "CPU hot-path analysis from a .nettrace or .etl trace file (call tree + hot path, VS-style).";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Category             => "CPU & Allocation";
+    public CommandKind Kind               => CommandKind.Trace;
+    public string Key                  => Name;
+    public string SectionTitle         => "CPU Trace";
+
+    public string? Run(TraceLog trace, string traceFileName, TraceRunParams p,
+                       Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results,
+                       Action<string>? progress = null)
+    {
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        var d = _analyzer.Analyze(trace, traceFileName, p.Top, p.ProcessFilter, p.FilterSystem, p.FilterUnresolved, progress);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
+
+    public bool SupportsConsumer => true;
+
+    public ITraceEventConsumer? CreateConsumer(TraceRunParams p, string traceFileName)
+        => _analyzer.CreateConsumer(p.ProcessFilter, p.FilterSystem, p.FilterUnresolved);
+
+    public string? CompleteFromConsumer(ITraceEventConsumer consumer, string traceFileName,
+        TraceRunParams p, Dictionary<string, ReportDoc> captured, Dictionary<string, object?> results)
+    {
+        var d = _analyzer.BuildResult(consumer, traceFileName, p.Top, p.ProcessFilter, p.FilterSystem, p.FilterUnresolved);
+        var sink = new CaptureSink();
+        sink.Header(SectionTitle, traceFileName, navLevel: 3, commandName: Name);
+        _report.Render(d, sink, p.Top);
+        captured[Name] = sink.GetDoc(); results[Name] = d;
+        return d.TraceInfo;
+    }
 
     private const string Help = """
         Usage: DumpDetective cpu-trace <trace-file> [options]
@@ -43,6 +77,7 @@ public sealed class CpuTraceCommand : ICommand
           -n, --top <N>            Top N methods / call roots to display (default: 20)
           --process <name|pid>     Filter to a specific process name or PID
           --show-system            Include system/kernel frames (ntoskrnl, webengine4, iiscore, etc.)
+          --show-unresolved        Include unresolved frames (<unresolved>, <managed, no symbols>)
                                    By default these frames are hidden.
           -o, --output <file>      Write report to file (.html / .md / .txt / .json)
           -h, --help               Show this help
@@ -62,6 +97,7 @@ public sealed class CpuTraceCommand : ICommand
         string? tracePath     = a.DumpPath ?? a.Positionals.FirstOrDefault();
         string? processFilter = a.GetOption("process");
         bool filterSystem     = !a.HasFlag("show-system");
+        bool filterUnresolved = !a.HasFlag("show-unresolved");
 
         if (tracePath is null)
         {
@@ -82,22 +118,34 @@ public sealed class CpuTraceCommand : ICommand
             return 1;
         }
 
-        using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
+        var outputPaths = a.EffectiveOutputPaths.Count > 0
+            ? a.EffectiveOutputPaths
+            : (IReadOnlyList<string>)[CommandBase.DefaultOutputPath(tracePath!, ".html")];
+        using var sink = SinkFactory.CreateMulti(outputPaths);
         try
         {
             if (!CommandBase.SuppressVerbose)
                 AnsiConsole.MarkupLine($"[bold]Analyzing:[/] {Markup.Escape(Path.GetFileName(tracePath))}");
 
             CpuTraceData? data = null;
-            CommandBase.RunStatus($"Parsing CPU samples...", update =>
-                data = _analyzer.Analyze(tracePath, top, processFilter, filterSystem));
+            TraceLog? trace = null;
+            CommandBase.RunStatus("Opening trace file...", update =>
+                trace = TraceOpener.Open(tracePath!, s => update($"{Name}  {s}")));
+
+            try
+            {
+                CommandBase.RunStatus(Name, update =>
+                    data = _analyzer.Analyze(trace!, Path.GetFileName(tracePath!), top, processFilter, filterSystem, filterUnresolved, s => update($"{Name}  {s}")));
+            }
+            finally
+            {
+                trace?.Dispose();
+            }
 
             _report.Render(data!, sink, top);
 
-            foreach (var p in a.EffectiveOutputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var p in outputPaths)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
-            if (a.EffectiveOutputPaths.Count == 0 && sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
             return 0;
         }
         catch (Exception ex)

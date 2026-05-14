@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ConnectionPoolCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class ConnectionPoolCommand : ICommand
     public string Name               => "connection-pool";
     public string Description        => "Analyze DB connection pool utilization and detect exhaustion.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Infrastructure / Network";
 
     private const string Help = """
         Usage: DumpDetective connection-pool <dump-file> [options]
@@ -41,7 +42,7 @@ public sealed class ConnectionPoolCommand : ICommand
     {
         CommandBase.RenderHeader("DB Connection Pool Analysis", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink, showAddr);

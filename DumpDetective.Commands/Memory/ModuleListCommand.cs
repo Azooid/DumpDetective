@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ModuleListCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class ModuleListCommand : ICommand
     public string Name               => "module-list";
     public string Description        => "Lists all loaded managed assemblies categorized as App/System/GAC.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Targeted / Interactive";
 
     private const string Help = """
         Usage: DumpDetective module-list <dump-file> [options]

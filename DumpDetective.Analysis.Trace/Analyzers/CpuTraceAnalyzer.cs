@@ -1,6 +1,8 @@
-﻿using DumpDetective.Core.Models;
+using DumpDetective.Core.Models;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Utilities;
+using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -14,111 +16,134 @@ namespace DumpDetective.Analysis.Trace.Analyzers;
 /// </summary>
 public sealed class CpuTraceAnalyzer
 {
-    public CpuTraceData Analyze(string tracePath, int top = 20, string? processFilter = null,
-                                  bool filterSystem = true)
+    // ── Shared event-kind cache — populated once, reused across all Consumer instances ──
+    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+
+    // ── Consumer — holds all per-event mutable state ─────────────────────────
+    private sealed class Consumer(string? processFilter, bool filterSystem = true,
+                                  bool filterUnresolved = true) : ITraceEventConsumer
     {
-        try
-        {
-            using var trace = TraceLog.OpenOrConvert(tracePath,
-                new TraceLogOptions { ConversionLog = TextWriter.Null });
-            return Analyze(trace, Path.GetFileName(tracePath), top, processFilter, filterSystem);
-        }
-        catch (Exception ex)
-        {
-            return new CpuTraceData(
-                $"Failed to parse trace: {ex.Message}", 0, 0, processFilter, [], [], []);
-        }
-    }
+        private readonly string? _processFilter   = processFilter;
+        private readonly bool    _filterSystem    = filterSystem;
+        private readonly bool    _filterUnresolved = filterUnresolved;
 
-    public CpuTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
-                                 string? processFilter = null, bool filterSystem = true)
-    {
-        // Mutable trie node used during collection
-        var root = new MutableNode("<root>", "");
-        int totalSamples = 0;
-        double intervalMs = 1.0; // default — overridden if we can read it from the trace
+        internal readonly MutableNode Root            = new("<root>", "");
+        internal int                  TotalSamples;
+        internal int                  UnresolvedSamples;
+        internal readonly double      IntervalMs       = 1.0;
+        internal readonly FrameInterner Interner       = new(initialCapacity: 1024);
+        internal readonly Dictionary<int, int>    SamplesPerSecond = new();
+        internal readonly HashSet<int>            ActiveThreadIds  = new();
+        internal string                           TopProcessName   = "";
+        internal int                              ProcessSampleCount;
+        internal readonly Dictionary<string, int>  ProcessNames   = new(StringComparer.OrdinalIgnoreCase);
+        internal double                           SessionDurationMs;
 
-        // Per-second sample buckets for max CPU calculation (key = floor(ms/1000))
-        var samplesPerSecond = new Dictionary<int, int>();
-        var activeThreadIds  = new HashSet<int>();
-        string topProcessName = "";
-        int processSampleCount = 0;
-        var processNames = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
-
-        try
+        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
         {
-            foreach (var ev in trace.Events)
+            if (timestampMs > SessionDurationMs)
+                SessionDurationMs = timestampMs;
+            if (!EvKind.TryGetValue(evName, out bool isCpuSample))
+                EvKind[evName] = isCpuSample = IsCpuSampleEvent(evName);
+            if (!isCpuSample) return;
+
+            if (_processFilter is not null &&
+                !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var callStack = ev.CallStack();
+            if (callStack is null) return;
+
+            TotalSamples++;
+
+            int bucket = (int)(timestampMs / 1000.0);
+            SamplesPerSecond.TryGetValue(bucket, out int prev);
+            SamplesPerSecond[bucket] = prev + 1;
+            ActiveThreadIds.Add(threadId);
+            string procName = processName;
+            if (procName.Length > 0)
             {
-                // CPU sample events appear as "PerfInfo/Sample" (kernel ETW) or
-                // "Microsoft-Windows-DotNETRuntime/SampledProfile" (CLR ETW) or
-                // similar names in EventPipe .nettrace.
-                string evName = ev.EventName ?? "";
-                bool isCpuSample =
-                    evName.IndexOf("SampledProfile",    StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("PerfInfo/Sample",   StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Kernel/PerfInfo",   StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("cpu-sampling",      StringComparison.OrdinalIgnoreCase) >= 0;
+                ProcessNames.TryGetValue(procName, out int pCount);
+                ProcessNames[procName] = pCount + 1;
+                if (pCount + 1 > ProcessSampleCount) { ProcessSampleCount = pCount + 1; TopProcessName = procName; }
+            }
 
-                if (!isCpuSample) continue;
-
-                // Optional process filter
-                if (processFilter is not null &&
-                    !(ev.ProcessName ?? "").Contains(processFilter, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                var callStack = ev.CallStack();
-                if (callStack is null) continue;
-
-                totalSamples++;
-
-                // Track per-second buckets and active threads for CPU stats
-                int bucket = (int)(ev.TimeStampRelativeMSec / 1000.0);
-                samplesPerSecond.TryGetValue(bucket, out int prev);
-                samplesPerSecond[bucket] = prev + 1;
-                activeThreadIds.Add(ev.ThreadID);
-                string procName = ev.ProcessName ?? "";
-                if (procName.Length > 0)
+            var frames = new List<(string Method, string Module)>(32);
+            var cs = callStack;
+            bool hasUnresolvedManaged = false;
+            while (cs != null)
+            {
+                var addr = cs.CodeAddress;
+                string rawModule = addr.ModuleName ?? "";
+                string module    = Interner.Intern(rawModule);
+                string method;
+                if (string.IsNullOrEmpty(addr.FullMethodName))
                 {
-                    processNames.TryGetValue(procName, out int pCount);
-                    processNames[procName] = pCount + 1;
-                    if (pCount + 1 > processSampleCount) { processSampleCount = pCount + 1; topProcessName = procName; }
+                    if (rawModule.Equals("ManagedModule", StringComparison.OrdinalIgnoreCase))
+                    {
+                        method = Interner.Intern("<managed, no symbols>");
+                        hasUnresolvedManaged = true;
+                    }
+                    else if (string.IsNullOrEmpty(rawModule))
+                    {
+                        method = Interner.Intern("<unresolved>");
+                        hasUnresolvedManaged = true;
+                    }
+                    else
+                    {
+                        method = Interner.Intern(rawModule);
+                    }
                 }
-
-                // Collect frames bottom-up (call stack is stored root→leaf in TraceLog
-                // as Caller chain, leaf at the top).
-                var frames = new List<(string Method, string Module)>(32);
-                var cs = callStack;
-                while (cs != null)
+                else
                 {
-                    var addr = cs.CodeAddress;
-                    // FullMethodName returns "" (empty, not null) for unresolved native frames
-                    string method = string.IsNullOrEmpty(addr.FullMethodName)
-                        ? (addr.ModuleName ?? "?")
-                        : addr.FullMethodName;
-                    string module = addr.ModuleName ?? "";
-                    frames.Add((method, module));
-                    cs = cs.Caller;
+                    method = Interner.InternTruncated(addr.FullMethodName);
                 }
+                frames.Add((method, module));
+                cs = cs.Caller;
+            }
+            if (hasUnresolvedManaged) UnresolvedSamples++;
 
-                // frames[0] = leaf (executing), frames[^1] = root caller
-                // Reverse so we insert root→leaf into the trie
-                frames.Reverse();
-                MutableNode cur = root;
-                for (int i = 0; i < frames.Count; i++)
-                {
-                    var (method, module) = frames[i];
-                    cur = cur.GetOrAddChild(method, module);
-                    cur.InclusiveSamples++;
-                    if (i == frames.Count - 1)
-                        cur.ExclusiveSamples++;  // leaf = actually executing
-                }
+            frames.Reverse();
+            MutableNode cur = Root;
+            for (int i = 0; i < frames.Count; i++)
+            {
+                var (method, module) = frames[i];
+                cur = cur.GetOrAddChild(method, module);
+                cur.InclusiveSamples++;
+                if (i == frames.Count - 1)
+                    cur.ExclusiveSamples++;
             }
         }
-        catch (Exception ex)
-        {
-            return new CpuTraceData(
-                $"Failed to parse trace: {ex.Message}", 0, 0, processFilter, [], [], []);
-        }
+
+        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = IsCpuSampleEvent(eventName); return v; }
+
+        public void OnComplete() { }
+
+        internal bool FilterSystem    => _filterSystem;
+        internal bool FilterUnresolved => _filterUnresolved;
+    }
+
+    public ITraceEventConsumer CreateConsumer(string? processFilter = null, bool filterSystem = true,
+                                    bool filterUnresolved = true)
+        => new Consumer(processFilter, filterSystem, filterUnresolved);
+
+    public CpuTraceData BuildResult(ITraceEventConsumer consumer, string traceFileName, int top = 20,
+                                     string? processFilter = null,
+                                     bool filterSystem = true, bool filterUnresolved = true)
+        => BuildResult(consumer, ((Consumer)consumer).SessionDurationMs, traceFileName, top, processFilter, filterSystem, filterUnresolved);
+
+    public CpuTraceData BuildResult(ITraceEventConsumer consumer, double sessionDurationMs, string traceFileName,
+                                     int top = 20, string? processFilter = null,
+                                     bool filterSystem = true, bool filterUnresolved = true)
+    {
+        var c = (Consumer)consumer;
+        int    totalSamples    = c.TotalSamples;
+        double intervalMs      = c.IntervalMs;
+        var    root            = c.Root;
+        var    samplesPerSecond = c.SamplesPerSecond;
+        var    activeThreadIds = c.ActiveThreadIds;
+        string topProcessName  = c.TopProcessName;
+        int    unresolvedSamples = c.UnresolvedSamples;
 
         if (totalSamples == 0)
         {
@@ -128,101 +153,138 @@ public sealed class CpuTraceAnalyzer
                 0, intervalMs, processFilter, [], [], []);
         }
 
-        // ── Build flat top-methods table ──────────────────────────────────────
         var allNodes = new List<MutableNode>(totalSamples);
         CollectAll(root, allNodes);
 
         var topMethods = allNodes
             .Where(n => (n.ExclusiveSamples > 0 || n.InclusiveSamples > 0)
-                     && (!filterSystem || !IsSystemModule(n.Module))
-                     && n.Method != n.Module)  // skip unresolved native stubs (method == module fallback)
+                     && (!filterSystem    || !IsSystemModule(n.Module))
+                     && (!filterUnresolved || !IsUnresolvedPlaceholder(n.Method))
+                     && n.Method != n.Module)
             .OrderByDescending(n => n.ExclusiveSamples)
             .Take(top)
             .Select(n => new CpuMethodStats(
-                Method:          n.Method,
-                Module:          n.Module,
+                Method:           n.Method,
+                Module:           n.Module,
                 ExclusiveSamples: n.ExclusiveSamples,
                 InclusiveSamples: n.InclusiveSamples,
                 ExclusivePct:    totalSamples > 0 ? n.ExclusiveSamples * 100.0 / totalSamples : 0,
                 InclusivePct:    totalSamples > 0 ? n.InclusiveSamples * 100.0 / totalSamples : 0))
             .ToList();
 
-        // ── Build immutable call tree (top-level children of root) ────────────
-        var callTree = EffectiveRoots(root.Children, filterSystem)
-            .OrderByDescending(c => c.InclusiveSamples)
+        var callTree = EffectiveRoots(root.Children, filterSystem, filterUnresolved)
+            .OrderByDescending(c2 => c2.InclusiveSamples)
             .Take(top)
-            .Select(n => Freeze(n, totalSamples, filterSystem: filterSystem))
+            .Select(n => Freeze(n, totalSamples, filterSystem: filterSystem, filterUnresolved: filterUnresolved))
             .ToList();
 
-        // ── Hot path: follow highest-inclusive child at each level ────────────
-        // EffectiveRoots descends through system frames so the path starts at the
-        // first user/managed frame and never stalls inside kernel stubs.
-        //
-        // Cycle detection: in a merged call tree built from many concurrent requests,
-        // the same entry-point frames (e.g. IIS pipeline) accumulate enormous inclusive
-        // counts.  When the path reaches a deep leaf (e.g. Task.Run) the "highest child"
-        // might be that same IIS entry frame with far MORE inclusive samples than the
-        // current position.  A genuine descent always has non-increasing inclusive counts,
-        // so we stop as soon as the best candidate has MORE samples than the current frame.
-        // This correctly allows legitimate repeats (e.g. WrapEntityServiceAction called
-        // multiple times for nested APM spans) while stopping the pipeline re-entry loop.
         var hotPath = new List<CallTreeNode>();
-        var hotCur = EffectiveRoots(root.Children, filterSystem)
-            .OrderByDescending(c => c.InclusiveSamples)
+        var hotCur = EffectiveRoots(root.Children, filterSystem, filterUnresolved)
+            .OrderByDescending(c2 => c2.InclusiveSamples)
             .FirstOrDefault();
 
         while (hotCur is not null)
         {
             hotPath.Add(Freeze(hotCur, totalSamples, childrenDepth: 0));
             int curSamples = hotCur.InclusiveSamples;
-            hotCur = EffectiveRoots(hotCur.Children, filterSystem)
-                .OrderByDescending(c => c.InclusiveSamples)
-                .FirstOrDefault(c => c.InclusiveSamples * 100.0 / totalSamples >= 0.5
-                               && c.InclusiveSamples <= curSamples);  // must not go UP — that's a cycle
+            hotCur = EffectiveRoots(hotCur.Children, filterSystem, filterUnresolved)
+                .OrderByDescending(c2 => c2.InclusiveSamples)
+                .FirstOrDefault(c2 => c2.InclusiveSamples * 100.0 / totalSamples >= 0.5
+                               && c2.InclusiveSamples <= curSamples);
         }
 
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process filter: {processFilter}" : "") +
                       $"  |  {totalSamples:N0} CPU samples";
 
-        // ── Compute CPU utilisation stats ─────────────────────────────────────
-        // TraceLog.SessionDuration gives the wall-clock span of the trace.
-        // Each sample represents ~intervalMs of CPU time on one thread.
-        // Avg CPU % = (samples × intervalMs) / traceDurationMs × 100
-        // Max CPU % = max samples in any 1-second bucket × intervalMs / 1000 × 100
-        double durationMs   = trace.SessionDuration.TotalMilliseconds;
+        double durationMs = sessionDurationMs;
         if (durationMs <= 0 && samplesPerSecond.Count > 0)
-        {
-            // Fallback: derive duration from first/last sample bucket
             durationMs = (samplesPerSecond.Keys.Max() - samplesPerSecond.Keys.Min() + 1) * 1000.0;
-        }
-        double totalCpuMs   = totalSamples * intervalMs;
-        double avgCpuPct    = durationMs > 0 ? totalCpuMs / durationMs * 100.0 : 0;
-        int    maxBucket    = samplesPerSecond.Count > 0 ? samplesPerSecond.Values.Max() : 0;
-        double maxCpuPct    = maxBucket * intervalMs / 1000.0 * 100.0;
-        int    logicalCores = Environment.ProcessorCount;  // host machine cores (best available)
+        double totalCpuMs = totalSamples * intervalMs;
+        double avgCpuPct  = durationMs > 0 ? totalCpuMs / durationMs * 100.0 : 0;
+        int    maxBucket  = samplesPerSecond.Count > 0 ? samplesPerSecond.Values.Max() : 0;
+        double maxCpuPct  = maxBucket * intervalMs / 1000.0 * 100.0;
 
         var stats = new CpuStats(
-            TraceDurationMs:  durationMs,
-            AvgCpuPct:        avgCpuPct,
-            MaxCpuPct:        maxCpuPct,
-            TotalCpuMs:       totalCpuMs,
-            ActiveThreads:    activeThreadIds.Count,
-            LogicalCores:     logicalCores,
-            TopProcessName:   topProcessName.Length > 0 ? topProcessName : "(unknown)");
+            TraceDurationMs: durationMs,
+            AvgCpuPct:       avgCpuPct,
+            MaxCpuPct:       maxCpuPct,
+            TotalCpuMs:      totalCpuMs,
+            ActiveThreads:   activeThreadIds.Count,
+            LogicalCores:    Environment.ProcessorCount,
+            TopProcessName:  topProcessName.Length > 0 ? topProcessName : "(unknown)");
+
+        var semanticFindings  = SemanticAnalyzer.Analyze(callTree);
+        var collapsedCallTree = FrameworkCollapser.Collapse(callTree);
+        var hotChains         = HotChainExtractor.Extract(collapsedCallTree);
+        var categoryScores    = CategoryScorer.Score(semanticFindings);
+
+        IReadOnlyList<double> samplesTimeline = [];
+        if (samplesPerSecond.Count > 1)
+        {
+            int minKey   = samplesPerSecond.Keys.Min();
+            int maxKey   = samplesPerSecond.Keys.Max();
+            var timeline = new double[maxKey - minKey + 1];
+            foreach (var kv in samplesPerSecond)
+                timeline[kv.Key - minKey] = kv.Value * intervalMs / 1000.0 * 100.0;
+            samplesTimeline = timeline;
+        }
 
         return new CpuTraceData(info, totalSamples, intervalMs, processFilter,
-            topMethods, hotPath, callTree, stats);
+            topMethods, hotPath, collapsedCallTree, stats,
+            semanticFindings, hotChains, categoryScores, samplesTimeline,
+            unresolvedSamples);
     }
 
+    public CpuTraceData Analyze(string tracePath, int top = 20, string? processFilter = null,
+                                  bool filterSystem = true, bool filterUnresolved = true)
+    {
+        try
+        {
+            using var trace = TraceLog.OpenOrConvert(tracePath,
+                new TraceLogOptions { ConversionLog = TextWriter.Null });
+            return Analyze(trace, Path.GetFileName(tracePath), top, processFilter, filterSystem, filterUnresolved);
+        }
+        catch (Exception ex)
+        {
+            return new CpuTraceData(
+                $"Failed to parse trace: {ex.Message}", 0, 0, processFilter, [], [], []);
+        }
+    }
+
+    public CpuTraceData Analyze(TraceLog trace, string traceFileName, int top = 20,
+                                 string? processFilter = null, bool filterSystem = true,
+                                 bool filterUnresolved = true, Action<string>? progress = null)
+    {
+        try
+        {
+            var c = CreateConsumer(processFilter, filterSystem, filterUnresolved);
+            TraceEventDispatcher.Dispatch(trace, c,
+                progress);
+            double durMs = Math.Max(((Consumer)c).SessionDurationMs, trace.SessionDuration.TotalMilliseconds);
+            return BuildResult(c, durMs, traceFileName, top, processFilter, filterSystem, filterUnresolved);
+        }
+        catch (Exception ex)
+        {
+            return new CpuTraceData(
+                $"Failed to parse trace: {ex.Message}", 0, 0, processFilter, [], [], []);
+        }
+    }
+
+    private static bool IsCpuSampleEvent(string n) =>
+        n.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("cpu-sampling",    StringComparison.OrdinalIgnoreCase) >= 0;
+
     private static CallTreeNode Freeze(MutableNode n, int total, int childrenDepth = 5,
-                                       bool filterSystem = false)
+                                       bool filterSystem = false, bool filterUnresolved = true)
     {
         var children = childrenDepth > 0
-            ? EffectiveRoots(n.Children, filterSystem)
+            ? EffectiveRoots(n.Children, filterSystem, filterUnresolved)
                 .OrderByDescending(c => c.InclusiveSamples)
                 .Take(20)
-                .Select(c => Freeze(c, total, childrenDepth - 1, filterSystem))
+                .Select(c => Freeze(c, total, childrenDepth - 1, filterSystem, filterUnresolved))
                 .ToList()
             : (IReadOnlyList<CallTreeNode>)[];
 
@@ -236,27 +298,28 @@ public sealed class CpuTraceAnalyzer
             Children:         children);
     }
 
-    // A frame is "noisy" (uninformative) when:
-    //   • filterSystem=true and it belongs to a known OS/IIS module, OR
-    //   • method == module  → unresolved native stub (FullMethodName was empty, fell back to module name)
-    //   • method == "?"     → completely unresolved (no module, no symbol)
-    // Noisy frames are descended through so their children bubble up — we never just drop
-    // the subtree.  The method==module / "?" check fires even when filterSystem=false
-    // because those frames carry zero diagnostic value.
-    private static bool IsNoisyFrame(MutableNode n, bool filterSystem) =>
-        (filterSystem && IsSystemModule(n.Module)) ||
-        n.Method == n.Module ||   // unresolved stub: FullMethodName="" → fallback to module name
-        n.Method == "?";          // completely unresolved (no module symbol)
+    // A frame is "noisy" (uninformative) when any of the following apply:
+    //   • filterSystem=true  and it belongs to a known OS/IIS module
+    //   • filterUnresolved=true  and the method is a <unresolved> / <managed,no symbols> placeholder
+    //   • method == module   → unresolved native stub (FullMethodName="" → fell back to module name)
+    // Noisy frames are descended through so their children bubble up — the subtree is never dropped.
+    private static bool IsNoisyFrame(MutableNode n, bool filterSystem, bool filterUnresolved = true) =>
+        (filterSystem    && IsSystemModule(n.Module)) ||
+        (filterUnresolved && IsUnresolvedPlaceholder(n.Method)) ||
+        n.Method == n.Module;  // unresolved native stub: FullMethodName="" → fallback to module name
+
+    private static bool IsUnresolvedPlaceholder(string method) =>
+        method == "<unresolved>" || method == "<managed, no symbols>";
 
     private static IEnumerable<MutableNode> EffectiveRoots(
-        IEnumerable<MutableNode> nodes, bool filterSystem)
+        IEnumerable<MutableNode> nodes, bool filterSystem, bool filterUnresolved = true)
     {
         foreach (var n in nodes)
         {
-            if (!IsNoisyFrame(n, filterSystem))
+            if (!IsNoisyFrame(n, filterSystem, filterUnresolved))
                 yield return n;
             else
-                foreach (var c in EffectiveRoots(n.Children, filterSystem))
+                foreach (var c in EffectiveRoots(n.Children, filterSystem, filterUnresolved))
                     yield return c;
         }
     }

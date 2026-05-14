@@ -73,7 +73,7 @@ public sealed class GcRootsCommand : ICommand
     {
         CommandBase.RenderHeader("GC Root Analysis", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx, typeName, maxResults, noIndirect, singleAddress);
         _report.Render(data, sink, noIndirect);

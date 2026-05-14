@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class TimerLeaksCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class TimerLeaksCommand : ICommand
     public string Name               => "timer-leaks";
     public string Description        => "Enumerates timer objects and alerts on accumulation.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Infrastructure / Network";
 
     private const string Help = """
         Usage: DumpDetective timer-leaks <dump-file> [options]
@@ -40,7 +41,7 @@ public sealed class TimerLeaksCommand : ICommand
     {
         CommandBase.RenderHeader("Timer Leak Analysis", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink, showAddr);

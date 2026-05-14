@@ -97,13 +97,8 @@ public static class CommandBase
             ? outputPaths.ToArray()
             : [DefaultOutputPath(dumpPath, ".html")];
 
-        bool consoleOnly = effectivePaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase));
-        if (!consoleOnly)
-        {
-            foreach (var p in effectivePaths)
-                if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                    AnsiConsole.MarkupLine($"[dim][[{Now}]] → Output:[/] {Markup.Escape(Path.GetFullPath(p))}");
-        }
+        foreach (var p in effectivePaths)
+            AnsiConsole.MarkupLine($"[dim][[{Now}]] → Output:[/] {Markup.Escape(Path.GetFullPath(p))}");
 
         try
         {
@@ -112,17 +107,10 @@ public static class CommandBase
                 AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(ctx.ArchWarning)}[/]");
 
             using var sink = SinkFactory.CreateMulti(effectivePaths);
-
-            if (consoleOnly)
-                AnsiConsole.MarkupLine("[dim]ℹ Printing to console. Use --output <file> or --format html/md/json/bin to save, or omit both for default HTML output.[/]\n");
-
             body(ctx, sink);
 
             foreach (var p in effectivePaths)
-            {
-                if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {ProgressLogger.FileLink(p)}");
-            }
+                AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {ProgressLogger.FileLink(p)}");
             return 0;
         }
         catch (InvalidOperationException ex)
@@ -145,14 +133,28 @@ public static class CommandBase
         outputPath is null ? top : Math.Max(top, 200);
 
     /// <summary>
-    /// Builds the default output path from a dump path, replacing spaces in the
+    /// Builds a default output path from any input file path, replacing spaces in the
     /// filename with underscores so the result is shell-friendly.
+    /// Used by memory commands (via Execute) and trace commands for their HTML default.
     /// </summary>
-    private static string DefaultOutputPath(string dumpPath, string extension)
+    public static string DefaultOutputPath(string dumpPath, string extension)
     {
         var dir      = Path.GetDirectoryName(dumpPath) ?? ".";
         var filename = Path.GetFileNameWithoutExtension(dumpPath).Replace(' ', '_');
         return Path.Combine(dir, filename + extension);
+    }
+
+    /// <summary>
+    /// Checks whether the heap can be walked. If not, writes a warning alert to
+    /// <paramref name="sink"/> and returns <see langword="false"/> so the caller
+    /// can return immediately. Returns <see langword="true"/> when the heap is walkable.
+    /// </summary>
+    public static bool EnsureCanWalkHeap(Microsoft.Diagnostics.Runtime.ClrHeap heap, IRenderSink sink)
+    {
+        if (heap.CanWalkHeap) return true;
+        sink.Alert(AlertLevel.Warning, "Cannot walk heap.",
+            "The dump may be incomplete or was captured without a full heap snapshot.");
+        return false;
     }
 
     /// <summary>
@@ -228,7 +230,7 @@ public static class CommandBase
                         scanSuffix = FormatScanSuffix(msg[6..]);
                         return;
                     }
-                    ctx.Status(Markup.Escape(msg));
+                    ctx.Status(Markup.Escape($"{msg}  ({sw.Elapsed.TotalSeconds:F1}s)"));
                 }));
         }
         finally
