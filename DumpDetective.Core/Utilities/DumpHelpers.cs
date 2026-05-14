@@ -48,4 +48,13 @@ public static class DumpHelpers
             _                    => "Gen"
         };
     }
+
+    /// <summary>
+    /// Parses a hex address string (with or without leading <c>0x</c>) into a <see cref="ulong"/>.
+    /// </summary>
+    public static bool TryParseHex(string s, out ulong value)
+    {
+        s = s.StartsWith("0x", StringComparison.OrdinalIgnoreCase) ? s[2..] : s;
+        return ulong.TryParse(s, System.Globalization.NumberStyles.HexNumber, null, out value);
+    }
 }

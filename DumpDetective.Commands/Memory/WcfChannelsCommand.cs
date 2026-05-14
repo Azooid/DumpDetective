@@ -42,7 +42,7 @@ public sealed class WcfChannelsCommand : ICommand
     {
         CommandBase.RenderHeader("WCF Channels", ctx, sink);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         var data = _analyzer.Analyze(ctx);
         _report.Render(data, sink, showAddr);

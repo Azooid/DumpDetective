@@ -50,7 +50,7 @@ public sealed class ExceptionAnalysisCommand : ICommand
     {
         CommandBase.PrintAnalyzing(ctx.DumpPath);
 
-        if (!ctx.Heap.CanWalkHeap) { sink.Alert(AlertLevel.Warning, "Cannot walk heap."); return; }
+        if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
         // Build active-exception lookup from live threads (not stored in analyzer data)
         var activeByAddr = new Dictionary<ulong, (int ThreadId, uint OSThreadId, string? TypeName, string? Message, int HResult, string? InnerType, IReadOnlyList<string> ThreadFrames, IReadOnlyList<string> ThrowFrames)>();

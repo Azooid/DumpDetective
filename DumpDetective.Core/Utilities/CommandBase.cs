@@ -145,6 +145,19 @@ public static class CommandBase
     }
 
     /// <summary>
+    /// Checks whether the heap can be walked. If not, writes a warning alert to
+    /// <paramref name="sink"/> and returns <see langword="false"/> so the caller
+    /// can return immediately. Returns <see langword="true"/> when the heap is walkable.
+    /// </summary>
+    public static bool EnsureCanWalkHeap(Microsoft.Diagnostics.Runtime.ClrHeap heap, IRenderSink sink)
+    {
+        if (heap.CanWalkHeap) return true;
+        sink.Alert(AlertLevel.Warning, "Cannot walk heap.",
+            "The dump may be incomplete or was captured without a full heap snapshot.");
+        return false;
+    }
+
+    /// <summary>
     /// If <c>--help</c> / <c>-h</c> is present, renders the help panel and
     /// returns <see langword="true"/> (caller should return 0 immediately).
     /// </summary>
