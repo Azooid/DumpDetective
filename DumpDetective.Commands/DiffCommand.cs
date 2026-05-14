@@ -1,4 +1,4 @@
-using System.IO.Compression;
+﻿using System.IO.Compression;
 using System.Text;
 using System.Text.Json;
 using DumpDetective.Analysis.Memory;
@@ -28,6 +28,7 @@ public sealed class DiffCommand : ICommand
     public string Name               => "diff";
     public string Description        => "Compare two saved report files (.json/.bin) and produce a diff report.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Replay / Comparison";
 
     private const string Help = """
         Usage: DumpDetective diff <before.json|before.bin> <after.json|after.bin> [options]
@@ -169,7 +170,7 @@ public sealed class DiffCommand : ICommand
         var diffDoc = ReportDiffer.Diff(beforeEnv.Doc, afterEnv.Doc, beforeLabel, afterLabel, opts);
         using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(diffDoc, sink);
-        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+        foreach (var p in outputPaths)
             AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }
@@ -211,7 +212,7 @@ public sealed class DiffCommand : ICommand
         var diffDoc = ReportDiffer.Diff(beforeDoc, afterDoc, beforeLabel, afterLabel, opts);
         using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(diffDoc, sink);
-        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+        foreach (var p in outputPaths)
             AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }
@@ -355,7 +356,7 @@ public sealed class DiffCommand : ICommand
 
         using var sink = SinkFactory.CreateMulti(outputPaths);
         ReportDocReplay.Replay(combinedDoc, sink);
-        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+        foreach (var p in outputPaths)
             AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
         return 0;
     }

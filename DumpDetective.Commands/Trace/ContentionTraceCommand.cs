@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory.Analyzers;
+﻿using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -24,6 +24,8 @@ public sealed class ContentionTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "contention-trace";
     public string Description        => "Lock contention analysis from a .nettrace or .etl trace (hotspot call sites, wait times, threads affected).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Exceptions & Locks";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Contention Trace";
 

@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class AsyncTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "async-trace";
     public string Description        => "Async/Task analysis — detects sync-over-async patterns, long-running continuations, and Task scheduling pressure.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Threads & Concurrency";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Async / Task Trace";
 

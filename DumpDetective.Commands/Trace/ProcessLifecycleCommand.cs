@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class ProcessLifecycleCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "process-lifecycle-trace";
     public string Description        => "Process lifecycle analysis — detects crashes, restarts, and abnormal exits from Process/Start/Stop events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Infrastructure";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Process Lifecycle";
 

@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class EventAnalysisCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class EventAnalysisCommand : ICommand
     public string Name               => "event-analysis";
     public string Description        => "Detect event handler subscription leaks in the heap.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Exceptions / Diagnostics";
 
     private const string Help = """
         Usage: DumpDetective event-analysis <dump-file> [options]

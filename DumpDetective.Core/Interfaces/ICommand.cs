@@ -4,6 +4,15 @@ using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Core.Interfaces;
 
+/// <summary>Distinguishes memory-dump commands from trace-file commands.</summary>
+public enum CommandKind
+{
+    /// <summary>Operates on a Windows memory dump (.dmp / .mdmp).</summary>
+    Memory,
+    /// <summary>Operates on an ETW trace file (.nettrace / .etl).</summary>
+    Trace,
+}
+
 /// <summary>
 /// Implemented by every analysis command. Registered once in
 /// <c>DumpDetective.Cli.CommandRegistry</c> — the single source of truth for
@@ -24,6 +33,20 @@ public interface ICommand
     /// to <see langword="false"/>.
     /// </summary>
     bool IncludeInFullAnalyze { get; }
+
+    /// <summary>
+    /// Help-panel category heading, e.g. <c>"Heap / Memory"</c>.
+    /// Used by <c>HelpPrinter</c> to group commands dynamically.
+    /// Default covers the majority of dump commands.
+    /// </summary>
+    string Category => "Heap / Memory";
+
+    /// <summary>
+    /// Whether the command operates on a memory dump or a trace file.
+    /// Determines which section of the help panel the command appears in.
+    /// Defaults to <see cref="CommandKind.Memory"/>.
+    /// </summary>
+    CommandKind Kind => CommandKind.Memory;
 
     /// <summary>
     /// CLI entry point. Parses <paramref name="args"/>, opens a

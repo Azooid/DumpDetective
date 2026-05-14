@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using DumpDetective.Analysis.Memory;
 using DumpDetective.Core.Runtime;
 
@@ -16,6 +16,7 @@ public sealed class TrendAnalysisCommand : ICommand
     public string Name               => "trend-analysis";
     public string Description        => "Analyze multiple dumps for memory/leak trends (--full for sub-reports).";
     public bool   IncludeInFullAnalyze => false; // multi-dump, not nested
+    public string Category             => "Orchestrator";
 
     private const string Help = """
         Usage: DumpDetective trend-analysis <dump1> <dump2> [<dump3> ...] [options]
@@ -308,7 +309,7 @@ public sealed class TrendAnalysisCommand : ICommand
         if (sink.IsFile)
         {
             log.Blank();
-            foreach (var p in allOutputs.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var p in allOutputs)
                 log.SuccessFile(p);
         }
         if (rawPaths.Count > 0)

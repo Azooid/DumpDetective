@@ -97,13 +97,8 @@ public static class CommandBase
             ? outputPaths.ToArray()
             : [DefaultOutputPath(dumpPath, ".html")];
 
-        bool consoleOnly = effectivePaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase));
-        if (!consoleOnly)
-        {
-            foreach (var p in effectivePaths)
-                if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                    AnsiConsole.MarkupLine($"[dim][[{Now}]] → Output:[/] {Markup.Escape(Path.GetFullPath(p))}");
-        }
+        foreach (var p in effectivePaths)
+            AnsiConsole.MarkupLine($"[dim][[{Now}]] → Output:[/] {Markup.Escape(Path.GetFullPath(p))}");
 
         try
         {
@@ -112,17 +107,10 @@ public static class CommandBase
                 AnsiConsole.MarkupLine($"[yellow]⚠ {Markup.Escape(ctx.ArchWarning)}[/]");
 
             using var sink = SinkFactory.CreateMulti(effectivePaths);
-
-            if (consoleOnly)
-                AnsiConsole.MarkupLine("[dim]ℹ Printing to console. Use --output <file> or --format html/md/json/bin to save, or omit both for default HTML output.[/]\n");
-
             body(ctx, sink);
 
             foreach (var p in effectivePaths)
-            {
-                if (!p.Equals("console", StringComparison.OrdinalIgnoreCase))
-                    AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {ProgressLogger.FileLink(p)}");
-            }
+                AnsiConsole.MarkupLine($"\n[dim][[{Now}]][/] [green]✓[/] Written to: {ProgressLogger.FileLink(p)}");
             return 0;
         }
         catch (InvalidOperationException ex)

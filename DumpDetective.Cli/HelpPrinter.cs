@@ -9,41 +9,48 @@ namespace DumpDetective.Cli;
 /// </summary>
 internal static class HelpPrinter
 {
-    // Groups are listed in the order they appear in the help panel.
-    // Add new .dmp commands to the appropriate group; add new .nettrace commands to traceGroups.
-    private static readonly (string Heading, string[] Names)[] s_groups =
+    // Defines display order within the .dmp section.
+    // Commands whose category is not listed here appear at the end of the dump section.
+    private static readonly string[] s_dumpOrder =
     [
-        ("Orchestrator",              ["analyze", "trend-analysis"]),
-        ("Heap / Memory",             ["heap-stats", "gen-summary", "high-refs", "string-duplicates",
-                                       "memory-leak", "heap-fragmentation", "large-objects",
-                                       "pinned-objects", "gc-roots", "finalizer-queue",
-                                       "handle-table", "static-refs", "weak-refs"]),
-        ("Threads / Concurrency",     ["thread-analysis", "thread-pool",
-                                       "deadlock-detection", "async-stacks"]),
-        ("Exceptions / Diagnostics",  ["exception-analysis", "event-analysis"]),
-        ("Infrastructure / Network",  ["http-requests", "connection-pool", "wcf-channels", "timer-leaks"]),
-        ("Targeted / Interactive",    ["type-instances", "object-inspect", "module-list"]),
-        ("Cache Lifecycle",           ["load", "close"]),
-        ("Replay / Comparison",       ["render", "diff"]),
+        "Orchestrator",
+        "Heap / Memory",
+        "Threads / Concurrency",
+        "Exceptions / Diagnostics",
+        "Infrastructure / Network",
+        "Targeted / Interactive",
+        "Cache Lifecycle",
+        "Replay / Comparison",
     ];
 
-    private static readonly (string Heading, string[] Names)[] s_traceGroups =
+    // Defines display order within the .nettrace / .etl section.
+    // Unknown categories (not listed here) fall to the end of the trace section.
+    private static readonly string[] s_traceOrder =
     [
-        ("Orchestrator / Cross-source",   ["trace-analyze", "trace-dump-analyze"]),
-        ("CPU & Allocation",              ["cpu-trace", "alloc-trace", "alloc-burst-trace"]),
-        ("GC & Memory",                   ["gc-trace", "finalizer-trace", "loh-trace"]),
-        ("Exceptions & Locks",            ["exceptions-trace", "contention-trace", "deadlock-trace", "retry-storm-trace"]),
-        ("Threads & Concurrency",         ["threadpool-starvation", "async-trace", "context-switch-trace", "task-scheduler-trace"]),
-        ("JIT & HTTP",                    ["jit-trace", "http-trace", "kestrel-trace", "aspnetcore-pipeline-trace"]),
-        ("SQL & Network",                 ["sql-trace", "json-trace", "connection-pool-trace", "socket-trace", "dns-trace"]),
-        ("Infrastructure",                ["process-lifecycle-trace", "file-io-trace", "handle-leak-trace"]),
-        ("Observability",                 ["otel-trace"]),
-        ("Intelligence",                  ["anomaly-trace", "root-cause-trace"]),
+        "Orchestrator / Cross-source",
+        "CPU & Allocation",
+        "GC & Memory",
+        "Exceptions & Locks",
+        "Threads & Concurrency",
+        "JIT & HTTP",
+        "SQL & Network",
+        "Infrastructure",
+        "Observability",
+        "Intelligence",
     ];
 
     public static void Print(IEnumerable<ICommand> commands)
     {
-        var lookup = commands.ToDictionary(c => c.Name);
+        // Split by Kind first, then group each section by Category
+        var memoryByCategory = new Dictionary<string, List<ICommand>>(StringComparer.Ordinal);
+        var traceByCategory  = new Dictionary<string, List<ICommand>>(StringComparer.Ordinal);
+        foreach (var cmd in commands)
+        {
+            var bucket = cmd.Kind == CommandKind.Trace ? traceByCategory : memoryByCategory;
+            if (!bucket.TryGetValue(cmd.Category, out var list))
+                bucket[cmd.Category] = list = [];
+            list.Add(cmd);
+        }
 
         var grid = new Grid();
         grid.AddColumn(new GridColumn().NoWrap());
@@ -55,37 +62,19 @@ internal static class HelpPrinter
         // ── .dmp / .mdmp commands ─────────────────────────────────────────────
         grid.AddRow("", "");
         grid.AddRow("[bold white on grey] .dmp / .mdmp commands [/]", "");
-        foreach (var (heading, names) in s_groups)
-        {
-            grid.AddRow("", "");
-            grid.AddRow($"[bold yellow]{Markup.Escape(heading)}[/]", "");
-            foreach (var name in names)
-            {
-                if (!lookup.TryGetValue(name, out var cmd)) continue;
-                grid.AddRow($"  [bold cyan]{Markup.Escape(cmd.Name)}[/]", Markup.Escape(cmd.Description));
-            }
-        }
+        RenderSection(grid, memoryByCategory, s_dumpOrder);
 
         // ── trace commands (.nettrace / .etl) ─────────────────────────────────
         grid.AddRow("", "");
         grid.AddRow("[bold white on grey] trace commands (.nettrace / .etl) [/]", "");
-        foreach (var (heading, names) in s_traceGroups)
-        {
-            grid.AddRow("", "");
-            grid.AddRow($"[bold yellow]{Markup.Escape(heading)}[/]", "");
-            foreach (var name in names)
-            {
-                if (!lookup.TryGetValue(name, out var cmd)) continue;
-                grid.AddRow($"  [bold cyan]{Markup.Escape(cmd.Name)}[/]", Markup.Escape(cmd.Description));
-            }
-        }
+        RenderSection(grid, traceByCategory, s_traceOrder);
 
         grid.AddRow("", "");
         grid.AddRow("[bold yellow]Output formats[/]", "[dim].html  .md  .txt  .json  .bin (Brotli-compressed JSON)[/]");
         grid.AddRow("[bold yellow]-o / --output[/]",  "[dim]Repeatable: -o report.html -o report.bin  writes both files[/]");
         grid.AddRow("[bold yellow]--format[/]",        "[dim]Repeatable: --format html --format bin  writes both files[/]");
         grid.AddRow("  [dim]combined[/]",              "[dim]-o report.html --format bin  adds report.bin automatically[/]");
-        grid.AddRow("[bold yellow]Default output[/]", "[dim]<dumpname>.html — use --output console to print to terminal[/]");
+        grid.AddRow("[bold yellow]Default output[/]", "[dim]<dumpname>.html alongside the dump file[/]");
         grid.AddRow("[bold yellow]Global flags[/]",   "[dim]--debug   print peak memory after run[/]");
         grid.AddRow("[bold yellow]Env vars[/]",        "[dim]DD_DUMP   default dump path when none is given[/]");
 
@@ -97,4 +86,38 @@ internal static class HelpPrinter
         };
         AnsiConsole.Write(panel);
     }
+
+    /// <summary>
+    /// Renders one section of the help panel.
+    /// Categories appear in <paramref name="order"/> first, then any remaining
+    /// categories not listed there are appended at the end.
+    /// </summary>
+    private static void RenderSection(
+        Grid grid,
+        Dictionary<string, List<ICommand>> byCategory,
+        string[] order)
+    {
+        var seen = new HashSet<string>(order, StringComparer.Ordinal);
+
+        // Known categories in defined order
+        foreach (var heading in order)
+        {
+            if (!byCategory.TryGetValue(heading, out var cmds)) continue;
+            grid.AddRow("", "");
+            grid.AddRow($"[bold yellow]{Markup.Escape(heading)}[/]", "");
+            foreach (var cmd in cmds)
+                grid.AddRow($"  [bold cyan]{Markup.Escape(cmd.Name)}[/]", Markup.Escape(cmd.Description));
+        }
+
+        // Unknown categories appended at the end (new commands get a section automatically)
+        foreach (var (heading, cmds) in byCategory)
+        {
+            if (seen.Contains(heading)) continue;
+            grid.AddRow("", "");
+            grid.AddRow($"[bold yellow]{Markup.Escape(heading)}[/]", "");
+            foreach (var cmd in cmds)
+                grid.AddRow($"  [bold cyan]{Markup.Escape(cmd.Name)}[/]", Markup.Escape(cmd.Description));
+        }
+    }
 }
+

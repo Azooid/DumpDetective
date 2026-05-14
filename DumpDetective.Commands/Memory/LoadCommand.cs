@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Runtime;
 using DumpDetective.Analysis.Memory;
 using DumpDetective.Analysis.Memory.Analyzers;
@@ -35,6 +35,7 @@ public sealed class LoadCommand : ICommand
     public string Name               => "load";
     public string Description        => "Pre-build all analysis caches for a dump file.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Cache Lifecycle";
 
     private const string Help = """
         Usage: DumpDetective load <dump-file-or-directory> [options]

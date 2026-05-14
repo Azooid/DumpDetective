@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class KestrelTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "kestrel-trace";
     public string Description        => "Kestrel analysis — detects connection rejections, queue pressure, and request errors from Kestrel events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "JIT & HTTP";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Kestrel Trace";
 

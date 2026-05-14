@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class WcfChannelsCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class WcfChannelsCommand : ICommand
     public string Name               => "wcf-channels";
     public string Description        => "Enumerate WCF channel objects and alert on faulted channels.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Infrastructure / Network";
 
     private const string Help = """
         Usage: DumpDetective wcf-channels <dump-file> [options]

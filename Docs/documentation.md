@@ -212,7 +212,7 @@ All commands accept `-o, --output <file>`. The format is inferred from the file 
 | `.json` | Structured JSON (AOT source-gen, safe for programmatic consumption) |
 | `.bin` | Brotli-compressed JSON (compact archival; replayable via `render`) |
 
-If `-o` is omitted, output is written to the console.
+If `-o` is omitted, a `.html` file is written alongside the dump.
 
 ---
 

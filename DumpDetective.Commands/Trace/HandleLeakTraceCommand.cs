@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class HandleLeakTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "handle-leak-trace";
     public string Description        => "GCHandle leak analysis — detects handle leaks by comparing created vs. destroyed handles per type.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Infrastructure";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Handle Leak Trace";
 

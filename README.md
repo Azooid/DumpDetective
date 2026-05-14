@@ -713,7 +713,7 @@ Common trace use cases:
 
 Specify an output file with `-o` / `--output`, or use `--format` without a filename:
 
-| Extension / keyword | `--format` value | Format |
+| Extension | `--format` value | Format |
 |---|---|---|
 | `.html` | `html` | Interactive HTML — sticky sidebar nav, grouped/collapsible sub-report navigation, built-in charts, sortable/filterable paged tables, **dark mode toggle**, styled alert cards |
 | `.md` | `md` | Markdown — suitable for wiki pages or GitHub |
@@ -801,7 +801,7 @@ DumpDetective.slnx
 
 DumpDetective.Core/               Models, interfaces, shared utilities
   Interfaces/
-    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Run, BuildReport
+    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Category, Kind, Run, BuildReport
     IRenderSink.cs                Format-agnostic output interface
     IHeapObjectConsumer.cs        Heap-walk consumer interface
   Models/
@@ -860,7 +860,6 @@ DumpDetective.Reporting/          Output format implementations
     HtmlSink.cs                   Self-contained HTML; inline CSS/JS; sticky nav; virtual scroll
     MarkdownSink.cs
     TextSink.cs
-    ConsoleSink.cs
     JsonSink.cs
     BinSink.cs                    Brotli-compressed JSON
     CaptureSink.cs
@@ -890,8 +889,9 @@ DumpDetective.Commands/           ICommand implementations
 
 DumpDetective.Cli/                Entry point -- the AOT executable
   Program.cs                      Top-level statements; --debug flag; default HTML output injection
-  CommandRegistry.cs              Single source of truth for all ICommand instances
-  HelpPrinter.cs                  Formats --help output
+  CommandRegistry.cs              Single source of truth for all ICommand instances; LPT-ordered for parallel analyze --full
+  TraceCommandRegistry.cs         Single source of truth for all trace ICommand instances
+  HelpPrinter.cs                  Dynamic --help output grouped by ICommand.Category, sectioned by ICommand.Kind
 
 DumpDetective.DiagnosticScenarios/  Standalone console app — per-scenario dump generation for tests
   Program.cs                      Entry point: runs a named scenario, captures a heap dump, exits

@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class AllocationBurstCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "alloc-burst-trace";
     public string Description        => "Allocation burst detection — identifies 500 ms windows with 3× or more the median allocation rate.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "CPU & Allocation";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Allocation Bursts";
 

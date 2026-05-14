@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -46,6 +46,8 @@ public sealed class AnomalyDetectionCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "anomaly-trace";
     public string Description        => "Statistical anomaly detection — z-score analysis over CPU, GC, allocation, contention, and exception rate timelines.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Intelligence";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Anomaly Detection";
 

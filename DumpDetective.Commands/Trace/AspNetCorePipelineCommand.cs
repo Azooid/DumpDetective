@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class AspNetCorePipelineCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "aspnetcore-pipeline-trace";
     public string Description        => "ASP.NET Core pipeline analysis — detects auth failures, unmatched routes, and endpoint error patterns.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "JIT & HTTP";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "ASP.NET Core Pipeline";
 

@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class DeadlockPatternCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "deadlock-trace";
     public string Description        => "Deadlock pattern detection — heuristic detection of mutually-blocked thread pairs from contention and wait events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Exceptions & Locks";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Deadlock Detection";
 

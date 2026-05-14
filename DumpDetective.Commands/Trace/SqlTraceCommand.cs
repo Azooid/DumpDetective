@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class SqlTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "sql-trace";
     public string Description        => "SQL/database command analysis — query durations, slow queries, error rates from SqlClient and EF Core event sources.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "SQL & Network";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "SQL / EF Trace";
 

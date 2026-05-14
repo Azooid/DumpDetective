@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class LohTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "loh-trace";
     public string Description        => "LOH trend analysis — tracks Large Object Heap growth across GC collections to detect fragmentation.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "GC & Memory";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "LOH Allocation Trace";
 

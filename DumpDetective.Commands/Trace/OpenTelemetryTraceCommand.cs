@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class OpenTelemetryTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "otel-trace";
     public string Description        => "OpenTelemetry Activity analysis — measures span latency, error rates, and top operations from DiagnosticSource events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Observability";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "OpenTelemetry Trace";
 

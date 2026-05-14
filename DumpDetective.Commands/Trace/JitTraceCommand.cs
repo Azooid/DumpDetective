@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -24,6 +24,8 @@ public sealed class JitTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "jit-trace";
     public string Description        => "JIT compilation analysis from a .nettrace or .etl trace (methods compiled, JIT time, hot modules).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "JIT & HTTP";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "JIT Trace";
 

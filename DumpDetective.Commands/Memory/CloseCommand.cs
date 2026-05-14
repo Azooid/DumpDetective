@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory;
+﻿using DumpDetective.Analysis.Memory;
 using DumpDetective.Commands.Trace;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -15,6 +15,7 @@ public sealed class CloseCommand : ICommand
     public string Name               => "close";
     public string Description        => "Delete all analysis cache files for a dump file.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Cache Lifecycle";
 
     private const string Help = """
         Usage: DumpDetective close <dump-file-or-directory> [options]

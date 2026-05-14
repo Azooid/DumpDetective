@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ThreadAnalysisCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class ThreadAnalysisCommand : ICommand
     public string Name               => "thread-analysis";
     public string Description        => "Analyze managed threads: lifecycle, blocking state, exceptions.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Threads / Concurrency";
 
     private const string Help = """
         Usage: DumpDetective thread-analysis <dump-file> [options]

@@ -18,8 +18,7 @@ public static class ReportingBootstrap
     {
         SinkFactory.Register(outputPath => outputPath switch
         {
-            null                                                                               => new ConsoleSink(),
-            { } p when p.Equals("console", StringComparison.OrdinalIgnoreCase)               => new ConsoleSink(),
+            null or ""                                                                         => throw new InvalidOperationException("An output path is required; --output console is no longer supported."),
             { } p when p.EndsWith(".html", StringComparison.OrdinalIgnoreCase)               => new HtmlSink(p),
             { } p when p.EndsWith(".md",   StringComparison.OrdinalIgnoreCase)               => new MarkdownSink(p),
             { } p when p.EndsWith(".json", StringComparison.OrdinalIgnoreCase)               => new JsonSink(p),

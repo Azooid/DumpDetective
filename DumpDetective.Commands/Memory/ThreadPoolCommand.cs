@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ThreadPoolCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class ThreadPoolCommand : ICommand
     public string Name               => "thread-pool";
     public string Description        => "Reports thread pool worker saturation, Task state distribution, and queued work items.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Threads / Concurrency";
 
     private const string Help = """
         Usage: DumpDetective thread-pool <dump-file> [options]

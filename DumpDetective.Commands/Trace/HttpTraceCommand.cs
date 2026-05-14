@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -24,6 +24,8 @@ public sealed class HttpTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "http-trace";
     public string Description        => "HTTP request analysis from a .nettrace or .etl trace (latency, error rate, slow requests, top endpoints).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "JIT & HTTP";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "HTTP Trace";
 

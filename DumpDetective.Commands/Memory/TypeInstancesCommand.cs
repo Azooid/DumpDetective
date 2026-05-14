@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class TypeInstancesCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class TypeInstancesCommand : ICommand
     public string Name               => "type-instances";
     public string Description        => "Find all instances of a type: counts, sizes, generation distribution.";
     public bool   IncludeInFullAnalyze => false;  // requires --type
+    public string Category             => "Targeted / Interactive";
 
     private const string Help = """
         Usage: DumpDetective type-instances <dump-file> --type <name> [options]

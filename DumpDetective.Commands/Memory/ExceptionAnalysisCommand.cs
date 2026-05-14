@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ExceptionAnalysisCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class ExceptionAnalysisCommand : ICommand
     public string Name               => "exception-analysis";
     public string Description        => "Analyze exception objects on the heap, correlate with active threads.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Exceptions / Diagnostics";
 
     private const string Help = """
         Usage: DumpDetective exception-analysis <dump-file> [options]

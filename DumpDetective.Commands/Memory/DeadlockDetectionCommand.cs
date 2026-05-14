@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class DeadlockDetectionCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class DeadlockDetectionCommand : ICommand
     public string Name               => "deadlock-detection";
     public string Description        => "Detect deadlocks via sync-block ownership and wait-chain analysis.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Threads / Concurrency";
 
     private const string Help = """
         Usage: DumpDetective deadlock-detection <dump-file> [options]

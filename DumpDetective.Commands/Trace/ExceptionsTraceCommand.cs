@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory.Analyzers;
+﻿using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -24,6 +24,8 @@ public sealed class ExceptionsTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "exceptions-trace";
     public string Description        => "First-chance exception analysis from a .nettrace or .etl trace (exception flood detection, top types, call sites).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Exceptions & Locks";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Exceptions Trace";
 

@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory.Analyzers;
+﻿using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -24,6 +24,8 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "gc-trace";
     public string Description        => "GC pause analysis from a .nettrace or .etl trace (pause times, trigger reasons, heap sizes per collection).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "GC & Memory";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "GC Trace";
 
@@ -166,7 +168,7 @@ public sealed class GcTraceCommand : ICommand, ITraceSubAnalyzer
 
     internal static void PrintOutputPath(IReadOnlyList<string> outputPaths)
     {
-        foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+        foreach (var p in outputPaths)
             AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
     }
 }

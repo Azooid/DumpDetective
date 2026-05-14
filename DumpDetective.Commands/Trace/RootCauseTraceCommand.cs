@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace;
+﻿using DumpDetective.Analysis.Trace;
 using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
@@ -81,6 +81,8 @@ public sealed class RootCauseTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "root-cause-trace";
     public string Description        => "Root cause chain synthesis — runs all trace analyzers and derives ranked causal chains with actionable remediation advice.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Intelligence";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Root Cause Analysis";
     public bool   HasCorrelationPhase  => true;

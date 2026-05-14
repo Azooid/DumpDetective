@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory.Analyzers;
+﻿using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -24,6 +24,8 @@ public sealed class CpuTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "cpu-trace";
     public string Description        => "CPU hot-path analysis from a .nettrace or .etl trace file (call tree + hot path, VS-style).";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Category             => "CPU & Allocation";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "CPU Trace";
 
@@ -142,10 +144,8 @@ public sealed class CpuTraceCommand : ICommand, ITraceSubAnalyzer
 
             _report.Render(data!, sink, top);
 
-            foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var p in outputPaths)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
-            if (outputPaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase)) && sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
             return 0;
         }
         catch (Exception ex)

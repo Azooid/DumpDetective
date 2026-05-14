@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class AsyncStacksCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class AsyncStacksCommand : ICommand
     public string Name               => "async-stacks";
     public string Description        => "Enumerate async state machines and detect suspended task backlog.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Threads / Concurrency";
 
     private const string Help = """
         Usage: DumpDetective async-stacks <dump-file> [options]

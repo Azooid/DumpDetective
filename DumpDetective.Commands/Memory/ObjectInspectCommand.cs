@@ -1,10 +1,11 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ObjectInspectCommand : ICommand
 {
     public string Name               => "object-inspect";
     public string Description        => "Deep-inspect a managed object by address: type, fields, gen, finalizer status.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Targeted / Interactive";
 
     private const string Help = """
         Usage: DumpDetective object-inspect <dump-file> --address <hex> [options]

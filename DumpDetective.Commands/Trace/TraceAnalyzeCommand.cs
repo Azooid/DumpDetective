@@ -1,4 +1,4 @@
-using DumpDetective.Core.Interfaces;
+﻿using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Runtime;
@@ -46,6 +46,8 @@ public sealed class TraceAnalyzeCommand : ICommand
     public string Name               => "trace-analyze";
     public string Description        => "Full trace analysis — opens trace once and runs all 29 sub-analyzers: cpu, alloc, gc, exceptions, contention, thread-pool-starvation, jit, http, async, sql, json, context-switch, finalizer, connection-pool, alloc-burst, deadlock, loh, retry-storm, process-lifecycle, task-scheduler, file-io, socket, dns, kestrel, aspnetcore-pipeline, otel, handle-leak, anomaly, root-cause.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Category             => "Orchestrator / Cross-source";
+    public CommandKind Kind               => CommandKind.Trace;
 
     private const string Help = """
         Usage: DumpDetective trace-analyze <trace-file> [options]
@@ -249,11 +251,8 @@ public sealed class TraceAnalyzeCommand : ICommand
             if (results.GetValueOrDefault("__dispatch_stats__") is DispatchStats ds)
                 TraceEventTypesSection.Render(sink, ds);
 
-            foreach (var p in outputPaths.Where(p =>
-                !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var p in outputPaths)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
-            if (outputPaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase)) && sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
 
             return 0;
         }

@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class FinalizerTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "finalizer-trace";
     public string Description        => "Finalizer queue analysis — detects finalization bursts, queue growth, and top finalizer types from GC events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "GC & Memory";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Finalizer Trace";
 

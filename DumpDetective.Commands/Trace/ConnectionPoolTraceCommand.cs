@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class ConnectionPoolTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "connection-pool-trace";
     public string Description        => "Database connection pool analysis — open/close tracking, leak detection, and peak concurrency from SqlClient events.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "SQL & Network";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Connection Pool Trace";
 

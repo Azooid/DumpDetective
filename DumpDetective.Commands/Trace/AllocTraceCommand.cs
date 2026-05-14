@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory;
+﻿using DumpDetective.Analysis.Memory;
 using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
@@ -26,6 +26,8 @@ public sealed class AllocTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "alloc-trace";
     public string Description        => "Allocation hotspot analysis from a .nettrace or .etl trace (GCAllocationTick — top allocating types and call sites).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "CPU & Allocation";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Allocation Trace";
 

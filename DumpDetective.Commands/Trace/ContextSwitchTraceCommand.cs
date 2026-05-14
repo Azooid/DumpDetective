@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -26,6 +26,8 @@ public sealed class ContextSwitchTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "context-switch-trace";
     public string Description        => "Kernel context-switch analysis — thread scheduling frequency, voluntary vs preempted splits, and wait-reason breakdown from CSwitch events.";
     public bool   IncludeInFullAnalyze => false; // requires a trace with kernel events
+    public string Category             => "Threads & Concurrency";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Context Switch";
 

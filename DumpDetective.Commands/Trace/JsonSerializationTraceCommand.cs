@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -26,6 +26,8 @@ public sealed class JsonSerializationTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "json-trace";
     public string Description        => "JSON serialization cost analysis — CPU time and allocation pressure from System.Text.Json, Newtonsoft.Json, and DataContract JSON.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Category             => "SQL & Network";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "JSON Serialization";
 

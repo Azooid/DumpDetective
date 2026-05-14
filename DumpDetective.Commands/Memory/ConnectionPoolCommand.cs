@@ -1,4 +1,4 @@
-namespace DumpDetective.Commands.Memory;
+﻿namespace DumpDetective.Commands.Memory;
 
 public sealed class ConnectionPoolCommand : ICommand
 {
@@ -14,6 +14,7 @@ public sealed class ConnectionPoolCommand : ICommand
     public string Name               => "connection-pool";
     public string Description        => "Analyze DB connection pool utilization and detect exhaustion.";
     public bool   IncludeInFullAnalyze => true;
+    public string Category             => "Infrastructure / Network";
 
     private const string Help = """
         Usage: DumpDetective connection-pool <dump-file> [options]

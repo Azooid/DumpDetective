@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Trace.Analyzers;
+﻿using DumpDetective.Analysis.Trace.Analyzers;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
@@ -25,6 +25,8 @@ public sealed class FileIoTraceCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "file-io-trace";
     public string Description        => "File I/O analysis — detects slow synchronous reads/writes and high-throughput files from kernel file events (ETL only).";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Infrastructure";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "File I/O Trace";
 

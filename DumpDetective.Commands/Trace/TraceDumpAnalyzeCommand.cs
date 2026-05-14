@@ -1,4 +1,4 @@
-using DumpDetective.Analysis.Memory;
+﻿using DumpDetective.Analysis.Memory;
 using DumpDetective.Analysis.Trace;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
@@ -48,6 +48,8 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
     public string Name               => "trace-dump-analyze";
     public string Description        => "Combined trace + dump analysis — runs all 29 trace sub-analyzers, a lightweight dump walk, and cross-source correlation.";
     public bool   IncludeInFullAnalyze => false;
+    public string Category             => "Orchestrator / Cross-source";
+    public CommandKind Kind               => CommandKind.Trace;
 
     private const string Help = """
         Usage: DumpDetective trace-dump-analyze <trace-file> <dump-file> [options]
@@ -335,8 +337,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
             if (results.GetValueOrDefault("__dispatch_stats__") is DispatchStats ds)
                 TraceEventTypesSection.Render(sink, ds);
 
-            foreach (var op in outputPaths.Where(op =>
-                !op.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var op in outputPaths)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(op)}");
 
             return 0;

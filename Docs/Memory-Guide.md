@@ -35,7 +35,7 @@ DumpDetective render report.bin --output report.html
 
 ## Output and Replay Model
 
-- All commands write to the console by default; pass `-o <file>` to save.
+- Omit `-o` to get `<dump-name>.html` alongside the dump.
 - `.html` — self-contained with inline CSS/JS, sticky nav, and collapsible sections.
 - `.bin` — Brotli-compressed JSON; compact for archival and replayable via `render`.
 - `render` converts any saved `.json`/`.bin` into `.html`, `.md`, `.txt`, `.json`, or `.bin` without reopening the dump.

@@ -1,4 +1,4 @@
-using DumpDetective.Core.Utilities;
+﻿using DumpDetective.Core.Utilities;
 
 using Microsoft.Diagnostics.Tracing.Etlx;
 
@@ -20,6 +20,8 @@ public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
     public string Name               => "threadpool-starvation";
     public string Description        => "Detect thread-pool starvation by parsing a .nettrace or .etl trace file.";
     public bool   IncludeInFullAnalyze => false; // requires a trace file, not a .dmp
+    public string Category             => "Threads & Concurrency";
+    public CommandKind Kind               => CommandKind.Trace;
     public string Key                  => Name;
     public string SectionTitle         => "Thread Pool Starvation";
 
@@ -128,10 +130,8 @@ public sealed class ThreadPoolStarvationCommand : ICommand, ITraceSubAnalyzer
 
             _report.Render(data!, sink, top);
 
-            foreach (var p in outputPaths.Where(p => !p.Equals("console", StringComparison.OrdinalIgnoreCase)))
+            foreach (var p in outputPaths)
                 AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(p)}");
-            if (outputPaths.All(p => p.Equals("console", StringComparison.OrdinalIgnoreCase)) && sink.IsFile && sink.FilePath is not null)
-                AnsiConsole.MarkupLine($"\n[dim]→ Written to:[/] {ProgressLogger.FileLink(sink.FilePath)}");
             return 0;
         }
         catch (Exception ex)

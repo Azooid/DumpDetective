@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using DumpDetective.Analysis.Memory;
 using DumpDetective.Core.Runtime;
 
@@ -18,6 +18,7 @@ public sealed class AnalyzeCommand : ICommand
     public string Name               => "analyze";
     public string Description        => "Scored health report for a single dump (use --full for all sub-reports).";
     public bool   IncludeInFullAnalyze => false;  // orchestrator — not nested
+    public string Category             => "Orchestrator";
 
     private const string Help = """
         Usage: DumpDetective analyze <dump-file> [options]
@@ -171,7 +172,7 @@ public sealed class AnalyzeCommand : ICommand
                     ? (IEnumerable<string>)a.EffectiveOutputPaths
                     : [sink.FilePath ?? outputPath ?? string.Empty];
                 foreach (var p in paths)
-                    if (!string.IsNullOrEmpty(p) && !p.Equals("console", StringComparison.OrdinalIgnoreCase))
+                    if (!string.IsNullOrEmpty(p))
                         log.SuccessFile(p);
             }
             return 0;
