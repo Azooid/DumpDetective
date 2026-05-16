@@ -21,6 +21,7 @@ public sealed class ModuleListReport
 
         RenderModuleTable(data, sink, duplicates.Count);
         if (duplicates.Count > 0) RenderDuplicateAccordions(duplicates, sink);
+        RenderSymbolsSection(data, sink);
     }
 
     private static void RenderModuleTable(ModuleListData data, IRenderSink sink, int dupCount)
@@ -71,5 +72,58 @@ public sealed class ModuleListReport
             sink.Table(["Kind", "Size", "Path"], rows);
             sink.EndDetails();
         }
+    }
+
+    private static void RenderSymbolsSection(ModuleListData data, IRenderSink sink)
+    {
+        // Only show PDB section when at least one module has PDB metadata.
+        var withPdb    = data.Modules.Where(m => m.PdbGuid is not null).ToList();
+        if (withPdb.Count == 0) return;
+
+        int hasPdbFile = withPdb.Count(m => m.PdbPresent);
+        int noPdbFile  = withPdb.Count(m => !m.PdbPresent);
+
+        sink.Section("Symbol (PDB) Metadata");
+        sink.Explain(
+            what: "PDB identity (GUID + age) for every loaded module that has debug information embedded in its PE header.",
+            why:  "These values are required for symbol-server lookups. The GUID and age must match exactly — " +
+                  "a PDB compiled from a different build will not match and symbols will not resolve.",
+            bullets: [
+                "PDB Path = path recorded in the PE at build time; may not exist on this machine",
+                "GUID = unique build identity; must match the symbol server index exactly",
+                "Age = PDB revision counter; incremented each time the binary is re-linked",
+                "Present = PDB file found at the recorded path on this machine",
+            ],
+            action: "To resolve symbols: use WinDbg .sympath or set _NT_SYMBOL_PATH=srv*<local-cache>*https://msdl.microsoft.com/download/symbols. " +
+                    "For private symbols use your team's symbol server URL."
+        );
+
+        sink.KeyValues([
+            ("Modules with PDB metadata", withPdb.Count.ToString("N0")),
+            ("PDB file present locally",  hasPdbFile.ToString("N0")),
+            ("PDB file missing locally",  noPdbFile.ToString("N0")),
+        ]);
+
+        if (noPdbFile > 0)
+            sink.Alert(AlertLevel.Info,
+                $"{noPdbFile} module(s) have PDB metadata but the PDB file was not found at the recorded path.",
+                "Stack frames for these modules will show addresses rather than method names in native debuggers.",
+                "Configure a symbol server or copy PDB files alongside the dump to enable symbol resolution.");
+
+        var rows = withPdb
+            .OrderBy(m => m.Kind == "App" ? 0 : 1)
+            .ThenBy(m => m.FileName)
+            .Select(m => new[]
+            {
+                m.FileName,
+                m.Kind,
+                m.PdbGuid ?? string.Empty,
+                m.PdbAge.ToString(),
+                m.PdbPresent ? "✓" : "✗",
+                m.PdbPath ?? string.Empty,
+            })
+            .ToList();
+        sink.Table(["Assembly", "Kind", "PDB GUID", "Age", "Present", "PDB Path"], rows,
+            $"Symbol identity for {withPdb.Count} module(s)");
     }
 }

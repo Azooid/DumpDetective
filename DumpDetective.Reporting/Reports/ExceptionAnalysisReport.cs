@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -209,7 +210,7 @@ public sealed class ExceptionAnalysisReport
 
             if (infoRows.Count > 0) sink.Table(["Field", "Value"], infoRows);
             if (sample.StackFrames.Count > 0)
-                sink.Table(["Stack Frame"], sample.StackFrames.Select(f => new[] { f }).ToList());
+                sink.Table(["Stack Frame"], sample.StackFrames.Select(f => new[] { DumpHelpers.SanitizeFrame(f) }).ToList());
             else
                 sink.Text("  (no stack trace available — exception may not have been thrown yet)");
             sink.EndDetails();

@@ -2,6 +2,13 @@ using DumpDetective.Core.Models;
 
 namespace DumpDetective.Core.Tracing;
 
+public enum CorrelationConfidence
+{
+    Low,
+    Medium,
+    High,
+}
+
 /// <summary>
 /// A cross-analyzer correlation finding produced by <c>CorrelationEngine</c>.
 /// Unlike <see cref="TraceFinding"/> (which is scoped to a single CPU call tree),
@@ -31,4 +38,20 @@ public sealed record CorrelationFinding(
     /// Command names of the analyzers whose data contributed to this finding,
     /// e.g. ["gc-trace", "alloc-trace"]. Used for cross-linking in the report.
     /// </summary>
-    string[] ContributingAreas);
+    string[] ContributingAreas)
+{
+    /// <summary>
+    /// Normalized confidence tier derived from Score for faster triage.
+    /// </summary>
+    public CorrelationConfidence Confidence => Score switch
+    {
+        >= 85 => CorrelationConfidence.High,
+        >= 65 => CorrelationConfidence.Medium,
+        _ => CorrelationConfidence.Low,
+    };
+
+    /// <summary>
+    /// Human-readable confidence label used by report sinks.
+    /// </summary>
+    public string ConfidenceLabel => Confidence.ToString();
+}

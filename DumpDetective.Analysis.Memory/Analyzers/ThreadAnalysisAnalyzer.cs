@@ -41,8 +41,10 @@ public sealed class ThreadAnalysisAnalyzer
                 if (waitKind == WaitKind.Monitor)     monBlocked++;
                 else if (waitKind == WaitKind.Independent) indepWaiting++;
                 var frames = captureStacks
-                    ? t.EnumerateStackTrace().Take(10)
-                        .Select(f => f.FrameName ?? f.Method?.Signature ?? "<unknown>")
+                    ? t.EnumerateStackTrace()
+                        .Select(f => f.FrameName ?? f.Method?.Signature ?? "")
+                        .Where(f => f.Length > 0)
+                        .Take(20)
                         .ToList()
                     : (IReadOnlyList<string>)[];
 

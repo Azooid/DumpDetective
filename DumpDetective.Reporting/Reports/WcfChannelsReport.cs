@@ -39,6 +39,8 @@ public sealed class WcfChannelsReport
                 sink.DonutChart(stateGroups, "WCF channel state distribution",
                     $"{data.Objects.Count:N0}\nchannels");
         }
+
+        if (faultedTotal > 0)
             sink.Alert(AlertLevel.Critical, $"{faultedTotal} faulted WCF channel(s) found.",
                 "Faulted channels cannot be reused and must be aborted before creating new ones.",
                 "Call IChannel.Abort() (not Close()) on faulted channels.");
@@ -74,9 +76,23 @@ public sealed class WcfChannelsReport
             .OrderByDescending(r => int.Parse(r[1].Replace(",", "")))
             .ToList();
         if (epRows.Count > 0)
+        {
             sink.Table(["Endpoint", "Objects", "Faulted"], epRows);
+        }
         else
-            sink.Text("No endpoint addresses resolved.");
+        {
+            // Check whether objects have any non-empty state (real channels) or are all infra types
+            bool hasChannelObjects = data.Objects.Any(o => o.State.Length > 0);
+            if (!hasChannelObjects && data.Objects.Count > 0)
+                sink.Text(
+                    "No client-side WCF proxy channels found. " +
+                    "The objects listed above are server-side WCF hosting and configuration infrastructure " +
+                    "(ServiceHttpModule, OperationContext, configuration sections) which do not carry " +
+                    "endpoint addresses. Endpoint addresses are only present on client proxy channels " +
+                    "(ChannelFactory, ClientBase<T> subclasses, IChannel implementations).");
+            else
+                sink.Text("No endpoint addresses resolved.");
+        }
     }
 
     private static void RenderFaultReasons(IRenderSink sink, WcfChannelsData data)

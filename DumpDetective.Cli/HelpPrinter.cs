@@ -78,6 +78,22 @@ internal static class HelpPrinter
         grid.AddRow("[bold yellow]Global flags[/]",   "[dim]--debug   print peak memory after run[/]");
         grid.AddRow("[bold yellow]Env vars[/]",        "[dim]DD_DUMP   default dump path when none is given[/]");
 
+        // ── loaded plugins ────────────────────────────────────────────────────
+        var plugins = CommandRegistry.Plugins;
+        if (plugins.Count > 0)
+        {
+            grid.AddRow("", "");
+            grid.AddRow("[bold white on grey] loaded plugins [/]", "");
+            foreach (var p in plugins)
+            {
+                string ver = p.Version is not null ? $" [dim]{Markup.Escape(p.Version)}[/]" : "";
+                int count  = p.Commands.Count;
+                grid.AddRow(
+                    $"  [bold green]{Markup.Escape(p.Name)}[/]{ver}",
+                    $"[dim]{count} command{(count == 1 ? "" : "s")}[/]");
+            }
+        }
+
         var panel = new Panel(grid)
         {
             Header      = new PanelHeader("[bold] DumpDetective — .NET memory dump analysis tool [/]"),

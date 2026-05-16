@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!--
+      The output directory name MUST match the project name.
+      The plugin loader uses the folder name to find the entry DLL.
+      To install: copy the entire output folder to one of:
+        <exe dir>/plugins/<YourPlugin.Name>/
+        %USERPROFILE%/.dumpdetective/plugins/<YourPlugin.Name>/
+    -->
+    <AssemblyName>MyPlugin.DumpDetective</AssemblyName>
+    <RootNamespace>MyPlugin.DumpDetective</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Reference DumpDetective.Core but do NOT copy it to the output folder.
+      The host provides it at runtime.  ExcludeAssets="runtime" prevents the
+      host's copy from being overwritten by the plugin's older/newer copy.
+    -->
+    <PackageReference Include="DumpDetective.Cli"
+                      Version="3.0.1"
+                      ExcludeAssets="runtime;native"
+                      PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>

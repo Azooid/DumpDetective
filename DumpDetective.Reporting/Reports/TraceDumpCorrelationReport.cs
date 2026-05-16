@@ -95,11 +95,11 @@ public sealed class TraceDumpCorrelationReport
             string sources = f.ContributingAreas.Length > 0
                 ? string.Join(" + ", f.ContributingAreas)
                 : "—";
-            rows.Add([sev, f.Score.ToString(), f.Category, f.Headline, sources]);
+            rows.Add([sev, f.ConfidenceLabel, f.Score.ToString(), f.Category, f.Headline, sources]);
         }
 
         sink.Table(
-            ["Severity", "Score", "Category", "Finding", "Sources"],
+            ["Severity", "Confidence", "Score", "Category", "Finding", "Sources"],
             rows,
             caption: "Findings ranked by confidence-weighted score. Expand details below for root cause explanation and remediation advice.");
 
@@ -113,7 +113,7 @@ public sealed class TraceDumpCorrelationReport
                 FindingSeverity.Warning  => "Warning",
                 _                        => "Info",
             };
-            sink.BeginDetails($"[{severity}]  {f.Category}  —  {f.Headline}  (score {f.Score}/100)", open: false);
+            sink.BeginDetails($"[{severity}]  {f.Category}  —  {f.Headline}  (score {f.Score}/100, confidence {f.ConfidenceLabel})", open: false);
             if (!string.IsNullOrWhiteSpace(f.Detail))
                 sink.Text(f.Detail);
             if (!string.IsNullOrWhiteSpace(f.Advice))

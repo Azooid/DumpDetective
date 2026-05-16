@@ -491,7 +491,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         sink.Alert(AlertLevel.Info,
             "The following findings are derived from cross-analyzer correlation — " +
             "each represents a causal relationship between two or more signals that no single analyzer sees in isolation. " +
-            "Findings are ranked by score (0–100).",
+            "Findings are ranked by score (0–100) with a normalized confidence tier.",
             detail: null);
 
         // Summary table: one row per finding
@@ -504,11 +504,11 @@ public sealed class TraceAnalyzeCommand : ICommand
                 FindingSeverity.Warning  => "⚠ Warning",
                 _                       => "ℹ Info"
             };
-            rows.Add([severity, f.Category, $"{f.Score}/100", f.Headline,
+            rows.Add([severity, f.ConfidenceLabel, f.Category, $"{f.Score}/100", f.Headline,
                       string.Join(", ", f.ContributingAreas)]);
         }
         sink.Table(
-            ["Severity", "Category", "Score", "Headline", "Contributing Analyzers"],
+            ["Severity", "Confidence", "Category", "Score", "Headline", "Contributing Analyzers"],
             rows,
             "Cross-analyzer causal findings — ranked by score");
 
@@ -522,7 +522,7 @@ public sealed class TraceAnalyzeCommand : ICommand
                 _                       => AlertLevel.Info
             };
             sink.Alert(level,
-                $"[{f.Category}] {f.Headline}  (score: {f.Score}/100)",
+                $"[{f.Category}] {f.Headline}  (score: {f.Score}/100, confidence: {f.ConfidenceLabel})",
                 f.Detail,
                 f.Advice);
         }

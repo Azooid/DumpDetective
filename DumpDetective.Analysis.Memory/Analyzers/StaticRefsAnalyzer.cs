@@ -107,9 +107,17 @@ public sealed class StaticRefsAnalyzer
             var mtSizeCache = new Dictionary<ulong, long>(4096);
             if (bfsCache is null && ctx.Snapshot is { } sizeSnap)
             {
-                foreach (var (_, agg) in sizeSnap.StreamTypeStats())
-                    if (agg.MT != 0 && agg.Count > 0)
-                        mtSizeCache[agg.MT] = agg.Size / agg.Count;
+                sizeSnap.RegisterTypeStatsReader();
+                try
+                {
+                    foreach (var (_, agg) in sizeSnap.StreamTypeStats())
+                        if (agg.MT != 0 && agg.Count > 0)
+                            mtSizeCache[agg.MT] = agg.Size / agg.Count;
+                }
+                finally
+                {
+                    sizeSnap.RetireTypeStatsReader();
+                }
             }
 
             // Phase 2: BFS per declaring type with a shared visited set.

@@ -180,12 +180,19 @@ public sealed class RootCauseChainAnalyzer
         {
             foreach (var cf in correlations)
             {
+                var evidence = new List<string>(2)
+                {
+                    $"Confidence: {cf.ConfidenceLabel} ({cf.Score}/100)",
+                };
+                if (cf.ContributingAreas.Length > 0)
+                    evidence.Add($"Sources: {string.Join(", ", cf.ContributingAreas)}");
+
                 chains.Add(new CausalChain(
                     cf.Severity,
                     Score: cf.Score,
                     RootCause: cf.Headline,
                     Effects: [cf.Detail],
-                    Evidence: [],
+                    Evidence: evidence,
                     Advice: cf.Advice,
                     ContributingAreas: [cf.Category]));
             }

@@ -1,4 +1,8 @@
 /* ── Navigation builder ───────────────────────────────────────────────── */
+};
+
+};
+/* ── Navigation builder ───────────────────────────────────────────────── */
 (function () {
   const nav = document.getElementById('nav-list');
   const root = document.getElementById('report-root');
@@ -672,4 +676,6 @@ window.exportCsv = function (tid) {
   a.download = 'export_t' + tid + '.csv';
   a.click();
   URL.revokeObjectURL(a.href);
+};
+
 };

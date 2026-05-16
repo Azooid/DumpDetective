@@ -36,7 +36,7 @@ namespace DumpDetective.Analysis.Memory;
 public static class FragmentationCache
 {
     private static readonly byte[] MagicBytes = "FRAG"u8.ToArray(); // 4 bytes
-    private const int CurrentVersion = 1;
+    private const int CurrentVersion = 4; // bumped: SegmentKindLabel now reads seg.Kind directly (was calling GetSegmentByAddress with base address, which returned null)
 
     // ── Path ─────────────────────────────────────────────────────────────────
 

@@ -48,6 +48,7 @@ public sealed class MemoryLeakAnalyzer
 
         if (ctx.Snapshot is { } snapFast)
         {
+            snapFast.RegisterTypeStatsReader();
             // Fast path — stream TypeAgg from temp file; no large in-memory dict
             CommandBase.RunStatus("Reading type stats from snapshot cache (Step 1: fast-path)...", () =>
             {
@@ -150,8 +151,15 @@ public sealed class MemoryLeakAnalyzer
 
         // Helper to build a SuspectRow from a typeStats entry
         SuspectRow ToSuspect(KeyValuePair<string, (long Count, long Size, long LohSize, long LohCount, long Gen2Count, long Gen2Size, string Gen, ulong SampleAddr, ulong MT)> kv)
-            => new SuspectRow(kv.Key, kv.Value.Count, kv.Value.Size, kv.Value.Gen,
-                              kv.Value.Gen2Count, kv.Value.Gen2Size, kv.Value.LohCount, kv.Value.LohSize);
+        {
+            int prob = ComputeLeakProbability(kv.Key, kv.Value.Count, kv.Value.Size,
+                                              kv.Value.Gen2Count, kv.Value.Gen2Size,
+                                              kv.Value.LohCount, kv.Value.LohSize);
+            return new SuspectRow(kv.Key, kv.Value.Count, kv.Value.Size, kv.Value.Gen,
+                                  kv.Value.Gen2Count, kv.Value.Gen2Size,
+                                  kv.Value.LohCount, kv.Value.LohSize,
+                                  LeakProbability: prob);
+        }
 
         // Filter for count-based suspects (non-system, high count OR ≥1MB), top 20
         var countSuspects = typeStats
@@ -282,10 +290,8 @@ public sealed class MemoryLeakAnalyzer
             });
 
             // Release the referrer cache as soon as BFS tracing is done.
-            // Also release TypeStats — memory-leak is the last command that reads it
-            // in full-analyze mode (heap-stats and gen-summary finish in < 1s early on).
             referrerCache!.ReleaseIfDone();
-            ctx.Snapshot?.ReleaseTypeStats();
+            ctx.Snapshot?.RetireTypeStatsReader();
         }
 
         int totalUniqueTypes = allTypes.Count;
@@ -441,5 +447,37 @@ public sealed class MemoryLeakAnalyzer
             return chain;
         }
         catch { return []; }
+    }
+
+    /// <summary>
+    /// Heuristic leak-probability score 0–100 for a single type.
+    /// Weights: Gen2/LOH persistence (40 pts), count magnitude (30 pts),
+    /// LOH presence (15 pts), app-layer type (15 pts).
+    /// </summary>
+    private static int ComputeLeakProbability(
+        string typeName, long count, long size,
+        long gen2Count, long gen2Size,
+        long lohCount, long lohSize)
+    {
+        if (count <= 0 || size <= 0) return 0;
+
+        int score = 0;
+
+        // Gen2 persistence (fraction of instances in Gen2)
+        double gen2Ratio = gen2Count > 0 ? (double)gen2Count / count : 0;
+        score += gen2Ratio >= 0.8 ? 40 : gen2Ratio >= 0.5 ? 28 : gen2Ratio >= 0.2 ? 14 : 0;
+
+        // Count magnitude (absolute instance count)
+        score += count >= 1_000_000 ? 30 : count >= 100_000 ? 22 : count >= 10_000 ? 14 : count >= 1_000 ? 6 : 0;
+
+        // LOH presence (large-object heap = pinned, never compacted naturally)
+        if (lohCount > 0)
+            score += lohCount >= 1_000 ? 15 : lohCount >= 100 ? 10 : 5;
+
+        // App-layer type heuristic: system types score lower; app types score higher
+        bool isSystem = DumpHelpers.IsSystemType(typeName);
+        score += isSystem ? 0 : 15;
+
+        return Math.Min(score, 100);
     }
 }

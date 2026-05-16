@@ -37,15 +37,33 @@ public sealed class TimerLeaksAnalyzer : IHeapObjectConsumer
     public void Consume(in ClrObject obj, HeapTypeMeta meta, ClrHeap heap)
     {
         if (!meta.IsTimer || _items is null) return;
-        var (cb, module) = _runtime is not null ? ResolveCallback(obj, _runtime) : ("", "");
+
+        // For System.Threading.Timer the real data lives on the inner TimerQueueTimer.
+        // On .NET Framework: Timer.m_timer → TimerHolder.m_timer → TimerQueueTimer (two hops)
+        // On .NET Core:      Timer.m_timer → TimerQueueTimer (one hop)
+        // For System.Threading.TimerQueueTimer / System.Timers.Timer it lives directly on the object.
+        ClrObject timerObj = obj;
+        if (meta.Name == "System.Threading.Timer")
+        {
+            var hop1 = Deref(obj, "m_timer");
+            if (hop1.IsValid)
+            {
+                // If we landed on TimerHolder, go one more level
+                timerObj = hop1.Type?.Name == "System.Threading.TimerHolder"
+                    ? Deref(hop1, "m_timer")
+                    : hop1;
+            }
+        }
+
+        var (cb, module) = _runtime is not null ? ResolveCallback(timerObj, meta.Name, _runtime) : ("", "");
         _items.Add(new TimerItem(
             meta.Name,
             obj.Address,
             (long)obj.Size,
             cb,
             module,
-            ReadTimerLong(obj, "_dueTime"),
-            ReadTimerLong(obj, "_period")));
+            ReadTimerLong(timerObj, "_dueTime", "m_dueTime"),
+            ReadTimerLong(timerObj, "_period",  "m_period")));
     }
 
     public void OnWalkComplete()
@@ -85,14 +103,63 @@ public sealed class TimerLeaksAnalyzer : IHeapObjectConsumer
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
-    private static (string Callback, string Module) ResolveCallback(ClrObject obj, ClrRuntime runtime)
+    /// <summary>Safely follow one object-reference field; returns default (invalid) on any failure.</summary>
+    private static ClrObject Deref(ClrObject obj, string fieldName)
     {
         try
         {
-            var cb = obj.ReadObjectField("m_callback");
-            if (cb.IsNull || !cb.IsValid) return ("", "");
-            ulong ptr = cb.ReadField<ulong>("_methodPtr");
-            if (ptr == 0) return (cb.Type?.Name ?? "", "");
+            if (obj.Type?.GetFieldByName(fieldName) is null) return default;
+            var child = obj.ReadObjectField(fieldName);
+            return child.IsValid && !child.IsNull ? child : default;
+        }
+        catch { return default; }
+    }
+
+    private static (string Callback, string Module) ResolveCallback(
+        ClrObject timerObj, string typeName, ClrRuntime runtime)
+    {
+        try
+        {
+            // Field name differs by type:
+            //   TimerQueueTimer  → m_timerCallback  (.NET Fx + Core)
+            //   System.Timers.Timer → callback
+            ClrObject cb = default;
+            foreach (var fn in (ReadOnlySpan<string>)["m_timerCallback", "m_callback", "callback"])
+            {
+                if (timerObj.Type?.GetFieldByName(fn) is null) continue;
+                var candidate = timerObj.ReadObjectField(fn);
+                if (candidate.IsValid && !candidate.IsNull) { cb = candidate; break; }
+            }
+            if (!cb.IsValid || cb.IsNull) return ("", "");
+
+            // Try _methodPtr (NativeInt on .NET Fx/Core delegates)
+            ulong ptr = 0;
+            foreach (var pf in (ReadOnlySpan<string>)["_methodPtr", "_methodPtrAux"])
+            {
+                if (cb.Type?.GetFieldByName(pf) is null) continue;
+                try { ptr = cb.ReadField<ulong>(pf); } catch { try { ptr = (ulong)cb.ReadField<uint>(pf); } catch { } }
+                if (ptr != 0) break;
+            }
+
+            if (ptr == 0)
+            {
+                // _methodPtr is 0 — fall back to the delegate target type as a hint
+                var targetField = cb.Type?.GetFieldByName("_target");
+                string targetHint = "";
+                if (targetField?.IsObjectReference == true)
+                {
+                    try
+                    {
+                        var tgt = targetField.ReadObject(cb, false);
+                        if (tgt.IsValid && !tgt.IsNull && tgt.Type is not null)
+                            targetHint = tgt.Type.Name ?? "";
+                    }
+                    catch { }
+                }
+                string fallback = cb.Type?.Name ?? "";
+                return (targetHint.Length > 0 ? $"{fallback} → {targetHint}" : fallback, "");
+            }
+
             var m = runtime.GetMethodByInstructionPointer(ptr);
             if (m is null) return (cb.Type?.Name ?? "", "");
             string typePart = m.Type?.Name is { } tn ? $"{tn}." : string.Empty;
@@ -101,10 +168,16 @@ public sealed class TimerLeaksAnalyzer : IHeapObjectConsumer
         catch { return ("", ""); }
     }
 
-    private static long ReadTimerLong(ClrObject obj, string field)
+    private static long ReadTimerLong(ClrObject obj, params string[] fieldNames)
     {
-        try { return obj.ReadField<long>(field); } catch { }
-        try { return obj.ReadField<int>(field); }  catch { }
+        if (!obj.IsValid) return -1;
+        foreach (var field in fieldNames)
+        {
+            if (obj.Type?.GetFieldByName(field) is null) continue;
+            try { return obj.ReadField<long>(field); } catch { }
+            try { return obj.ReadField<uint>(field); } catch { }
+            try { return obj.ReadField<int>(field); }  catch { }
+        }
         return -1;
     }
 }

@@ -50,7 +50,9 @@ public sealed class HttpRequestsReport
             sink.DonutChart(typeSegs, "HTTP objects by type", $"{data.Objects.Count:N0}\ntotal");
 
         RenderRequestDetails(sink, data.Objects);
+        RenderServicePoints(sink, data.ServicePoints);
         RenderResponseCodes(sink, data.Objects);
+        RenderAsyncCorrelations(sink, data);
         if (showAddr) RenderAddresses(sink, data.Objects);
     }
 
@@ -92,6 +94,47 @@ public sealed class HttpRequestsReport
         }
     }
 
+    private static void RenderServicePoints(IRenderSink sink, IReadOnlyList<ServicePointEntry>? servicePoints)
+    {
+        if (servicePoints is null || servicePoints.Count == 0) return;
+
+        sink.Section("Outbound Connection Pools (ServicePoint)");
+        sink.Explain(
+            what: "System.Net.ServicePoint objects represent active outbound HTTP connection pools — one per remote server endpoint. They persist even after request objects are GC'd.",
+            why:  "ServicePoints show which external servers this process is currently connected to and how many simultaneous connections are open, regardless of whether any requests are in-flight.",
+            impact: "High CurrentConnections relative to ConnectionLimit can cause request queuing and latency. Unexpected endpoints may reveal misconfiguration or data leaks.",
+            bullets: [
+                "ConnectionLimit default is 2 for most scenarios — increase via ServicePointManager.DefaultConnectionLimit for high-throughput services",
+                "CurrentConnections > 0 at dump time means active I/O to that endpoint",
+            ],
+            action: "Review each endpoint — unexpected entries may indicate misconfigured clients. For known endpoints with high connections, increase ConnectionLimit."
+        );
+
+        int totalActive = servicePoints.Sum(sp => sp.CurrentConnections);
+        sink.KeyValues([
+            ("Unique remote endpoints", servicePoints.Count.ToString("N0")),
+            ("Total active connections", totalActive.ToString("N0")),
+        ]);
+
+        var rows = servicePoints
+            .OrderByDescending(sp => sp.CurrentConnections)
+            .Select(sp => new[]
+            {
+                string.IsNullOrEmpty(sp.Address) ? $"{sp.Host}:{sp.Port}" : sp.Address,
+                sp.CurrentConnections.ToString("N0"),
+                sp.ConnectionLimit.ToString("N0"),
+                sp.CurrentConnections >= sp.ConnectionLimit ? "AT LIMIT" : "",
+            })
+            .ToList();
+        sink.Table(["Endpoint", "Active Connections", "Limit", "Status"], rows);
+
+        var atLimit = servicePoints.Count(sp => sp.CurrentConnections >= sp.ConnectionLimit && sp.CurrentConnections > 0);
+        if (atLimit > 0)
+            sink.Alert(AlertLevel.Warning, $"{atLimit} endpoint(s) at connection limit.",
+                "Requests to these endpoints will queue until a connection is freed.",
+                "Raise ServicePointManager.DefaultConnectionLimit or use HttpClientFactory with a SocketsHttpHandler.");
+    }
+
     private static void RenderResponseCodes(IRenderSink sink, IReadOnlyList<HttpObjectEntry> objects)
     {
         var responses = objects.Where(o => o.StatusCode > 0).ToList();
@@ -120,6 +163,43 @@ public sealed class HttpRequestsReport
         var rows = objects.Take(200)
             .Select(o => new[] { o.Type, $"0x{o.Addr:X16}", DumpHelpers.FormatSize(o.Size), o.Method, o.Uri }).ToList();
         sink.Table(["Type", "Address", "Size", "Method", "URI"], rows);
+    }
+
+    private static void RenderAsyncCorrelations(IRenderSink sink, HttpRequestsData data)
+    {
+        var corrs = data.AsyncCorrelations;
+        if (corrs is null || corrs.Count == 0) return;
+
+        sink.Section("Async State Machines Likely Serving Requests");
+        sink.Explain(
+            what: "Async state machines on the heap whose method names suggest they are currently " +
+                  "handling an HTTP request (names contain Controller, Handler, Endpoint, Middleware, etc.).",
+            why:  "Correlating in-flight HTTP requests with suspended async state machines reveals how many " +
+                  "concurrent requests are actively being processed — and where they are awaiting.",
+            impact: "If the number of suspended async machines significantly exceeds the in-flight request count, " +
+                    "it indicates cascading awaits, retry loops, or downstream I/O backpressure.",
+            action: "Use 'async-stacks <dump>' for a full async backlog view. " +
+                    "For request-level tracing, combine with 'http-trace' from an ETW trace file."
+        );
+
+        sink.KeyValues([
+            ("Suspended HTTP-like state machines", corrs.Count.ToString("N0")),
+            ("In-flight HTTP objects",             data.Objects.Count(o =>
+                o.Type is "System.Net.Http.HttpRequestMessage" or "System.Net.HttpWebRequest").ToString("N0")),
+        ]);
+
+        if (corrs.Count > data.Objects.Count * 3)
+            sink.Alert(AlertLevel.Warning,
+                $"{corrs.Count} suspended async machines for {data.Objects.Count} HTTP objects.",
+                "More async continuations than in-flight requests suggests cascading awaits or downstream backpressure.",
+                "Profile with 'async-stacks' to identify the deepest await chains.");
+
+        var rows = corrs
+            .Take(100)
+            .Select(c => new[] { c.StateMachineMethod, c.State, $"0x{c.Addr:X16}", c.CorrelationHint })
+            .ToList();
+        sink.Table(["Async Method", "State", "Address", "Request Context"], rows,
+            $"{corrs.Count} suspended async method(s) with HTTP-handling signatures");
     }
 
     private static string ExtractHost(string uri)

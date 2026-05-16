@@ -14,7 +14,7 @@ public sealed class HeapFragmentationReport
 
         RenderOverall(data, sink, totalCommitted, totalFree, totalFrag);
         RenderSegmentTable(data, sink);
-        RenderSegmentAlerts(data, sink);
+        RenderSegmentAlerts(data, sink, totalFrag);
         RenderFreeDistribution(data, sink);
     }
 
@@ -98,18 +98,57 @@ public sealed class HeapFragmentationReport
         sink.EndDetails();
     }
 
-    private static void RenderSegmentAlerts(HeapFragmentationData data, IRenderSink sink)
+    private static void RenderSegmentAlerts(HeapFragmentationData data, IRenderSink sink, double totalFrag)
     {
+        var highFrag    = new List<string>();
+        var pinnedFrag  = new List<string>();
+
         foreach (var s in data.Segments)
         {
             if (s.CommittedBytes <= 0) continue;
             double frag = s.FreeBytes * 100.0 / s.CommittedBytes;
-            if (frag >= 50)
-                sink.Alert(AlertLevel.Warning,
-                    $"Segment 0x{s.Address:X} ({s.Kind}) is {frag:F0}% fragmented — {s.PinnedCount:N0} pinned object(s)",
-                    advice: s.PinnedCount > 0
-                        ? "Pinned objects prevent compaction. Minimise GCHandle.Alloc(Pinned) lifetime."
-                        : "High free-to-committed ratio. Consider GC.Collect(2, GCCollectionMode.Aggressive) if this is a background issue.");
+            if (frag < 50) continue;
+
+            string entry = $"0x{s.Address:X} ({s.Kind}){(s.PinnedCount > 0 ? $" — {s.PinnedCount:N0} pinned" : "")}";
+            if (s.PinnedCount > 0)
+                pinnedFrag.Add(entry);
+            else
+                highFrag.Add(entry);
+        }
+
+        if (pinnedFrag.Count > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{pinnedFrag.Count} segment{(pinnedFrag.Count == 1 ? " has" : "s have")} pinned objects limiting compaction",
+                advice: "Pinned objects prevent the GC from moving live objects during compaction. " +
+                        "Minimise GCHandle.Alloc(Pinned) lifetime. See segment table for details.");
+
+        if (highFrag.Count > 0)
+        {
+            // Split segments into ephemeral/young (Gen0, Gen1, Ephemeral) vs old (Gen2, LOH, etc.).
+            // Ephemeral segments are partially empty by design — the GC reserves committed space
+            // for future promotions — so high free % there is normal and not a concern.
+            bool anyNonEphemeral = data.Segments.Any(s =>
+            {
+                if (s.CommittedBytes <= 0) return false;
+                double f = s.FreeBytes * 100.0 / s.CommittedBytes;
+                return f >= 50 && s.PinnedCount == 0 &&
+                       s.Kind is not ("Gen0" or "Gen1" or "Ephemeral");
+            });
+
+            string overallNote = totalFrag < 20
+                ? $"Overall heap fragmentation is only {totalFrag:F1}% — " +
+                  (anyNonEphemeral
+                      ? "most fragmented segments are Gen2 or LOH; watch for growth over time."
+                      : "all fragmented segments are ephemeral/young-gen regions, which is expected and not a concern.")
+                : $"Overall heap fragmentation is {totalFrag:F1}%. " +
+                  (anyNonEphemeral
+                      ? "Gen2/LOH segments are fragmented — this is worth investigating."
+                      : "All fragmented segments are ephemeral regions; check Gen2/LOH in the segment table.");
+
+            sink.Alert(totalFrag >= 20 && anyNonEphemeral ? AlertLevel.Warning : AlertLevel.Info,
+                $"{highFrag.Count} segment{(highFrag.Count == 1 ? " is" : "s are")} mostly free",
+                advice: overallNote +
+                        " Consider GC.Collect(2, GCCollectionMode.Aggressive) if fragmentation is growing over time.");
         }
     }
 

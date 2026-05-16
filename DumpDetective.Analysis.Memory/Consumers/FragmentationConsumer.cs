@@ -27,24 +27,24 @@ public sealed class FragmentationConsumer : IHeapObjectConsumer
     // bucket key → (count, totalBytes)
     public readonly Dictionary<int, (long Count, long Size)> Buckets = new();
 
-    private readonly ClrType _freeType;
+    // Opt in to receive free (GC-hole) objects so we can track per-segment FreeBytes
+    // and bucket hole sizes for the distribution histogram.
+    public bool ConsumeFreeObjects => true;
 
-    public FragmentationConsumer(ClrHeap heap, IEnumerable<ClrSegment> segments, ClrType freeType)
+    public FragmentationConsumer(ClrHeap heap, IEnumerable<ClrSegment> segments)
     {
-        _freeType = freeType;
-        SegData   = new Dictionary<ulong, MutableSeg>();
+        SegData = new Dictionary<ulong, MutableSeg>();
         foreach (var seg in segments)
             SegData[seg.Address] = new MutableSeg(
-                DumpHelpers.SegmentKindLabel(heap, seg.Address),
+                DumpHelpers.SegmentKindLabel(seg),
                 seg.Address,
                 (long)seg.CommittedMemory.Length);
     }
 
     // Clone ctor — empty accumulators, same structure
-    private FragmentationConsumer(ClrType freeType, Dictionary<ulong, MutableSeg> segTemplate)
+    private FragmentationConsumer(Dictionary<ulong, MutableSeg> segTemplate)
     {
-        _freeType = freeType;
-        SegData   = new Dictionary<ulong, MutableSeg>(segTemplate.Count);
+        SegData = new Dictionary<ulong, MutableSeg>(segTemplate.Count);
         foreach (var (addr, s) in segTemplate)
             SegData[addr] = new MutableSeg(s.Kind, addr, s.CommittedBytes);
     }
@@ -56,7 +56,7 @@ public sealed class FragmentationConsumer : IHeapObjectConsumer
         if (seg is null || !SegData.TryGetValue(seg.Address, out var info)) return;
 
         long size = (long)obj.Size;
-        if (obj.Type == _freeType)
+        if (obj.Type.IsFree)
         {
             // Free object (GC hole) — add to free bytes and bucket by hole size.
             // Bucket keys are fixed integers 0–5 representing logarithmic size ranges:
@@ -84,7 +84,7 @@ public sealed class FragmentationConsumer : IHeapObjectConsumer
 
     public void OnWalkComplete() { }
 
-    public IHeapObjectConsumer CreateClone() => new FragmentationConsumer(_freeType, SegData);
+    public IHeapObjectConsumer CreateClone() => new FragmentationConsumer(SegData);
 
     public void MergeFrom(IHeapObjectConsumer other)
     {

@@ -42,7 +42,7 @@ public sealed class TimerLeaksReport
             sink.BeginDetails($"{g.Key}  —  {g.Count():N0} instance(s)  |  {Fmt(grpSize)}", open: g.Count() > 10);
 
             var cbRows = g
-                .GroupBy(t => t.Callback.Length > 0 ? t.Callback : "<unknown>")
+                .GroupBy(t => t.Callback.Length > 0 ? DumpHelpers.SanitizeFrame(t.Callback) : "<unknown>")
                 .OrderByDescending(cg => cg.Count())
                 .Select(cg => new[]
                 {
@@ -60,7 +60,7 @@ public sealed class TimerLeaksReport
                 var addrRows = g.Take(200).Select(t => new[]
                 {
                     $"0x{t.Addr:X16}",
-                    t.Callback.Length > 0 ? t.Callback : "—",
+                    t.Callback.Length > 0 ? DumpHelpers.SanitizeFrame(t.Callback) : "—",
                     FormatInterval(t.PeriodMs),
                     FormatInterval(t.DueMs),
                     Fmt(t.Size),

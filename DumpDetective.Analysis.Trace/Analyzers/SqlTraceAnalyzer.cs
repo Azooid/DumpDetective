@@ -157,7 +157,8 @@ public sealed class SqlTraceAnalyzer
             .ThenByDescending(q => q.TotalMs)
             .ThenByDescending(q => q.MaxMs)
             .Select(q => new SqlQuerySummary(q.Text, q.Count, q.TotalMs, q.MaxMs,
-                                             q.Count > 0 ? q.TotalMs / q.Count : 0, q.Errors))
+                                             q.Count > 0 ? q.TotalMs / q.Count : 0, q.Errors,
+                                             DetectOrm(q.Text)))
             .ToList();
 
         var topDbs = ApplyLimit(c.DbAcc
@@ -394,6 +395,35 @@ public sealed class SqlTraceAnalyzer
     {
         if (sql.Length > 150) sql = sql[..150];
         return sql.Trim();
+    }
+
+    /// <summary>
+    /// Heuristic ORM classifier based on query shape and provider signals.
+    /// EF Core generates SELECT with aliases like "AS [e]" and LINQ-like patterns.
+    /// NHibernate uses aliases like "this_" and "col0_". Dapper is indistinguishable from
+    /// plain ADO.NET by query text alone so it falls through to AdoNet.
+    /// </summary>
+    private static OrmKind DetectOrm(string sql)
+    {
+        if (sql.StartsWith("(no SQL", StringComparison.Ordinal)) return OrmKind.Unknown;
+        // EF Core: generates SELECT ... AS [e] or FROM [Table] AS [t]
+        if (sql.Contains("AS [e]",  StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("AS [t]",  StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("AS [c]",  StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("AS [o]",  StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("AS [s]",  StringComparison.OrdinalIgnoreCase))
+            return OrmKind.EfCore;
+        // EF6: generates TOP(x) and JOIN patterns with Extent aliases
+        if (sql.Contains("Extent1", StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("Extent2", StringComparison.OrdinalIgnoreCase))
+            return OrmKind.EfSix;
+        // NHibernate: generates aliases like this_, col0_, col1_
+        if (sql.Contains("this_",  StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("col0_",  StringComparison.OrdinalIgnoreCase) ||
+            sql.Contains("_0_",    StringComparison.OrdinalIgnoreCase))
+            return OrmKind.NHibernate;
+        // PetaPoco / RepoDb: very hard to distinguish from plain ADO, fall through
+        return sql.Length > 0 ? OrmKind.AdoNet : OrmKind.Unknown;
     }
 
     // ─────────────────────────────────────────────────────────────────────────

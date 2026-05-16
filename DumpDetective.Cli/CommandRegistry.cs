@@ -107,6 +107,10 @@ public static class CommandRegistry
                 new ModuleListAnalyzer(),
                 new ModuleListReport()),
 
+            new NativeInteropCommand(
+                new NativeInteropAnalyzer(),
+                new NativeInteropReport()),
+
             new HandleTableCommand(
                 new HandleTableAnalyzer(),
                 new HandleTableReport()),
@@ -149,6 +153,17 @@ public static class CommandRegistry
 
             new ObjectInspectCommand(),
 
+            // ── diagnostic synthesis ────────────────────────────────────────────
+            new DiagnosticSummaryCommand(
+                new ConfigurationSmellAnalyzer(),
+                new WorkloadProfileClassifier(),
+                new ExceptionAnalysisAnalyzer(),
+                new MemoryLeakAnalyzer(),
+                new ThreadAnalysisAnalyzer(),
+                new AsyncStacksAnalyzer(),
+                new DeadlockAnalyzer(),
+                new DiagnosticSummaryReport()),
+
             // ── cache lifecycle ─────────────────────────────────────────────
             new LoadCommand(),
             new CloseCommand(),
@@ -158,7 +173,7 @@ public static class CommandRegistry
         // with the orchestrators that need it.
         var fullAnalyzeList = System.Array.FindAll(analysisCommands, static c => c.IncludeInFullAnalyze);
 
-        _commands =
+        ICommand[] builtIn =
         [
             new AnalyzeCommand(fullAnalyzeList),
             ..analysisCommands,
@@ -166,9 +181,35 @@ public static class CommandRegistry
             new RenderCommand(),
             new DiffCommand(),
         ];
+
+        // Load plugin commands.  Built-in names always win — any plugin command
+        // whose name clashes with a built-in is silently dropped.
+        var builtInNames  = new HashSet<string>(builtIn.Select(c => c.Name), StringComparer.OrdinalIgnoreCase);
+        var pluginCommands = new List<ICommand>();
+
+        _plugins = PluginLoader.LoadAll();
+        foreach (var plugin in _plugins)
+        {
+            foreach (var cmd in plugin.Commands)
+            {
+                if (!builtInNames.Add(cmd.Name))
+                {
+                    Spectre.Console.AnsiConsole.MarkupLine(
+                        $"[yellow]Plugin warning:[/] [dim]{plugin.Name}[/] — command [bold]{cmd.Name}[/] clashes with a built-in command, skipping.");
+                    continue;
+                }
+                pluginCommands.Add(cmd);
+            }
+        }
+
+        _commands = pluginCommands.Count == 0
+            ? builtIn
+            : [..builtIn, ..pluginCommands];
     }
 
-    /// <summary>All registered commands.</summary>
+    private static IReadOnlyList<LoadedPlugin> _plugins = [];
+
+    /// <summary>All registered commands (built-in + plugin).</summary>
     public static IEnumerable<ICommand> All => _commands;
 
     /// <summary>Commands included in a full-analyze run.</summary>
@@ -182,4 +223,7 @@ public static class CommandRegistry
             if (cmd.Name == name) return cmd;
         return null;
     }
+
+    /// <summary>Metadata for all successfully loaded plugins (empty when no plugins are present).</summary>
+    internal static IReadOnlyList<LoadedPlugin> Plugins => _plugins;
 }
