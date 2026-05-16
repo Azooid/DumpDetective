@@ -1,0 +1,19 @@
+<!--
+  Trimmer root descriptor for the plugin host.
+
+  When PublishSingleFile=true + PublishTrimmed=true, the IL linker removes any
+  type that is not reachable from the static call graph of the host binary.
+  Plugins reference types in DumpDetective.Core and DumpDetective.Reporting at
+  runtime (via AssemblyLoadContext), so the trimmer cannot see those references
+  and would otherwise delete the public API surfaces that plugins depend on.
+
+  Marking these assemblies as "all" roots preserves every public type and
+  member so that PluginLoadContext can resolve and cast them correctly.
+-->
+<linker>
+  <!-- Core plugin API surface — ICommand, IPluginManifest, IRenderSink, all models -->
+  <assembly fullname="DumpDetective.Core" preserve="all" />
+
+  <!-- Output pipeline — CaptureSink, ReportDocReplay, all sinks -->
+  <assembly fullname="DumpDetective.Reporting" preserve="all" />
+</linker>

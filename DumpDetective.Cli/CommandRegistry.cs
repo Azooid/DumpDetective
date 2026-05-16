@@ -1,6 +1,7 @@
 using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Commands;
 using DumpDetective.Commands.Memory;
+using DumpDetective.Commands.Trace;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Reporting.Reports;
 
@@ -144,7 +145,7 @@ public static class CommandRegistry
                 new GcRootsAnalyzer(),
                 new GcRootsReport()),
 
-            ..TraceCommandRegistry.All,
+            ..TraceCommandRegistry.StandaloneCommands,
 
             // ── targeted / interactive ─────────────────────────────────────────
             new TypeInstancesCommand(
@@ -169,30 +170,24 @@ public static class CommandRegistry
             new CloseCommand(),
         ];
 
-        // Phase 2: derive the full-analyze subset, then assemble the final array
-        // with the orchestrators that need it.
-        var fullAnalyzeList = System.Array.FindAll(analysisCommands, static c => c.IncludeInFullAnalyze);
+        // Phase 2: load plugins.  Built-in names always win — any plugin command
+        // whose name clashes with a built-in (including orchestrators) is silently dropped.
+        var reservedNames = new HashSet<string>(analysisCommands.Select(c => c.Name), StringComparer.OrdinalIgnoreCase);
+        foreach (var n in new[] { "analyze", "trend-analysis", "render", "diff",
+                                   "trace-analyze", "trace-dump-analyze" })
+            reservedNames.Add(n);
 
-        ICommand[] builtIn =
-        [
-            new AnalyzeCommand(fullAnalyzeList),
-            ..analysisCommands,
-            new TrendAnalysisCommand(fullAnalyzeList),
-            new RenderCommand(),
-            new DiffCommand(),
-        ];
-
-        // Load plugin commands.  Built-in names always win — any plugin command
-        // whose name clashes with a built-in is silently dropped.
-        var builtInNames  = new HashSet<string>(builtIn.Select(c => c.Name), StringComparer.OrdinalIgnoreCase);
-        var pluginCommands = new List<ICommand>();
-
+        var pluginCommands          = new List<ICommand>();
+        var pluginTraceSubAnalyzers  = new List<ITraceSubAnalyzer>();
+        var pluginTracePlugins       = new List<ITracePlugin>();
         _plugins = PluginLoader.LoadAll();
         foreach (var plugin in _plugins)
         {
+            pluginTraceSubAnalyzers.AddRange(plugin.TraceSubAnalyzers);
+            pluginTracePlugins.AddRange(plugin.TracePlugins);
             foreach (var cmd in plugin.Commands)
             {
-                if (!builtInNames.Add(cmd.Name))
+                if (!reservedNames.Add(cmd.Name))
                 {
                     Spectre.Console.AnsiConsole.MarkupLine(
                         $"[yellow]Plugin warning:[/] [dim]{plugin.Name}[/] — command [bold]{cmd.Name}[/] clashes with a built-in command, skipping.");
@@ -202,9 +197,34 @@ public static class CommandRegistry
             }
         }
 
-        _commands = pluginCommands.Count == 0
-            ? builtIn
-            : [..builtIn, ..pluginCommands];
+        // Phase 3: build the full-analyze lists.
+        // Built-in list is used by default; plugin commands are opt-in via --with-plugins.
+        var builtInFullAnalyze = System.Array.FindAll(analysisCommands, static c => c.IncludeInFullAnalyze);
+        IReadOnlyList<ICommand> pluginFullAnalyze = pluginCommands.Count > 0
+            ? pluginCommands.Where(static c => c.IncludeInFullAnalyze).ToArray()
+            : [];
+
+        // Phase 4: assemble final array with orchestrators that depend on the lists.
+        ICommand[] allDispatchable = pluginCommands.Count == 0
+            ? analysisCommands
+            : [..analysisCommands, ..pluginCommands];
+
+        IReadOnlyList<ITraceSubAnalyzer> pluginTraceSubs = pluginTraceSubAnalyzers.Count > 0
+            ? pluginTraceSubAnalyzers
+            : [];
+        IReadOnlyList<ITracePlugin> pluginTracePl = pluginTracePlugins.Count > 0
+            ? pluginTracePlugins
+            : [];
+
+        _commands =
+        [
+            new AnalyzeCommand(builtInFullAnalyze, pluginFullAnalyze),
+            ..allDispatchable,
+            new TrendAnalysisCommand(builtInFullAnalyze, pluginFullAnalyze),
+            ..TraceCommandRegistry.BuildOrchestratorCommands(pluginTraceSubs, pluginTracePl),
+            new RenderCommand(),
+            new DiffCommand(),
+        ];
     }
 
     private static IReadOnlyList<LoadedPlugin> _plugins = [];

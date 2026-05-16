@@ -51,6 +51,14 @@
     <None Include="$(MSBuildProjectDirectory)\obj\$(Configuration)\$(TargetFramework)\win-x64\linked\DumpDetective.*.dll"
           Pack="true"
           PackagePath="tools\$(TargetFramework)\any\win-x64\" />
+
+    <!--
+      Preserve the entire public API surfaces of Core and Reporting when the
+      trimmer is enabled (PublishTrimmed=true).  Plugins reference these types
+      at runtime via AssemblyLoadContext; without this descriptor the trimmer
+      removes them because it cannot see the runtime references.
+    -->
+    <TrimmerRootDescriptor Include="PluginRoots.xml" />
   </ItemGroup>
 </Project>
   

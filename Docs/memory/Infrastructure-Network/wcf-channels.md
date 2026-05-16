@@ -7,6 +7,8 @@
 
 Finds all live WCF (`System.ServiceModel.*`) channel and channel-factory objects on the heap. Shows communication state, endpoint address, binding type, and fault reason when faulted. Identifies stuck, faulted, or leaked WCF connections.
 
+The report distinguishes **client proxy channels** (objects with a meaningful `CommunicationState` and endpoint address) from **server-side WCF hosting infrastructure** (`ServiceHostBase`, `OperationContext`, `ServiceHttpModule`, config sections, etc.). When only server-side objects are present, the report explains this rather than showing "No endpoint addresses resolved".
+
 ---
 
 ## Analyzer: `WcfChannelsAnalyzer`

@@ -1,0 +1,65 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!--
+      The output directory name MUST match the project name.
+      The plugin loader uses the folder name to find the entry DLL.
+      To install: copy the entire output folder to one of:
+        <exe dir>/plugins/<YourPlugin.Name>/
+        %USERPROFILE%/.dumpdetective/plugins/<YourPlugin.Name>/
+    -->
+    <AssemblyName>Example.DumpDetective</AssemblyName>
+    <RootNamespace>Example.DumpDetective</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!--
+      Reference Core and Reporting for compilation only.
+      Private=false means the host's copies are NOT duplicated into the
+      plugin's output folder — the host provides them at runtime.
+    -->
+    <!--
+      Reference Core for compilation only.
+      Private="false" means DumpDetective.Core.dll is NOT copied into the plugin
+      output folder — the host provides it at runtime.
+      TraceLog and other TraceEvent types are available transitively via Core's
+      compile-time TraceEvent reference — no separate package reference needed.
+    -->
+    <ProjectReference Include="..\..\..\DumpDetective.Core\DumpDetective.Core.csproj"
+                      Private="false" />  </ItemGroup>
+
+  <!--
+    After every build, copy the plugin output into the host's plugins folder so
+    you can test immediately with `dotnet run` or the published exe.
+
+    The loader scans: <exe dir>/plugins/<FolderName>/
+    The folder name MUST match AssemblyName.
+
+    Override PluginDeployDir on the command line or in your .user file to point
+    at a different host:
+      dotnet build -p:PluginDeployDir="C:\tools\DumpDetective\plugins\Example.DumpDetective\"
+  -->
+  <PropertyGroup>
+    <!--
+      After every build, auto-deploy to the host's dev bin plugins folder so you can
+      test immediately with `dotnet run` or the published exe.
+      Override on the command line to point at a different location:
+      dotnet build -p:PluginDeployDir="C:\tools\DumpDetective\plugins\Example.DumpDetective\"
+    -->
+    <PluginDeployDir Condition="'$(PluginDeployDir)'==''">$(MSBuildThisFileDirectory)..\..\..\DumpDetective.Cli\bin\$(Configuration)\net10.0\plugins\$(AssemblyName)\</PluginDeployDir>
+  </PropertyGroup>
+
+  <Target Name="DeployPlugin" AfterTargets="Build">
+    <MakeDir Directories="$(PluginDeployDir)" />
+    <ItemGroup>
+      <_PluginFiles Include="$(OutputPath)*"
+                    Exclude="$(OutputPath)*.pdb;$(OutputPath)*.runtimeconfig.json;$(OutputPath)*.deps.json;$(OutputPath)DumpDetective.*.dll" />
+    </ItemGroup>
+    <Copy SourceFiles="@(_PluginFiles)" DestinationFolder="$(PluginDeployDir)" SkipUnchangedFiles="true" />
+    <Warning Text="Plugin deployed → $(PluginDeployDir)" />
+  </Target>
+
+</Project>

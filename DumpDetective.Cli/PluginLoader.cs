@@ -1,5 +1,6 @@
 using System.Reflection;
 using System.Runtime.Loader;
+using DumpDetective.Commands.Trace;
 using DumpDetective.Core.Interfaces;
 using Spectre.Console;
 
@@ -95,7 +96,19 @@ internal static class PluginLoader
             var ctx      = new PluginLoadContext(pluginDir);
             var assembly = ctx.LoadFromAssemblyPath(assemblyPath);
 
-            Type? manifestType = assembly.GetTypes()
+            Type[]? allTypes = null;
+            try
+            {
+                allTypes = assembly.GetTypes();
+            }
+            catch (System.Reflection.ReflectionTypeLoadException rtle)
+            {
+                // Partial load: some types failed (missing deps, etc.); still inspect the rest.
+                AnsiConsole.MarkupLine($"[yellow]Plugin warning:[/] [dim]{dirName}[/] — partial type load: {rtle.LoaderExceptions.Count(e => e is not null)} type(s) failed.");
+                allTypes = rtle.Types.Where(t => t is not null).ToArray()!;
+            }
+
+            Type? manifestType = allTypes
                 .FirstOrDefault(t => !t.IsAbstract && !t.IsInterface &&
                                      t.GetInterfaces().Any(i => i.FullName == typeof(IPluginManifest).FullName));
 
@@ -109,7 +122,18 @@ internal static class PluginLoader
             var instance = (IPluginManifest)Activator.CreateInstance(manifestType)!;
             var commands = instance.RegisterCommands()?.ToList() ?? [];
 
-            return new LoadedPlugin(instance.PluginName, instance.Version, commands);
+            // Any plugin command that also implements ITraceSubAnalyzer participates
+            // in trace-analyze / trace-dump-analyze when --with-plugins is passed.
+            var traceSubAnalyzers = commands
+                .OfType<ITraceSubAnalyzer>()
+                .ToList();
+
+            // ITracePlugin is the simpler Core-only trace interface (no Commands ref needed).
+            var tracePlugins = commands
+                .OfType<ITracePlugin>()
+                .ToList();
+
+            return new LoadedPlugin(instance.PluginName, instance.Version, commands, traceSubAnalyzers, tracePlugins);
         }
         catch (Exception ex)
         {
@@ -119,12 +143,19 @@ internal static class PluginLoader
     }
 }
 
-/// <summary>Holds the commands contributed by a successfully loaded plugin.</summary>
-internal sealed class LoadedPlugin(string name, string? version, IReadOnlyList<ICommand> commands)
+/// <summary>Holds the commands and trace sub-analyzers contributed by a successfully loaded plugin.</summary>
+internal sealed class LoadedPlugin(
+    string name,
+    string? version,
+    IReadOnlyList<ICommand> commands,
+    IReadOnlyList<ITraceSubAnalyzer>? traceSubAnalyzers = null,
+    IReadOnlyList<ITracePlugin>? tracePlugins = null)
 {
-    public string                     Name     { get; } = name;
-    public string?                    Version  { get; } = version;
-    public IReadOnlyList<ICommand>    Commands { get; } = commands;
+    public string                            Name               { get; } = name;
+    public string?                           Version            { get; } = version;
+    public IReadOnlyList<ICommand>           Commands           { get; } = commands;
+    public IReadOnlyList<ITraceSubAnalyzer>  TraceSubAnalyzers  { get; } = traceSubAnalyzers ?? [];
+    public IReadOnlyList<ITracePlugin>       TracePlugins       { get; } = tracePlugins ?? [];
 }
 
 /// <summary>
@@ -140,7 +171,15 @@ internal sealed class PluginLoadContext(string pluginDir) : AssemblyLoadContext(
         // Host assemblies → share the default context (same type identities as the host).
         string simpleName = assemblyName.Name ?? string.Empty;
         if (IsHostAssembly(simpleName))
-            return null; // null → fall through to default context
+        {
+            // Look up by simple name in already-loaded assemblies first.
+            // This handles the auto-incrementing AssemblyVersion (3.0.0.*) case where
+            // the plugin was compiled against an older build of the same assembly.
+            Assembly? already = AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => string.Equals(
+                    a.GetName().Name, simpleName, StringComparison.OrdinalIgnoreCase));
+            return already; // null → runtime falls through to default ALC (bundle resolution)
+        }
 
         // Plugin-private assembly → load from plugin directory.
         string? path = _resolver.ResolveAssemblyToPath(assemblyName);

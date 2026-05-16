@@ -250,13 +250,13 @@ Active async state machines by method name and suspension state. Options: `--fil
 Live DB connections and commands by state; masked connection strings. Options: `--addresses` — [full details →](memory/Infrastructure-Network/connection-pool.md)
 
 ### `http-requests`
-In-flight `HttpRequestMessage` / `HttpClient` objects by method and URL. Options: `--addresses` — [full details →](memory/Infrastructure-Network/http-requests.md)
+In-flight `HttpRequestMessage` / `HttpWebRequest` / `HttpClient` objects by method and URL, plus outbound connection pool (`ServicePoint`) visibility showing active connections and limits per endpoint. URIs are resolved on both .NET Core and .NET Framework dumps. Options: `--addresses` — [full details →](memory/Infrastructure-Network/http-requests.md)
 
 ### `timer-leaks`
-Live `System.Threading.Timer` instances; due-time, period, and callback. Options: `--addresses` — [full details →](memory/Infrastructure-Network/timer-leaks.md)
+Live `System.Threading.Timer` instances; due-time, period, and callback. Callback method names are fully resolved (including two-hop `.NET Framework` navigation `Timer → TimerHolder → TimerQueueTimer`) and decoded from CLR compiler-generated notation (lambdas, closures, async state machines). Options: `--addresses` — [full details →](memory/Infrastructure-Network/timer-leaks.md)
 
 ### `wcf-channels`
-WCF channel state (0–5 → CommunicationState); endpoint addresses; fault reasons. Options: `--addresses` — [full details →](memory/Infrastructure-Network/wcf-channels.md)
+WCF channel state (0–5 → CommunicationState); endpoint addresses; fault reasons. Distinguishes client proxy channels from server-side WCF hosting and configuration infrastructure to avoid false positives. Options: `--addresses` — [full details →](memory/Infrastructure-Network/wcf-channels.md)
 
 ---
 

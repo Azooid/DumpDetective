@@ -18,9 +18,17 @@ Finds all live `System.Threading.Timer` instances on the heap and shows their ca
 
 ### How it works
 
-For each object where `meta.IsTimer` is true, the analyzer reads `_dueTime` and `_period` by trying `ReadField<long>` first and falling back to `ReadField<int>`, returning `-1` on any failure.
+For each object where `meta.IsTimer` is true, the analyzer navigates to the `TimerQueueTimer` that holds the actual state:
 
-Callback resolution requires `ClrRuntime`: the `m_callback` delegate field is read, then `_methodPtr` (a native code pointer) is extracted from it. `runtime.GetMethodByInstructionPointer(ptr)` resolves this to an `IClrMethod`, from which the callback string is formatted as `"{TypeName}.{MethodName}"` and the module filename is extracted. If any step fails, the callback falls back to the delegate type name or empty string.
+- `System.Threading.Timer` on **.NET Framework**: two hops — `m_timer` (→ `TimerHolder`) then `m_timer` again (→ `TimerQueueTimer`).
+- `System.Threading.Timer` on **.NET Core**: one hop — `m_timer` directly to `TimerQueueTimer`.
+- `System.Threading.TimerQueueTimer`: used as-is.
+
+All field names are probed with `GetFieldByName` before reading to avoid throws on missing fields across framework versions.
+
+`_dueTime` and `_period` are read by trying `ReadField<long>` first and falling back to `ReadField<int>`, returning `-1` on any failure.
+
+**Callback resolution** requires `ClrRuntime`: the callback delegate field is read by trying `m_timerCallback`, `m_callback`, and `callback` in order. The `_methodPtr` / `_methodPtrAux` fields are then extracted and `runtime.GetMethodByInstructionPointer(ptr)` resolves them to an `IClrMethod`, from which the callback string is formatted as `"{TypeName}.{MethodName}"` and the module filename is extracted. If `_methodPtr` is zero (cancelled/null delegate), the delegate's `_target` field is read to show the bound instance type as a hint. If any step fails, the callback falls back to the delegate type name or empty string.
 
 In the pre-warm path, `ctx.Runtime` is passed to the analyzer so callback resolution runs identically to standalone mode. Clone/merge: each parallel clone receives the same `_runtime` reference; `MergeFrom` appends item lists.
 
@@ -65,6 +73,7 @@ None.
 | **`DueMs = -1`** | Timer is disabled (created with `Timeout.Infinite`). If many of these accumulate, they are forgotten timers that should have been disposed. |
 | **Callback resolves to a type that implements `IDisposable`** | The timer is keeping that object alive past its expected disposal. Check the object lifecycle. |
 | **`Module` is empty** | Callback is a dynamic method or lambda in an anonymous class — still a real timer, but harder to trace back to source. |
+| **Callback shows `→ TargetType` hint** | The callback delegate\'s `_methodPtr` is zero at dump time (cancelled/disposed timer) but the delegate target type is shown as a hint. These are typically harmless cancelled `Task.Delay` or internal framework timers. |
 
 ---
 
