@@ -5,6 +5,31 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <RootNamespace>DumpDetective.Core</RootNamespace>
+
+    <!-- ── NuGet package ────────────────────────────────────────────── -->
+    <IsPackable>true</IsPackable>
+    <PackageId>DumpDetective.Core</PackageId>
+    <Version>3.1.0</Version>
+    <Authors>Azooid</Authors>
+    <Description>
+      Core interfaces, models, and utilities for building DumpDetective plugins.
+      Reference this package (ExcludeAssets="runtime") from your plugin project to
+      implement ICommand, ITracePlugin, and IPluginManifest without shipping
+      any DumpDetective assemblies alongside your plugin DLL.
+    </Description>
+    <PackageTags>dotnet;memory-dump;clrmd;plugin;dumpdetective</PackageTags>
+    <PackageReadmeFile>README-package.md</PackageReadmeFile>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/Azooid/DumpDetective.git</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <!-- Source Link — embeds source into the .nupkg for debuggability -->
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <!-- Treat all warnings as errors during pack so metadata issues surface early -->
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,6 +39,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      These packages flow to plugin authors as compile-time references.
+      ExcludeAssets="runtime" on each means the runtime DLLs are NOT included in
+      the .nupkg, matching how the host already ships them. Plugin projects that
+      reference this package with ExcludeAssets="runtime" inherit that correctly.
+    -->
     <PackageReference Include="Microsoft.Diagnostics.Runtime" Version="3.1.512801" />
     <PackageReference Include="Spectre.Console" Version="0.55.0" />
     <!--
@@ -22,6 +53,11 @@
       The runtime copy is provided by DumpDetective.Analysis.Trace (no ExcludeAssets).
     -->
     <PackageReference Include="Microsoft.Diagnostics.Tracing.TraceEvent" Version="3.2.2" ExcludeAssets="runtime" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Package README shown on nuget.org -->
+    <None Include="README-package.md" Pack="true" PackagePath="\" Condition="Exists('README-package.md')" />
   </ItemGroup>
 
 </Project>

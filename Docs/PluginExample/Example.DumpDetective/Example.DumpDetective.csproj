@@ -17,16 +17,14 @@
 
   <ItemGroup>
     <!--
-      Reference Core and Reporting for compilation only.
-      Private=false means the host's copies are NOT duplicated into the
-      plugin's output folder — the host provides them at runtime.
-    -->
-    <!--
       Reference Core for compilation only.
       Private="false" means DumpDetective.Core.dll is NOT copied into the plugin
       output folder — the host provides it at runtime.
       TraceLog and other TraceEvent types are available transitively via Core's
       compile-time TraceEvent reference — no separate package reference needed.
+
+      NuGet equivalent (for published plugins):
+        <PackageReference Include="DumpDetective.Core" Version="3.0.1" ExcludeAssets="runtime" />
     -->
     <ProjectReference Include="..\..\..\DumpDetective.Core\DumpDetective.Core.csproj"
                       Private="false" />  </ItemGroup>

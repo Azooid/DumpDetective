@@ -14,7 +14,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- Major.Minor are set here; Patch auto-increments on each build (days since 2000-01-01). -->
     <!-- Disable deterministic builds so the * wildcard is evaluated at build time.            -->
-    <AssemblyVersion>3.0.0.*</AssemblyVersion>
+    <AssemblyVersion>3.1.0.*</AssemblyVersion>
     <Deterministic>false</Deterministic>
     <NoWarn>$(NoWarn);7035</NoWarn>
 	<PackAsTool>true</PackAsTool>
@@ -22,8 +22,8 @@
     <PackageOutputPath>./nupkg</PackageOutputPath>
   <IncludeSymbols>true</IncludeSymbols>
   <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    <PackageVersion>3.0.1</PackageVersion>
-    <Version>3.0.1</Version>
+    <PackageVersion>3.1.0</PackageVersion>
+    <Version>3.1.0</Version>
     <PackageId>DumpDetective.Cli</PackageId>
     <Description>CLI tool for analysing .NET memory dumps (.dmp / .mdmp) and .nettrace files. Heap stats, trend analysis, deadlock detection, and more.</Description>
     <Authors>RohitM-IN</Authors>
@@ -60,5 +60,23 @@
     -->
     <TrimmerRootDescriptor Include="PluginRoots.xml" />
   </ItemGroup>
+
+  <!--
+    Plugins are third-party — strip the entire plugins/ folder from the publish
+    output before the tool pack picks it up.  This runs after publish completes
+    so the local dev-test deployment (done by DeployPlugin in each plugin csproj)
+    is unaffected; only the nupkg is clean.
+  -->
+  <Target Name="ExcludePluginsFromPack" AfterTargets="Publish" BeforeTargets="GenerateNuspec">
+    <ItemGroup>
+      <!-- Default publish dir (tools/net10.0/any/ in nupkg) -->
+      <_PublishPluginFiles Include="$(PublishDir)plugins\**\*" />
+      <!-- win-x64 publish subdir (tools/net10.0/any/win-x64/ in nupkg) -->
+      <_PublishPluginFiles Include="$(PublishDir)win-x64\plugins\**\*" />
+    </ItemGroup>
+    <Delete Files="@(_PublishPluginFiles)" />
+    <RemoveDir Directories="$(PublishDir)plugins;$(PublishDir)win-x64\plugins" />
+  </Target>
+
 </Project>
   
