@@ -167,15 +167,36 @@ public static class TraceCommandRegistry
         return result;
     }
 
+    /// <summary>
+    /// The 29 standalone trace commands only (no orchestrators).
+    /// Used by <see cref="CommandRegistry"/> which builds the orchestrators
+    /// separately so it can inject plugin sub-analyzers.
+    /// </summary>
+    public static IReadOnlyList<ICommand> StandaloneCommands => _standaloneCommands;
+
+    /// <summary>
+    /// Creates <c>trace-analyze</c> and <c>trace-dump-analyze</c> orchestrators.
+    /// Pass non-empty plugin lists to enable plugin participation when <c>--with-plugins</c> is set.
+    /// </summary>
+    public static ICommand[] BuildOrchestratorCommands(
+        IReadOnlyList<ITraceSubAnalyzer>? pluginSubAnalyzers = null,
+        IReadOnlyList<ITracePlugin>? pluginTracePlugins = null) =>
+    [
+        new TraceAnalyzeCommand(SubAnalyzers, pluginSubAnalyzers ?? [], pluginTracePlugins ?? []),
+        new TraceDumpAnalyzeCommand(
+            SubAnalyzers,
+            pluginSubAnalyzers ?? [],
+            new TraceDumpCorrelationReport(),
+            pluginTracePlugins ?? []),
+    ];
+
     private static readonly ICommand[] _commands =
     [
         .._standaloneCommands,
-
-        // ── Multi-source orchestrators ────────────────────────────────────
-        new TraceAnalyzeCommand(SubAnalyzers),
-
+        new TraceAnalyzeCommand(SubAnalyzers, []),
         new TraceDumpAnalyzeCommand(
             SubAnalyzers,
+            [],
             new TraceDumpCorrelationReport()),
     ];
     public static ICommand[] All => _commands;

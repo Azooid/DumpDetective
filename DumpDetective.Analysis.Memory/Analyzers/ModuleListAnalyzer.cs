@@ -22,7 +22,26 @@ public sealed class ModuleListAnalyzer
                 string fn   = Path.GetFileName(path);
                 long   size = m.MetadataAddress > 0 ? (long)m.Size : 0;
                 string kind = ModuleKind(path);
-                return new ModuleItem(path, fn, kind, size);
+
+                // Collect PDB identity for symbol-server lookups.
+                string? pdbPath    = null;
+                string? pdbGuid    = null;
+                int     pdbAge     = 0;
+                bool    pdbPresent = false;
+                try
+                {
+                    var pdb = m.Pdb;
+                    if (pdb is not null)
+                    {
+                        pdbPath    = pdb.Path;
+                        pdbGuid    = pdb.Guid.ToString("D");
+                        pdbAge     = pdb.Revision;
+                        pdbPresent = !string.IsNullOrEmpty(pdb.Path) && File.Exists(pdb.Path);
+                    }
+                }
+                catch { /* PDB metadata may be absent or unreadable */ }
+
+                return new ModuleItem(path, fn, kind, size, pdbPath, pdbGuid, pdbAge, pdbPresent);
             })
             .Where(m => filter is null || m.Path.Contains(filter, StringComparison.OrdinalIgnoreCase))
             .Where(m => !appOnly || m.Kind == "App")

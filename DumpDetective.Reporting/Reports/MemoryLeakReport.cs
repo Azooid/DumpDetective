@@ -24,6 +24,10 @@ public sealed class MemoryLeakReport
             ]);
         RenderHeapSnapshot(sink, data, top);
 
+        // ── Findings ───────────────────────────────────────────────────────────
+        sink.Section("Findings");
+        RenderFindings(sink, data);
+
         // ── Step 2 — Suspect Types ─────────────────────────────────────────────
         sink.Section("Step 2  —  Suspect Types");
         sink.Explain(
@@ -57,10 +61,6 @@ public sealed class MemoryLeakReport
                 "High ratio of service/repository types → DI container scope mismatch (singleton holding scoped)",
             ]);
         RenderAccumulationPatterns(sink, data);
-
-        // ── Findings ───────────────────────────────────────────────────────────
-        sink.Section("Findings");
-        RenderFindings(sink, data);
 
         // ── Step 4 — GC Root Chains ────────────────────────────────────────────
         sink.Section("Step 4  —  GC Root Chains  (gcroot simulation)");

@@ -74,6 +74,16 @@ public static class HeapWalker
             bucketClones[b] = clones;
         }
 
+        // Precompute per-bucket flags: which consumer slots want free (GC-hole) objects.
+        // Checked once at setup rather than via virtual dispatch on every free object.
+        bool[][] bucketFreeFlags = new bool[bucketCount][];
+        for (int b = 0; b < bucketCount; b++)
+        {
+            bucketFreeFlags[b] = new bool[consumers.Count];
+            for (int c = 0; c < consumers.Count; c++)
+                bucketFreeFlags[b][c] = bucketClones[b][c].ConsumeFreeObjects;
+        }
+
         try
         {
             Parallel.ForEach(
@@ -90,6 +100,13 @@ public static class HeapWalker
                         if (obj.Type.IsFree)
                         {
                             Interlocked.Add(ref freeBytes, (long)obj.Size);
+                            // Dispatch to consumers that explicitly opted in to receive free objects
+                            // (e.g. FragmentationConsumer for per-segment hole tracking).
+                            // Pass default(HeapTypeMeta) — meta is irrelevant for free objects.
+                            var freeFlags = bucketFreeFlags[bucketIdx];
+                            for (int fi = 0; fi < clones.Length; fi++)
+                                if (freeFlags[fi])
+                                    clones[fi].Consume(in obj, default, heap);
                             continue;
                         }
 
@@ -269,6 +286,7 @@ public static class HeapWalker
         "System.Net.Http.HttpClient",
         "System.Net.Http.HttpClientHandler",
         "System.Net.Http.SocketsHttpHandler",
+        "System.Net.ServicePoint",
     };
 
     private static readonly string[] WorkItemTypes =

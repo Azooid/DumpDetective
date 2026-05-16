@@ -23,7 +23,17 @@ if (args[0] is "--version" or "-v")
 {
     var v    = DumpDetective.Core.Utilities.AppInfo.Version;
     AnsiConsole.Write(new FigletText("DumpDetective").Color(Color.MediumPurple1));
-    AnsiConsole.MarkupLine($"  [bold mediumpurple1]{v}[/]   [dim].NET 10 Native AOT  \u00b7  ClrMD 3.x  \u00b7  Windows[/]");
+    AnsiConsole.MarkupLine($"  [bold mediumpurple1]{v}[/]   [dim].NET 10  \u00b7  ClrMD 3.x  \u00b7  Windows[/]");
+    var plugins = CommandRegistry.Plugins;
+    if (plugins.Count > 0)
+    {
+        AnsiConsole.MarkupLine($"  [dim]Plugins loaded: {plugins.Count}[/]");
+        foreach (var p in plugins)
+        {
+            string pver = p.Version is not null ? $" {Markup.Escape(p.Version)}" : "";
+            AnsiConsole.MarkupLine($"    [green]•[/] [dim]{Markup.Escape(p.Name)}{pver}[/]");
+        }
+    }
     AnsiConsole.WriteLine();
     return 0;
 }

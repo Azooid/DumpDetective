@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -131,7 +132,7 @@ public sealed class ThreadAnalysisReport
 
             if (t.StackFrames.Count > 0)
                 sink.Table(["#", "Frame"],
-                    t.StackFrames.Select((f, i) => new[] { i.ToString(), f }).ToList());
+                    t.StackFrames.Select((f, i) => new[] { i.ToString(), DumpHelpers.SanitizeFrame(f) }).ToList());
             else
                 sink.Text("  (no managed frames)");
 

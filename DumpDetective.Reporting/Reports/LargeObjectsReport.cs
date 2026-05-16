@@ -29,10 +29,10 @@ public sealed class LargeObjectsReport
                 "Large objects are allocated directly in the LOH which is only collected on Gen2 GC.",
                 "Pool large buffers using ArrayPool<byte> or MemoryPool<T> to reduce LOH pressure.");
 
+        RenderLohFreeSpace(sink, data);
         RenderTypeAggregate(sink, data, top);
         if (!typeBreakdown) RenderIndividualObjects(sink, data, top, showAddr);
         RenderSegmentBreakdown(sink, data);
-        RenderLohFreeSpace(sink, data);
     }
 
     private static void RenderTypeAggregate(IRenderSink sink, LargeObjectsData data, int top)
@@ -73,16 +73,20 @@ public sealed class LargeObjectsReport
         int top, bool showAddr)
     {
         sink.Section($"Top {Math.Min(top, data.Objects.Count)} Largest Individual Objects");
+        bool hasElemType = data.Objects.Any(o => !string.IsNullOrEmpty(o.ElemType));
+
         var rows = data.Objects.Take(top).Select(o =>
         {
-            var row = new List<string> { o.Type, DumpHelpers.FormatSize(o.Size), o.Segment };
-            if (!string.IsNullOrEmpty(o.ElemType)) row.Insert(1, o.ElemType);
+            var row = new List<string> { o.Type };
+            if (hasElemType) row.Add(o.ElemType ?? string.Empty);
+            row.Add(DumpHelpers.FormatSize(o.Size));
             if (showAddr) row.Add($"0x{o.Addr:X16}");
             return row.ToArray();
         }).ToList();
 
-        var headers = new List<string> { "Type", "Size", "Segment" };
-        if (data.Objects.Any(o => !string.IsNullOrEmpty(o.ElemType))) headers.Insert(1, "Element Type");
+        var headers = new List<string> { "Type" };
+        if (hasElemType) headers.Add("Element Type");
+        headers.Add("Size");
         if (showAddr) headers.Add("Address");
         sink.Table(headers.ToArray(), rows,
             $"Top {rows.Count} of {data.Objects.Count:N0} objects \u2265 {DumpHelpers.FormatSize(data.MinSize)}");
@@ -91,14 +95,43 @@ public sealed class LargeObjectsReport
     private static void RenderSegmentBreakdown(IRenderSink sink, LargeObjectsData data)
     {
         if (data.Segments.Count == 0) return;
-        // No section call — renders under the current section (Top N Largest Individual Objects),
-        // matching old LargeObjectsCommand.RenderSegmentBreakdown behavior.
-        var rows = data.Segments.Select(s => new[]
+
+        sink.Section("By Segment");
+
+        int lohCount = data.Segments.Count(s => s.Kind == "LOH");
+        long totalBytes = data.Segments.Sum(s => s.Used);
+        sink.Text($"The LOH is split across {lohCount} segment{(lohCount == 1 ? "" : "s")} totalling {DumpHelpers.FormatSize(totalBytes)}. " +
+                  $"A healthy process typically has 1–2 LOH segments. " +
+                  $"Each segment is capped at ~256 MB; when it fills, the GC allocates a new one. " +
+                  $"A high segment count means the LOH has grown significantly and is never compacted — " +
+                  $"use ArrayPool<T> or MemoryPool<T> to reduce large allocations.");
+
+        if (lohCount >= 10)
+            sink.Alert(AlertLevel.Critical,
+                $"{lohCount} LOH segments ({DumpHelpers.FormatSize(totalBytes)} total) — the LOH has grown uncontrolled.",
+                "LOH is never compacted. Each new segment permanently reserves virtual address space until all objects inside it are collected.",
+                "Use ArrayPool<byte>.Shared or MemoryPool<T> for large temporary buffers. Avoid caching large arrays.");
+        else if (lohCount >= 4)
+            sink.Alert(AlertLevel.Warning,
+                $"{lohCount} LOH segments ({DumpHelpers.FormatSize(totalBytes)} total) — LOH is growing.",
+                advice: "Monitor for further growth. Consider ArrayPool<T> for large temporary allocations.");
+
+        bool showKind = data.MinSize != 85_000;
+        var rows = data.Segments.Select(s =>
         {
-            s.Kind, s.ObjectCount.ToString("N0"),
-            DumpHelpers.FormatSize(s.Used),
+            var row = new List<string>();
+            if (showKind) row.Add(s.Kind);
+            row.Add($"0x{s.Address:X16}");
+            row.Add(s.ObjectCount.ToString("N0"));
+            row.Add(DumpHelpers.FormatSize(s.Used));
+            return row.ToArray();
         }).ToList();
-        sink.Table(["Segment", "Objects", "Total Size"], rows, "By segment");
+        var headers = new List<string>();
+        if (showKind) headers.Add("Kind");
+        headers.Add("Address");
+        headers.Add("Objects");
+        headers.Add("Total Size");
+        sink.Table(headers.ToArray(), rows, "By segment");
     }
 
     private static void RenderLohFreeSpace(IRenderSink sink, LargeObjectsData data)

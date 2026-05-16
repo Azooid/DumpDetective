@@ -11,9 +11,14 @@ namespace DumpDetective.Commands.Memory;
 /// </summary>
 public sealed class AnalyzeCommand : ICommand
 {
-    private readonly IReadOnlyList<ICommand> _fullAnalyzeCommands;
-    public AnalyzeCommand(IReadOnlyList<ICommand> fullAnalyzeCommands)
-        => _fullAnalyzeCommands = fullAnalyzeCommands;
+    private readonly IReadOnlyList<ICommand> _builtInCommands;
+    private readonly IReadOnlyList<ICommand> _pluginCommands;
+
+    public AnalyzeCommand(IReadOnlyList<ICommand> fullAnalyzeCommands, IReadOnlyList<ICommand>? pluginCommands = null)
+    {
+        _builtInCommands = fullAnalyzeCommands;
+        _pluginCommands  = pluginCommands ?? [];
+    }
 
     public string Name               => "analyze";
     public string Description        => "Scored health report for a single dump (use --full for all sub-reports).";
@@ -37,6 +42,7 @@ public sealed class AnalyzeCommand : ICommand
 
         Options:
           --full                   Full combined report (scored summary + all sub-reports)
+          --with-plugins           Include plugin commands in full-analyze (default: excluded)
           --persist                Keep all .ddcache temp files after analysis for re-use on next run
           --str-top <n>            string-duplicates: max groups shown (default 100)
           --str-min-count <n>      string-duplicates: min duplicate count (default 2)
@@ -59,6 +65,7 @@ public sealed class AnalyzeCommand : ICommand
 
         var     a          = CliArgs.Parse(args);
         bool    full       = a.HasFlag("full");
+        bool    withPlugins= a.HasFlag("with-plugins");
         int     strTop     = a.GetInt("str-top",       100);
         int     strMinCnt  = a.GetInt("str-min-count",   2);
         long    strMinWaste= a.GetInt("str-min-waste",   0);
@@ -85,6 +92,14 @@ public sealed class AnalyzeCommand : ICommand
             log.Success($"Dump loaded  |  CLR {clrVer}", indent: true);
             if (dumpCtx.ArchWarning is not null)
                 log.Warn(dumpCtx.ArchWarning, indent: true);
+
+            if (full && withPlugins && _pluginCommands.Count > 0)
+            {
+                log.InfoM(
+                    $"[dim]  + [/][bold]{_pluginCommands.Count}[/][dim] plugin command(s) included via --with-plugins:[/] " +
+                    string.Join(", ", _pluginCommands.Select(c => $"[bold]{Markup.Escape(c.Name)}[/]")),
+                    indent: true);
+            }
 
             log.Blank();
             log.SectionHeader("Collection");
@@ -156,7 +171,10 @@ public sealed class AnalyzeCommand : ICommand
                 dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsReady));
 
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
-                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, _fullAnalyzeCommands, log);
+                var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
+                    ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
+                    : _builtInCommands;
+                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
 

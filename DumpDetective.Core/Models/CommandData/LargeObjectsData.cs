@@ -18,6 +18,7 @@ public sealed record LargeObjectEntry(
 
 public sealed record LargeSegmentInfo(
     string  Kind,
+    ulong   Address,
     long    Used,
     long    Reserved,
     int     ObjectCount);

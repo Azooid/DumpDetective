@@ -105,7 +105,7 @@ public sealed class DeadlockAnalyzer
                     if (isMonitorWaiter)
                     {
                         string topUser = FindTopUserFrame(frames);
-                        monitorWaiters.Add((t, topUser, frames.Select(FrameLabel).ToList()));
+                        monitorWaiters.Add((t, topUser, frames.Select(FrameLabel).Where(s => s != "<unknown>").ToList()));
                         continue;
                     }
 
@@ -121,7 +121,7 @@ public sealed class DeadlockAnalyzer
                         ThreadName:   tName,
                         BlockReason:  blockReason,
                         TopUserFrame: topFrame,
-                        StackFrames:  frames.Select(FrameLabel).ToList()));
+                        StackFrames:  frames.Select(FrameLabel).Where(s => s != "<unknown>").ToList()));
                 }
                 catch { }
             }
@@ -155,12 +155,19 @@ public sealed class DeadlockAnalyzer
         // ── 5. Cycle detection (DFS on waitForGraph) ──────────────────────
         var cycles = DetectCycles(waitForGraph);
 
+        // ── 6. Build explicit WaitForEdge list for graph visualization ────
+        var edges = BuildWaitForEdges(waitForGraph, rebuiltLocks, cycles);
+
+        // ── 7. Enrich cycles with lock address/type metadata ─────────────
+        var enrichedCycles = EnrichCycles(cycles, rebuiltLocks);
+
         return new DeadlockData(
             MonitorLocks:         rebuiltLocks,
-            ConfirmedCycles:      cycles,
+            ConfirmedCycles:      enrichedCycles,
             IndependentWaiters:   independentList,
             TotalThreadsByRuntime: threads.Count,
-            NamedThreadCount:      threadNames.Count);
+            NamedThreadCount:      threadNames.Count,
+            WaitForGraph:          edges);
     }
 
     // ── Helpers ──────────────────────────────────────────────────────────────
@@ -195,8 +202,10 @@ public sealed class DeadlockAnalyzer
             var target     = contested.Count > 0 ? contested[i % contested.Count] : locks[i % locks.Count];
             distributed[target.LockAddress].Add(waiterId);
 
-            // Build wait-for edge: waiter is waiting for owner
-            if (target.OwnerManagedId.HasValue)
+            // Build wait-for edge: waiter is waiting for owner.
+            // Skip self-edges — a thread that owns a lock and also appears in
+            // Monitor.Enter frames is doing a re-entrant entry, not waiting for itself.
+            if (target.OwnerManagedId.HasValue && target.OwnerManagedId.Value != waiterId)
                 waitForGraph[waiterId] = target.OwnerManagedId.Value;
         }
 
@@ -243,6 +252,9 @@ public sealed class DeadlockAnalyzer
             int cycleStart = onStack[node];
             var cycle = path[cycleStart..];
             cycle.Add(node); // close the cycle
+            // Self-loops (T → T) are heuristic artefacts: a thread cannot
+            // deadlock with itself. Require at least 2 distinct thread IDs.
+            if (cycle.Distinct().Count() < 2) return;
             // Deduplicate equivalent cycles (same set, different start).
             var cycleSet = new HashSet<int>(cycle);
             bool alreadySeen = cycles.Any(c => new HashSet<int>(c.ThreadIds).SetEquals(cycleSet));
@@ -319,6 +331,66 @@ public sealed class DeadlockAnalyzer
 
     private static string FrameLabel(ClrStackFrame f) =>
         (f.FrameName ?? f.Method?.Signature ?? "<unknown>").Let(s => s.Length > 160 ? s[..157] + "…" : s);
+
+    private static List<WaitForEdge> BuildWaitForEdges(
+        Dictionary<int, int>          waitForGraph,
+        List<MonitorLockEntry>        locks,
+        List<DeadlockCycle>           cycles)
+    {
+        // Build a set of thread-id pairs that are in confirmed cycles.
+        var cycleEdges = new HashSet<(int, int)>();
+        foreach (var c in cycles)
+            for (int i = 0; i < c.ThreadIds.Count - 1; i++)
+                cycleEdges.Add((c.ThreadIds[i], c.ThreadIds[i + 1]));
+
+        // Build lock lookup: owner → lock entry for annotation.
+        var lockByOwner = new Dictionary<int, MonitorLockEntry>();
+        foreach (var l in locks)
+            if (l.OwnerManagedId is int oid && !lockByOwner.ContainsKey(oid))
+                lockByOwner[oid] = l;
+
+        var edges = new List<WaitForEdge>(waitForGraph.Count);
+        foreach (var (waiter, owner) in waitForGraph)
+        {
+            lockByOwner.TryGetValue(owner, out var lockEntry);
+            edges.Add(new WaitForEdge(
+                waiter,
+                owner,
+                lockEntry?.LockAddress ?? 0,
+                lockEntry?.LockTypeName ?? "<Monitor>",
+                cycleEdges.Contains((waiter, owner))));
+        }
+        return edges;
+    }
+
+    private static List<DeadlockCycle> EnrichCycles(
+        List<DeadlockCycle>    cycles,
+        List<MonitorLockEntry> locks)
+    {
+        if (cycles.Count == 0) return cycles;
+
+        // Build owner → lock mapping for annotation.
+        var lockByOwner = new Dictionary<int, MonitorLockEntry>();
+        foreach (var l in locks)
+            if (l.OwnerManagedId is int oid)
+                lockByOwner.TryAdd(oid, l);
+
+        var enriched = new List<DeadlockCycle>(cycles.Count);
+        foreach (var c in cycles)
+        {
+            var addrs = new List<ulong>(c.ThreadIds.Count);
+            var types = new List<string>(c.ThreadIds.Count);
+            foreach (int tid in c.ThreadIds)
+            {
+                if (lockByOwner.TryGetValue(tid, out var l))
+                { addrs.Add(l.LockAddress); types.Add(l.LockTypeName); }
+                else
+                { addrs.Add(0); types.Add("<Monitor>"); }
+            }
+            enriched.Add(c with { LockAddresses = addrs, LockTypeNames = types });
+        }
+        return enriched;
+    }
 }
 
 file static class StringExtensions

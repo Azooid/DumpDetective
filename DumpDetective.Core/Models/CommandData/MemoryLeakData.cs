@@ -21,7 +21,12 @@ public sealed record MemoryLeakData(
 public sealed record SuspectRow(
     string Name, long Count, long Size, string Gen,
     long Gen2Count, long Gen2Size, long LohCount, long LohSize,
-    long RetainedSize = 0);  // sum of retained for sampled instances; 0 = not computed
+    long RetainedSize = 0,
+    /// <summary>
+    /// Estimated leak probability 0-100.  Computed from Gen2/LOH ratio, count magnitude,
+    /// retained size, and accumulation pattern heuristics.  0 = not computed.
+    /// </summary>
+    int LeakProbability = 0);
 
 public sealed record AccumulationPatternData(
     long   StringCount,

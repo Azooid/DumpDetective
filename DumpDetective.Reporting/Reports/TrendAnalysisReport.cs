@@ -1149,9 +1149,156 @@ public static class TrendAnalysisReport
             $"One row per signal, deduplicated across all {snaps.Count} dump(s).  " +
             $"Evidence shows per-dump metric progression ({labels[0]} \u2192 {labels[^1]}).  " +
             "Sorted: CRITICAL first.");
+
+        // ── Growth Projection (time-to-critical) ─────────────────────────────
+        RenderGrowthProjection(snaps, sink);
     }
 
-    // ── Helpers ───────────────────────────────────────────────────────────────
+    // ── Growth Projection ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Fits a linear trend to key metrics across all snapshots and projects
+    /// when each metric will reach its critical threshold at the current rate.
+    /// Acceleration detection flags metrics where the second-half growth rate
+    /// exceeds the first-half rate (non-linear / worsening accumulation).
+    /// </summary>
+    private static void RenderGrowthProjection(List<DumpSnapshot> snaps, IRenderSink sink)
+    {
+        if (snaps.Count < 2) return;
+
+        sink.Section("Growth Projection (Time-to-Critical)");
+        sink.Explain(
+            what: "Linear trend projection for key metrics. Each row shows the current rate of change per hour " +
+                  "and an estimated time until the metric reaches its critical threshold.",
+            why:  "Trend extrapolation converts abstract growth percentages into actionable deadlines. " +
+                  "A metric growing at 500 MB/hour that is currently at 2 GB with a 4 GB critical threshold " +
+                  "gives you approximately 4 hours before the critical threshold is breached.",
+            bullets: [
+                "⚡ Accelerating = second-half growth rate > first-half rate — the problem is compounding",
+                "ETA is a linear projection; real systems may worsen faster (exponential/accelerating growth)",
+                "n/a = metric is stable or decreasing — no ETA applicable",
+                "ETA < 1 h = CRITICAL — intervention should begin immediately",
+            ],
+            impact: "Projections enable proactive alerting and incident response planning before thresholds are breached.",
+            action: "For any metric with ETA < 24 h, treat it as an active incident and begin root-cause investigation."
+        );
+
+        var tt      = ThresholdLoader.Current.Trend;
+        var scoring = ThresholdLoader.Current.Scoring;
+
+        // Helper: compute linear regression slope (units per hour)
+        static double SlopePerHour(List<DumpSnapshot> snaps2, Func<DumpSnapshot, double> sel)
+        {
+            if (snaps2.Count < 2) return 0;
+            double t0 = snaps2[0].FileTime.Ticks;
+            double tN = snaps2[^1].FileTime.Ticks;
+            double dt = (tN - t0) / TimeSpan.TicksPerHour;
+            if (dt <= 0) return 0;
+            return (sel(snaps2[^1]) - sel(snaps2[0])) / dt;
+        }
+
+        // Acceleration: is second-half slope > first-half slope?
+        static bool IsAccelerating(List<DumpSnapshot> snaps2, Func<DumpSnapshot, double> sel)
+        {
+            if (snaps2.Count < 3) return false;
+            int mid = snaps2.Count / 2;
+
+            double t0 = snaps2[0].FileTime.Ticks;
+            double tm = snaps2[mid].FileTime.Ticks;
+            double tN = snaps2[^1].FileTime.Ticks;
+            double dt1 = (tm - t0) / TimeSpan.TicksPerHour;
+            double dt2 = (tN - tm) / TimeSpan.TicksPerHour;
+            if (dt1 <= 0 || dt2 <= 0) return false;
+
+            double slope1 = (sel(snaps2[mid]) - sel(snaps2[0]))  / dt1;
+            double slope2 = (sel(snaps2[^1])  - sel(snaps2[mid])) / dt2;
+            return slope2 > slope1 * 1.25; // >25% faster than the first half
+        }
+
+        // ETA = hours until value reaches threshold at current linear rate
+        static string Eta(double currentVal, double critThreshold, double slopePerHour)
+        {
+            if (slopePerHour <= 0) return "n/a";
+            double remaining = critThreshold - currentVal;
+            if (remaining <= 0) return "⚠ already critical";
+            double hours = remaining / slopePerHour;
+            if (hours < 1)    return $"⚡ ~{hours * 60:F0} min";
+            if (hours < 24)   return $"~{hours:F1} h";
+            if (hours < 168)  return $"~{hours / 24:F1} days";
+            return $"~{hours / 168:F1} weeks";
+        }
+
+        var projRows = new List<string[]>();
+        string latest = snaps[^1].FileTime.ToString("HH:mm");
+
+        void AddProj(string metric, Func<DumpSnapshot, double> sel,
+                     double critThreshold, string unit, bool mbScale = false)
+        {
+            double slopeRaw  = SlopePerHour(snaps, sel);
+            double currentVal = sel(snaps[^1]);
+            bool   accel     = IsAccelerating(snaps, sel);
+
+            string slopeStr;
+            double displaySlope = mbScale ? slopeRaw / 1_048_576 : slopeRaw;
+            string displayUnit  = mbScale ? "MB/h" : unit + "/h";
+            if (Math.Abs(displaySlope) < 0.01)
+                slopeStr = "~0";
+            else
+                slopeStr = $"{(displaySlope >= 0 ? "+" : "")}{displaySlope:F1} {displayUnit}";
+
+            double critForEta = mbScale ? critThreshold * 1_048_576 : critThreshold;
+            string eta        = Eta(currentVal, critForEta, slopeRaw);
+            string accelIcon  = accel ? " ⚡" : string.Empty;
+
+            projRows.Add([metric, slopeStr + accelIcon, eta]);
+        }
+
+        AddProj("Heap Total",       s => s.TotalHeapBytes,           tt.HeapCritMb,       "",    mbScale: true);
+        AddProj("LOH Size",         s => s.LohBytes,                 tt.LohCritMb,        "",    mbScale: true);
+        AddProj("Fragmentation",    s => s.HeapFreeBytes,            tt.FragCritMb,       "",    mbScale: true);
+        AddProj("Async Backlog",    s => s.AsyncBacklogTotal,        tt.AsyncCrit,        "ops");
+        AddProj("Finalizer Queue",  s => s.FinalizerQueueDepth,      tt.FinalizerCrit,    "objs");
+        AddProj("Event Subscribers",s => s.EventSubscriberTotal,     tt.EventCrit,        "subs");
+        AddProj("Blocked Threads",  s => s.BlockedThreadCount,       tt.BlockedCrit,      "threads");
+        AddProj("Timer Objects",    s => s.TimerCount,               tt.TimerCrit,        "timers");
+        if (snaps.Any(s => s.ConnectionCount > 0))
+            AddProj("DB Connections", s => s.ConnectionCount,        tt.DbCrit,           "conns");
+        if (snaps.Any(s => s.StringWastedBytes > 0))
+            AddProj("String Waste", s => s.StringWastedBytes,        tt.StringWasteCritMb,"",    mbScale: true);
+
+        // Health score declining projection (score is inverse — lower is worse)
+        {
+            double slopeScore = SlopePerHour(snaps, s => s.HealthScore);
+            double currentScore = snaps[^1].HealthScore;
+            bool   accelScore  = IsAccelerating(snaps, s => -s.HealthScore); // negative = worsening
+            string slopeStr    = Math.Abs(slopeScore) < 0.01 ? "~0"
+                               : $"{(slopeScore >= 0 ? "+" : "")}{slopeScore:F2} pts/h";
+            // ETA until score drops below 40 (critical threshold)
+            double critScore   = tt.ScoreCrit;
+            string eta;
+            if (slopeScore >= 0) eta = "n/a (improving)";
+            else
+            {
+                double hours = (currentScore - critScore) / (-slopeScore);
+                eta = hours < 0 ? "⚠ already critical"
+                    : hours < 1 ? $"⚡ ~{hours * 60:F0} min"
+                    : hours < 24 ? $"~{hours:F1} h"
+                    : hours < 168 ? $"~{hours / 24:F1} days"
+                    : $"~{hours / 168:F1} weeks";
+            }
+            projRows.Add(["Health Score", slopeStr + (accelScore ? " ⚡" : ""), eta]);
+        }
+
+        var timeSpan = snaps[^1].FileTime - snaps[0].FileTime;
+        string captionNote = timeSpan.TotalMinutes < 1
+            ? "⚠ Dumps are less than 1 minute apart — projections may be unreliable."
+            : $"Projection based on {snaps.Count} snapshots over {(timeSpan.TotalHours >= 1 ? $"{timeSpan.TotalHours:F1} h" : $"{timeSpan.TotalMinutes:F0} min")}.  ⚡ = accelerating growth.";
+
+        sink.Table(
+            ["Metric", $"Rate (at {latest})", "ETA to Critical"],
+            projRows,
+            captionNote);
+    }
 
     public static string ScoreLabel(int s) => AnalyzeReport.ScoreLabel(s);
     public static string ScoreColor(int s)  => s >= 70 ? "green" : s >= 40 ? "yellow" : "red";

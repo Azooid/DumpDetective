@@ -210,7 +210,7 @@ public sealed class LoadCommand : ICommand
 
             if (needsCollect)
             {
-                if (!fragOk)     fragConsumer  = new FragmentationConsumer(ctx.Heap, ctx.Heap.Segments, ctx.Heap.FreeType);
+                if (!fragOk)     fragConsumer  = new FragmentationConsumer(ctx.Heap, ctx.Heap.Segments);
                 if (!bfsOk)      bfsP1Consumer = new BfsPass1Consumer();
                 if (!finQueueOk) finQConsumer  = new FinalizerQueueConsumer();
 

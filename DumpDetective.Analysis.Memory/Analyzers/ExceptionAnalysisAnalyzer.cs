@@ -4,6 +4,8 @@ using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Runtime;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace DumpDetective.Analysis.Memory.Analyzers;
 
@@ -69,7 +71,8 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
         foreach (var kv in _byType)
             byTypeResult[kv.Key] = new ExceptionTypeGroup(kv.Key, kv.Value.ToList());
 
-        _result = new ExceptionAnalysisData(byTypeResult, _totals, _totalAll);
+        _result = new ExceptionAnalysisData(byTypeResult, _totals, _totalAll,
+            DetectFatalPrecursors(_totals));
     }
 
     public IHeapObjectConsumer CreateClone()
@@ -127,8 +130,50 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
         string  msg     = TryReadString(obj, "_message",        maxLength: 120);
         int     hresult = TryReadInt(obj, "_HResult");
         string? inner   = TryReadObjectTypeName(obj, "_innerException");
-        var     frames  = TryReadStackFrames(obj, "_stackTraceString");
-        return new ExceptionHeapRecord(obj.Address, typeName, msg, hresult, inner, frames);
+        // Try the pre-formatted string first (populated when .StackTrace was accessed),
+        // then fall back to ClrMD's structured frame reader from the _stackTrace byte array,
+        // which works even when _stackTraceString was never materialised.
+        var frames = TryReadStackFrames(obj, "_stackTraceString");
+        if (frames.Count == 0)
+            frames = TryReadFramesViaClrMD(obj);
+        string  hash    = ComputeStackHash(frames);
+        return new ExceptionHeapRecord(obj.Address, typeName, msg, hresult, inner, frames, hash);
+    }
+
+    private static string ComputeStackHash(IReadOnlyList<string> frames)
+    {
+        if (frames.Count == 0) return "";
+        var sb = new StringBuilder();
+        foreach (var f in frames)
+        {
+            if (!string.IsNullOrWhiteSpace(f))
+            {
+                sb.Append(f);
+                sb.Append('|');
+            }
+        }
+        if (sb.Length == 0) return "";
+        Span<byte> hashBytes = stackalloc byte[4];
+        var data = Encoding.UTF8.GetBytes(sb.ToString());
+        // Use last 4 bytes of SHA256 as an 8-hex-char fingerprint.
+        var full = SHA256.HashData(data);
+        return Convert.ToHexString(full.AsSpan(28, 4)).ToLowerInvariant();
+    }
+
+    private static FatalPrecursorFlags DetectFatalPrecursors(Dictionary<string, int> totals)
+    {
+        bool oom     = false, soe  = false, av    = false,
+             abort   = false, init = false, invoc = false;
+        foreach (var name in totals.Keys)
+        {
+            if (name.Contains("OutOfMemoryException",       StringComparison.Ordinal)) oom   = true;
+            if (name.Contains("StackOverflowException",     StringComparison.Ordinal)) soe   = true;
+            if (name.Contains("AccessViolationException",   StringComparison.Ordinal)) av    = true;
+            if (name.Contains("ThreadAbortException",       StringComparison.Ordinal)) abort = true;
+            if (name.Contains("TypeInitializationException",StringComparison.Ordinal)) init  = true;
+            if (name.Contains("TargetInvocationException",  StringComparison.Ordinal)) invoc = true;
+        }
+        return new FatalPrecursorFlags(oom, soe, av, abort, init, invoc);
     }
 
     private static string TryReadString(in ClrObject obj, string fieldName, int maxLength = -1)
@@ -176,6 +221,32 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
             string? raw = value.AsString();
             if (string.IsNullOrEmpty(raw)) return [];
             return [.. raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries)];
+        }
+        catch { return []; }
+    }
+
+    /// <summary>
+    /// Uses ClrMD's structured exception reader to extract stack frames from the
+    /// <c>_stackTrace</c> byte array inside the exception object. This works even
+    /// when <c>_stackTraceString</c> was never materialised (i.e. <c>.StackTrace</c>
+    /// was never accessed before the dump was taken).
+    /// </summary>
+    private static IReadOnlyList<string> TryReadFramesViaClrMD(in ClrObject obj)
+    {
+        try
+        {
+            var ex = obj.AsException();
+            if (ex is null) return [];
+            var stackTrace = ex.StackTrace;
+            if (stackTrace.IsDefaultOrEmpty) return [];
+            var result = new List<string>(stackTrace.Length);
+            foreach (var frame in stackTrace)
+            {
+                string label = frame.Method?.Signature ?? frame.Method?.Name ?? frame.FrameName ?? "";
+                if (!string.IsNullOrWhiteSpace(label))
+                    result.Add(label);
+            }
+            return result;
         }
         catch { return []; }
     }

@@ -42,7 +42,64 @@ public sealed class AsyncStacksAnalyzer : IHeapObjectConsumer
     }
 
     public void OnWalkComplete()
-        => _result = new AsyncStacksData((_entries ?? []).ToList(), _backlogTotal);
+    {
+        var entries = (_entries ?? []).ToList();
+        _result = new AsyncStacksData(entries, _backlogTotal, BuildDepChains(entries));
+    }
+
+    // ── Dependency chain inference ────────────────────────────────────────────
+
+    private static IReadOnlyList<AsyncDepChain> BuildDepChains(List<StateMachineEntry> entries)
+    {
+        // Only consider suspended (Awaiting) state machines for chain building.
+        var suspended = entries.Where(e => e.State == "Awaiting").ToList();
+        if (suspended.Count == 0) return [];
+
+        // Group by the class/namespace prefix (everything before the last '+' or last method separator).
+        // e.g. "MyApp.OrderService+<GetOrderAsync>d__12" → prefix "MyApp.OrderService"
+        var byClass = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach (var e in suspended)
+        {
+            string cls = ExtractClassName(e.Method);
+            if (!byClass.TryGetValue(cls, out var list))
+                byClass[cls] = list = new List<string>();
+            if (!list.Contains(e.Method))
+                list.Add(e.Method);
+        }
+
+        var chains = new List<AsyncDepChain>(byClass.Count);
+        foreach (var (cls, methods) in byClass)
+        {
+            if (methods.Count == 0) continue;
+            // Heuristic: sort methods by name length — shorter names tend to be callers,
+            // longer compiler-generated names tend to be callees.
+            methods.Sort(static (a, b) => a.Length.CompareTo(b.Length));
+            bool likelyIo = methods.Any(m =>
+                m.Contains("Sql",     StringComparison.OrdinalIgnoreCase) ||
+                m.Contains("Http",    StringComparison.OrdinalIgnoreCase) ||
+                m.Contains("Socket",  StringComparison.OrdinalIgnoreCase) ||
+                m.Contains("Stream",  StringComparison.OrdinalIgnoreCase) ||
+                m.Contains("Read",    StringComparison.OrdinalIgnoreCase) ||
+                m.Contains("Write",   StringComparison.OrdinalIgnoreCase) ||
+                m.Contains("Connect", StringComparison.OrdinalIgnoreCase));
+            int count = suspended.Count(e => ExtractClassName(e.Method) == cls);
+            chains.Add(new AsyncDepChain(cls, methods, count, likelyIo));
+        }
+
+        // Return top 20 chains by instance count descending.
+        chains.Sort(static (a, b) => b.InstanceCount.CompareTo(a.InstanceCount));
+        return chains.Count > 20 ? chains[..20] : chains;
+    }
+
+    private static string ExtractClassName(string method)
+    {
+        // "MyApp.OrderService+<GetOrderAsync>d__12" → "MyApp.OrderService"
+        int plus = method.IndexOf('+');
+        if (plus > 0) return method[..plus];
+        // Fallback: namespace up to the last dot
+        int dot = method.LastIndexOf('.');
+        return dot > 0 ? method[..dot] : method;
+    }
 
     public IHeapObjectConsumer CreateClone()
     {

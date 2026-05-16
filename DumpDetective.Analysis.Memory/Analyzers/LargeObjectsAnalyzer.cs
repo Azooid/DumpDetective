@@ -110,10 +110,6 @@ public sealed class LargeObjectsAnalyzer
 
     private static List<LargeSegmentInfo> BuildSegmentBreakdown(ClrHeap heap, IReadOnlyList<LargeObjectEntry> objects)
     {
-        // Key by segment base address (ulong) to correctly handle Ephemeral segments.
-        // DetermineSeg() assigns objects to Gen0/1/2/LOH/POH by inspecting each object's
-        // address; a segment keyed by its address string avoids the mismatch where
-        // GCSegmentKind.Ephemeral (the catch-all string key) never matches any object's key.
         var segAddrToKind = new Dictionary<ulong, string>();
         foreach (var seg in heap.Segments)
         {
@@ -128,27 +124,26 @@ public sealed class LargeObjectsAnalyzer
             };
         }
 
-        // Count objects per "kind" label (matching DetermineSeg output).
-        var objsByKind = new Dictionary<string, int>(8, StringComparer.Ordinal);
+        // Count objects per segment address — keying by kind string would assign
+        // the total of all LOH objects to every LOH segment.
+        var objsBySegAddr = new Dictionary<ulong, int>();
         foreach (var o in objects)
         {
+            var seg = heap.GetSegmentByAddress(o.Addr);
+            if (seg is null) continue;
             ref int c = ref System.Runtime.InteropServices.CollectionsMarshal
-                .GetValueRefOrAddDefault(objsByKind, o.Segment, out _);
+                .GetValueRefOrAddDefault(objsBySegAddr, seg.Start, out _);
             c++;
         }
 
         var result = new List<LargeSegmentInfo>();
         foreach (var seg in heap.Segments)
         {
-            string kind = segAddrToKind[seg.Start];
-            // For Ephemeral segments, object counts accumulate under Gen0/Gen1/Gen2 keys;
-            // sum those three to get the total objects attributed to this physical segment.
-            int count = seg.Kind == GCSegmentKind.Ephemeral
-                ? objsByKind.GetValueOrDefault("Gen0") +
-                  objsByKind.GetValueOrDefault("Gen1") +
-                  objsByKind.GetValueOrDefault("Gen2")
-                : objsByKind.GetValueOrDefault(kind, 0);
-            result.Add(new LargeSegmentInfo(kind, (long)seg.ObjectRange.Length, (long)seg.ReservedMemory.Length, count));
+            if (!segAddrToKind.TryGetValue(seg.Start, out string? kind)) continue;
+            int count = objsBySegAddr.GetValueOrDefault(seg.Start, 0);
+            // Only include segments that actually contain at least one large object.
+            if (count == 0) continue;
+            result.Add(new LargeSegmentInfo(kind, seg.Start, (long)seg.ObjectRange.Length, (long)seg.ReservedMemory.Length, count));
         }
         return result;
     }

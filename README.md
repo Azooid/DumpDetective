@@ -19,8 +19,10 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 - Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 correlation rules that require both files to confirm root causes.
 - Multi-dump trend analysis for comparing behavior over time.
 - Interactive HTML reports with grouped navigation, charts, dark mode, and paged tables.
+- Compiler-generated method names (`<Foo>b__N`, `<>c`, async state machines, generics) are automatically decoded to human-readable form in all stack-frame, callback, and call-tree columns.
 - Export and replay support across HTML, Markdown, text, JSON, and compressed binary.
 - Optional BFS cache (`.bfs.idx`) for faster repeated retained-size analysis on large heaps.
+- **Plugin system** — drop a `.NET` class library into `plugins/` or `~/.dumpdetective/plugins/` to add custom analysis commands without modifying the host binary. Plugin commands can participate in `analyze --full` and `trace-analyze --with-plugins` by implementing `ICommand.IncludeInFullAnalyze = true` and/or `ITracePlugin`.
 
 ## Start Here
 
@@ -53,6 +55,7 @@ If you are new, use this path:
 - [Documentation Index](Docs/documentation.md) — all commands with links to detailed docs, triage playbooks, output format reference
 - [Memory Analysis Guide](Docs/Memory-Guide.md) — all dump commands, options, and workflows
 - [Trace Analysis Guide](Docs/Trace-Guide.md) — all trace commands, options, and collection recipes
+- [Plugin System](Docs/Plugins.md) — how to write and install external plugin commands
 - [Testing](Docs/Testing.md)
 
 ---
@@ -150,6 +153,18 @@ See [Docs/Testing.md](Docs/Testing.md) for the full test architecture and how to
 ## Quick Start
 
 Choose the path that matches your input type.
+
+**Plugin flags:**
+```bash
+# Include plugin memory commands in full-analyze (IncludeInFullAnalyze = true)
+DumpDetective analyze app.dmp --full --with-plugins
+
+# Include plugin trace sub-analyzers in trace-analyze
+DumpDetective trace-analyze perf.etl --with-plugins
+
+# Both
+DumpDetective trace-dump-analyze perf.etl app.dmp --with-plugins
+```
 
 ### Memory Dump Quick Start (`.dmp`, `.mdmp`)
 
@@ -474,10 +489,10 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `async-stacks` | Yes | Suspended async state machines at await points |
 | `exception-analysis` | Yes | Exception objects on heap and active threads |
 | `event-analysis` | Yes | Event handler leaks -- publisher types, field names, subscriber counts, retained memory |
-| `http-requests` | Yes | In-flight HTTP request objects |
+| `http-requests` | Yes | In-flight HTTP request objects and outbound connection pools (`ServicePoint`) |
 | `connection-pool` | Yes | Database connection objects and leak detection |
-| `wcf-channels` | Yes | WCF service/channel objects and their state |
-| `timer-leaks` | Yes | Timer objects and their callback targets |
+| `wcf-channels` | Yes | WCF service/channel objects; distinguishes client proxy channels from server-side hosting infrastructure |
+| `timer-leaks` | Yes | Timer objects and their callback targets (callback method names fully resolved and decoded) |
 | `module-list` | Yes | Loaded assemblies with path and size |
 | `gc-roots` | No | GC roots and referrers for a given type (too slow for `--full`) |
 | `type-instances` | No | All instances of a given type (`--type <name>` required) |
@@ -651,6 +666,7 @@ Options:
   -n, --top <N>            Top N items per section (default: 20)
   --process <name>         Filter to a specific process name
   --show-system            Include system/kernel frames in CPU tree (default: hidden)
+  --with-plugins           Include plugin sub-analyzers (default: excluded)
   -o, --output <file>      Write report to file (.html / .md / .txt / .json / .bin)
   --format <fmt>           Output format shorthand: html|md|json|bin
   -h, --help               Show this help
@@ -669,11 +685,14 @@ Options:
 - `http-trace` for HTTP request latency and error rates.
 - `sql-trace` for SQL/EF query latency and slow queries.
 
+Pass `--with-plugins` to append any loaded plugin sub-analyzers to the report (see [Plugin System](Docs/Plugins.md)).
+
 **Examples:**
 ```bash
 DumpDetective trace-analyze app.nettrace
 DumpDetective trace-analyze perf.etl --process w3wp --output trace-report.html
 DumpDetective trace-analyze app.nettrace --top 30 --show-system
+DumpDetective trace-analyze perf.etl --with-plugins --output full-report.html
 ```
 
 ### Individual trace analyzers
@@ -768,6 +787,7 @@ The HTML renderer is designed for large real-world dumps and full combined repor
 - Sortable, filterable tables with paging.
 - Global rows-per-page control plus per-table override for especially large sections.
 - A single output file with embedded CSS and JavaScript, so reports remain portable and easy to share.
+- Stack frames, callback method names, and call-tree entries are decoded from CLR compiler-generated notation — lambdas, closures, async state machines, and generic CLR notation — into readable names in every section.
 
 ### JSON / binary output and re-rendering
 
@@ -804,6 +824,7 @@ DumpDetective.Core/               Models, interfaces, shared utilities
     ICommand.cs                   Name, Description, IncludeInFullAnalyze, Category, Kind, Run, BuildReport
     IRenderSink.cs                Format-agnostic output interface
     IHeapObjectConsumer.cs        Heap-walk consumer interface
+    ITracePlugin.cs               Minimal trace sub-analyzer interface for plugins (Core-only, no Commands ref needed)
   Models/
     DumpSnapshot.cs               All collected metrics for one dump (AOT JSON-serialisable)
     Finding.cs                    Scored finding (severity, category, headline, advice)

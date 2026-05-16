@@ -85,7 +85,7 @@ public sealed class HeapFragmentationAnalyzer
         }
 
         // Single parallel heap walk via HeapWalker + FragmentationConsumer
-        var consumer = new FragmentationConsumer(ctx.Heap, ctx.Heap.Segments, ctx.Heap.FreeType);
+        var consumer = new FragmentationConsumer(ctx.Heap, ctx.Heap.Segments);
 
         CommandBase.RunStatus("Measuring fragmentation...", update =>
             HeapWalker.Walk(ctx.Heap, [consumer],

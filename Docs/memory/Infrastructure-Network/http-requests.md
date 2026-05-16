@@ -5,7 +5,9 @@
 
 ## What it does
 
-Finds all live `System.Net.Http.*` and `System.Net.HttpWebRequest` objects on the heap. Shows HTTP method, URI, and status code where readable. Identifies abandoned in-flight requests, misused `HttpClient` instances, and leaking response objects.
+Finds all live `System.Net.Http.*`, `System.Net.HttpWebRequest`, and `System.Net.ServicePoint` objects on the heap. Shows HTTP method, URI, and status code where readable. Identifies abandoned in-flight requests, misused `HttpClient` instances, leaking response objects, and outbound connection pool saturation per endpoint.
+
+URI resolution works on both .NET Core (`_string` field) and .NET Framework (`m_String` field) dumps — field names are probed with a `GetFieldByName` guard before reading so the analyzer never throws on a missing field.
 
 ---
 
@@ -16,7 +18,7 @@ Finds all live `System.Net.Http.*` and `System.Net.HttpWebRequest` objects on th
 
 ### Types matched
 
-Six type names are recognized: `System.Net.Http.HttpRequestMessage`, `System.Net.Http.HttpResponseMessage`, `System.Net.HttpWebRequest`, `System.Net.Http.HttpClient`, `System.Net.Http.HttpClientHandler`, and `System.Net.Http.SocketsHttpHandler`. The `HeapTypeMeta.IsHttp` flag is set per MethodTable for all six.
+Seven type names are recognized: `System.Net.Http.HttpRequestMessage`, `System.Net.Http.HttpResponseMessage`, `System.Net.HttpWebRequest`, `System.Net.Http.HttpClient`, `System.Net.Http.HttpClientHandler`, `System.Net.Http.SocketsHttpHandler`, and `System.Net.ServicePoint`. The `HeapTypeMeta.IsHttp` flag is set per MethodTable for all seven.
 
 ---
 
@@ -29,7 +31,7 @@ Six type names are recognized: `System.Net.Http.HttpRequestMessage`, `System.Net
 
 ### How it works
 
-For each object where `meta.IsHttp` is true, the consumer records type, address, and size. For `HttpRequestMessage`, it reads the HTTP verb by navigating `_method → HttpMethod._method (string)`, and the URI by navigating `_requestUri → System.Uri._string`. For `HttpResponseMessage`, it reads `_statusCode` as an int. All other HTTP types are recorded with empty method/URI and status 0.
+For each object where `meta.IsHttp` is true, the consumer records type, address, and size. For `HttpRequestMessage`, it reads the HTTP verb by navigating `_method → HttpMethod._method (string)`, and the URI by navigating `_requestUri → System.Uri` then probing `_string` / `m_String` / `m_originalUnicodeString` with a `GetFieldByName` guard before each attempt. For `HttpResponseMessage`, it reads `_statusCode` as an int. For `System.Net.ServicePoint`, it reads `m_Address` (a `Uri`), `m_Host`, `m_Port`, `m_CurrentConnections`, and `m_ConnectionLimit`.
 
 All field reads are wrapped in try/catch because field names and nesting changed between .NET Framework, .NET 5+, and .NET 6+. Clone/merge: each clone collects its own entry list; `MergeFrom` appends them.
 
@@ -67,6 +69,7 @@ None.
 | **Specific URI appearing repeatedly** | All requests targeting one endpoint are in-flight — that endpoint is slow, rate-limiting, or unreachable. |
 | **URIs containing private IPs or unexpected hosts** | Misconfiguration — requests going to wrong environment. |
 | **`HttpWebRequest` objects** | Legacy API in use — consider migration to `HttpClient` for better connection pool management. |
+| **`ServicePoint` at connection limit** | Outbound connection pool exhausted for that endpoint — requests will queue or fail. The report flags endpoints where `CurrentConnections == ConnectionLimit`. Default limit is 2; increase via `ServicePointManager.DefaultConnectionLimit` or per-endpoint. |
 
 ---
 

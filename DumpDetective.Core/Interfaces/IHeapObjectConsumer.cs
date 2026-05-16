@@ -10,11 +10,20 @@ namespace DumpDetective.Core.Interfaces;
 public interface IHeapObjectConsumer
 {
     /// <summary>
-    /// Called once per valid, non-free heap object.
+    /// Called once per valid heap object.
+    /// Free objects (GC holes) are only dispatched when <see cref="ConsumeFreeObjects"/> is <see langword="true"/>.
     /// Implementations MUST NOT allocate on the hot path — use
     /// <c>CollectionsMarshal.GetValueRefOrAddDefault</c> for dictionary updates.
     /// </summary>
     void Consume(in ClrObject obj, Runtime.HeapTypeMeta meta, ClrHeap heap);
+
+    /// <summary>
+    /// When <see langword="true"/>, <c>HeapWalker</c> will also call <see cref="Consume"/> for
+    /// free (GC hole) objects, passing <c>default(HeapTypeMeta)</c> as the meta argument.
+    /// Free-object sizes are counted in the <c>HeapWalker.Walk</c> return value regardless of this flag.
+    /// Default is <see langword="false"/> — existing consumers need no changes.
+    /// </summary>
+    bool ConsumeFreeObjects => false;
 
     /// <summary>
     /// Called exactly once after the walk completes (even if the walk throws).

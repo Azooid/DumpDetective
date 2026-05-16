@@ -52,6 +52,11 @@ internal static class HelpPrinter
             list.Add(cmd);
         }
 
+        // Build the set of plugin-sourced command names for visual distinction.
+        var pluginCommandNames = new HashSet<string>(
+            CommandRegistry.Plugins.SelectMany(p => p.Commands).Select(c => c.Name),
+            StringComparer.Ordinal);
+
         var grid = new Grid();
         grid.AddColumn(new GridColumn().NoWrap());
         grid.AddColumn(new GridColumn().PadLeft(2));
@@ -62,12 +67,12 @@ internal static class HelpPrinter
         // ── .dmp / .mdmp commands ─────────────────────────────────────────────
         grid.AddRow("", "");
         grid.AddRow("[bold white on grey] .dmp / .mdmp commands [/]", "");
-        RenderSection(grid, memoryByCategory, s_dumpOrder);
+        RenderSection(grid, memoryByCategory, s_dumpOrder, pluginCommandNames);
 
         // ── trace commands (.nettrace / .etl) ─────────────────────────────────
         grid.AddRow("", "");
         grid.AddRow("[bold white on grey] trace commands (.nettrace / .etl) [/]", "");
-        RenderSection(grid, traceByCategory, s_traceOrder);
+        RenderSection(grid, traceByCategory, s_traceOrder, pluginCommandNames);
 
         grid.AddRow("", "");
         grid.AddRow("[bold yellow]Output formats[/]", "[dim].html  .md  .txt  .json  .bin (Brotli-compressed JSON)[/]");
@@ -77,6 +82,28 @@ internal static class HelpPrinter
         grid.AddRow("[bold yellow]Default output[/]", "[dim]<dumpname>.html alongside the dump file[/]");
         grid.AddRow("[bold yellow]Global flags[/]",   "[dim]--debug   print peak memory after run[/]");
         grid.AddRow("[bold yellow]Env vars[/]",        "[dim]DD_DUMP   default dump path when none is given[/]");
+        if (pluginCommandNames.Count > 0)
+        {
+            grid.AddRow("", "");
+            grid.AddRow("[bold yellow]Legend[/]", $"[bold cyan]  command[/]       built-in");
+            grid.AddRow("",                       $"[bold orange1]  ⚠ command[/]  [orange1 dim][[plugin]][/]  third-party — verify source before running");
+        }
+
+        // ── loaded plugins ────────────────────────────────────────────────────
+        var plugins = CommandRegistry.Plugins;
+        if (plugins.Count > 0)
+        {
+            grid.AddRow("", "");
+            grid.AddRow("[bold white on grey] loaded plugins [/]", "");
+            foreach (var p in plugins)
+            {
+                string ver = p.Version is not null ? $" [dim]{Markup.Escape(p.Version)}[/]" : "";
+                int count  = p.Commands.Count;
+                grid.AddRow(
+                    $"  [bold green]{Markup.Escape(p.Name)}[/]{ver}",
+                    $"[dim]{count} command{(count == 1 ? "" : "s")}[/]");
+            }
+        }
 
         var panel = new Panel(grid)
         {
@@ -95,7 +122,8 @@ internal static class HelpPrinter
     private static void RenderSection(
         Grid grid,
         Dictionary<string, List<ICommand>> byCategory,
-        string[] order)
+        string[] order,
+        HashSet<string> pluginCommandNames)
     {
         var seen = new HashSet<string>(order, StringComparer.Ordinal);
 
@@ -106,7 +134,7 @@ internal static class HelpPrinter
             grid.AddRow("", "");
             grid.AddRow($"[bold yellow]{Markup.Escape(heading)}[/]", "");
             foreach (var cmd in cmds)
-                grid.AddRow($"  [bold cyan]{Markup.Escape(cmd.Name)}[/]", Markup.Escape(cmd.Description));
+                AddCommandRow(grid, cmd, pluginCommandNames);
         }
 
         // Unknown categories appended at the end (new commands get a section automatically)
@@ -116,7 +144,23 @@ internal static class HelpPrinter
             grid.AddRow("", "");
             grid.AddRow($"[bold yellow]{Markup.Escape(heading)}[/]", "");
             foreach (var cmd in cmds)
-                grid.AddRow($"  [bold cyan]{Markup.Escape(cmd.Name)}[/]", Markup.Escape(cmd.Description));
+                AddCommandRow(grid, cmd, pluginCommandNames);
+        }
+    }
+
+    private static void AddCommandRow(Grid grid, ICommand cmd, HashSet<string> pluginCommandNames)
+    {
+        if (pluginCommandNames.Contains(cmd.Name))
+        {
+            grid.AddRow(
+                $"  [bold orange1]⚠ {Markup.Escape(cmd.Name)}[/]",
+                $"[orange1 dim][[plugin]][/] {Markup.Escape(cmd.Description)}");
+        }
+        else
+        {
+            grid.AddRow(
+                $"  [bold cyan]{Markup.Escape(cmd.Name)}[/]",
+                Markup.Escape(cmd.Description));
         }
     }
 }

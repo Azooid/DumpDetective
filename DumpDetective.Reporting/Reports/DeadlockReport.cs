@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -105,11 +106,31 @@ public sealed class DeadlockReport
     private static void RenderCycles(IRenderSink sink, DeadlockData data)
     {
         sink.Section("Deadlock Cycles");
+        sink.Text("Each cycle is a circular wait: every thread listed owns a lock while waiting for the lock held by the next thread. " +
+                  "None of these threads can make progress without external intervention.");
         for (int i = 0; i < data.ConfirmedCycles.Count; i++)
         {
             var cycle = data.ConfirmedCycles[i];
-            string chain = string.Join(" → ", cycle.ThreadIds.Select(id => $"T{id}"));
-            sink.Alert(AlertLevel.Critical, $"Cycle {i + 1}: {chain}");
+            // Build chain: T19 waits for T20 waits for T19 (closing back)
+            // ThreadIds includes the closing node repeated: [T19, T20, T19]
+            // Show as: T19 → (waits for) T20 → (waits for) T19
+            var distinctIds   = cycle.ThreadIds.Distinct().ToList();
+            var hasLockNames  = cycle.LockTypeNames is { Count: > 0 };
+            var parts = new List<string>();
+            for (int j = 0; j < cycle.ThreadIds.Count - 1; j++)
+            {
+                int  waiter = cycle.ThreadIds[j];
+                int  owner  = cycle.ThreadIds[j + 1];
+                string lockLabel = hasLockNames && j < cycle.LockTypeNames.Count
+                    ? $" (holds {cycle.LockTypeNames[j]})"
+                    : "";
+                parts.Add($"T{waiter}{lockLabel}");
+            }
+            // close the arrow back to first
+            string chain = string.Join(" \u2192 waits for \u2192 ", parts) + $" \u2192 waits for \u2192 T{cycle.ThreadIds[^1]}";
+            sink.Alert(AlertLevel.Critical,
+                $"Cycle {i + 1} ({distinctIds.Count} threads): {string.Join(" ↔ ", distinctIds.Select(id => $"T{id}"))}",
+                detail: chain);
         }
     }
 
@@ -170,7 +191,7 @@ public sealed class DeadlockReport
                 $"0x{w.OSThreadId:X4}",
                 w.ThreadName ?? "",
                 w.BlockReason,
-                w.TopUserFrame,
+                DumpHelpers.SanitizeFrame(w.TopUserFrame),
             })
             .ToList();
 
@@ -184,7 +205,7 @@ public sealed class DeadlockReport
                 (w.ThreadName is not null ? $" [{w.ThreadName}]" : "") +
                 $"  {w.BlockReason}";
             sink.BeginDetails(title, open: false);
-            sink.Table(["Frame"], w.StackFrames.Select(f => new[] { f }).ToList());
+            sink.Table(["Frame"], w.StackFrames.Select(f => new[] { DumpHelpers.SanitizeFrame(f) }).ToList());
             sink.EndDetails();
         }
     }

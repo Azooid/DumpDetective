@@ -32,6 +32,7 @@ internal sealed class HeapSnapshot : IDisposable
 {
     // ── In-memory TypeStats (small; ~2–20 MB; released explicitly) ───────────
     private Dictionary<string, TypeAgg>? _typeStats;
+    private int _typeStatsReaders;  // reference count — released when it drops to 0
 
     // ── StringGroups disk cache ───────────────────────────────────────────────
     private string? _tempDir;
@@ -147,7 +148,25 @@ internal sealed class HeapSnapshot : IDisposable
         GC.Collect(2, GCCollectionMode.Forced, blocking: true, compacting: false);
     }
 
-    /// <summary>Releases the in-memory TypeStats dictionary. Called after all type-stats consumers have finished.</summary>
+    /// <summary>
+    /// Declares that one more caller will read TypeStats. Each call must be balanced
+    /// by exactly one <see cref="RetireTypeStatsReader"/> call.
+    /// Must be called before the parallel walk starts (i.e. on the collection thread).
+    /// </summary>
+    internal void RegisterTypeStatsReader()
+        => Interlocked.Increment(ref _typeStatsReaders);
+
+    /// <summary>
+    /// Signals that one reader has finished. When the count reaches zero the
+    /// dictionary is cleared and released for GC.
+    /// </summary>
+    internal void RetireTypeStatsReader()
+    {
+        if (Interlocked.Decrement(ref _typeStatsReaders) == 0)
+            ReleaseTypeStats();
+    }
+
+    /// <summary>Releases the in-memory TypeStats dictionary immediately (bypass ref count).</summary>
     internal void ReleaseTypeStats()
     {
         if (_typeStats is not null)

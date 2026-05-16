@@ -9,9 +9,14 @@ namespace DumpDetective.Commands.Memory;
 /// </summary>
 public sealed class TrendAnalysisCommand : ICommand
 {
-    private readonly IReadOnlyList<ICommand> _fullAnalyzeCommands;
-    public TrendAnalysisCommand(IReadOnlyList<ICommand> fullAnalyzeCommands)
-        => _fullAnalyzeCommands = fullAnalyzeCommands;
+    private readonly IReadOnlyList<ICommand> _builtInCommands;
+    private readonly IReadOnlyList<ICommand> _pluginCommands;
+
+    public TrendAnalysisCommand(IReadOnlyList<ICommand> fullAnalyzeCommands, IReadOnlyList<ICommand>? pluginCommands = null)
+    {
+        _builtInCommands = fullAnalyzeCommands;
+        _pluginCommands  = pluginCommands ?? [];
+    }
 
     public string Name               => "trend-analysis";
     public string Description        => "Analyze multiple dumps for memory/leak trends (--full for sub-reports).";
@@ -61,6 +66,7 @@ public sealed class TrendAnalysisCommand : ICommand
 
         var inputs       = a.Positionals.ToList();
         bool full        = a.HasFlag("full");
+        bool withPlugins = a.HasFlag("with-plugins");
         var ignoreEvents = a.GetAll("ignore-event").ToList();
         int baselineArg  = a.GetInt("baseline", 1);
         string dumpPrefix = a.GetString("prefix", "D");
@@ -204,7 +210,10 @@ public sealed class TrendAnalysisCommand : ICommand
 
                         var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                         ToolMemoryDiagnostic.BeginAnalyzerGroup(label);
-                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, _fullAnalyzeCommands, log);
+                        var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
+                            ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
+                            : _builtInCommands;
+                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, effectiveCmds, log);
                         ToolMemoryDiagnostic.EndAnalyzerGroup();
                         ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
                         CommandBase.ClearOverrides();

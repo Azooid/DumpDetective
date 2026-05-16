@@ -78,7 +78,7 @@ public sealed class FinalizerQueueReport
 
         if (data.FinalizerFrames.Count > 0)
             sink.Table(["#", "Stack Frame"],
-                data.FinalizerFrames.Select((f, i) => new[] { i.ToString(), f }).ToList(),
+                data.FinalizerFrames.Select((f, i) => new[] { i.ToString(), DumpHelpers.SanitizeFrame(f) }).ToList(),
                 "Finalizer thread call stack");
         else
             sink.Text("  (no managed frames — finalizer thread is idle or waiting for work)");

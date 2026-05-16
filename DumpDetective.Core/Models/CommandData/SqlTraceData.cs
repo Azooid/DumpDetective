@@ -30,6 +30,19 @@ public sealed record SqlCommandEntry(
     int    ThreadId,
     bool   IsError);
 
+/// <summary>Detected ORM or data-access library generating this query pattern.</summary>
+public enum OrmKind
+{
+    Unknown,
+    EfCore,
+    EfSix,
+    Dapper,
+    NHibernate,
+    AdoNet,
+    PetaPoco,
+    RepoDb,
+}
+
 /// <summary>Aggregate statistics per unique query pattern.</summary>
 public sealed record SqlQuerySummary(
     string CommandText,
@@ -37,7 +50,9 @@ public sealed record SqlQuerySummary(
     double TotalMs,
     double MaxMs,
     double AvgMs,
-    int    ErrorCount);
+    int    ErrorCount,
+    /// <summary>Detected ORM layer; <c>Unknown</c> if unrecognized.</summary>
+    OrmKind DetectedOrm = OrmKind.Unknown);
 
 /// <summary>Aggregate statistics per database name.</summary>
 public sealed record SqlDbSummary(

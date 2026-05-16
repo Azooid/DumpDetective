@@ -16,7 +16,14 @@ public sealed class HeapStatsReport
             .ToList();
 
         sink.Section("Heap Statistics");
-        if (ordered.Count == 0) { sink.Text("No types match the specified filters."); return; }
+        if (ordered.Count == 0)
+        {
+            bool hasFilters = minSize > 0 || genFilter is not null;
+            sink.Text(hasFilters
+                ? "No types match the specified filters."
+                : "No managed heap type data available. The dump may not contain a managed heap, or heap collection was skipped.");
+            return;
+        }
 
         sink.Explain(
             what: "A complete inventory of every managed type currently alive on the heap, " +

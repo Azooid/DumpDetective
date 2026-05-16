@@ -542,7 +542,7 @@ public static class AnalyzeReport
                             .Where(f => f.Length > 0)
                             .ToList();
                         if (throwFrames.Count > 0)
-                            sink.Table(["Stack Frame"], throwFrames.Select(f => new[] { f }).ToList(),
+                            sink.Table(["Stack Frame"], throwFrames.Select(f => new[] { DumpHelpers.SanitizeFrame(f) }).ToList(),
                                 "Original throw stack — where the exception was raised");
                         else
                             sink.Text("⚠ Original throw stack not available.");
@@ -552,7 +552,7 @@ public static class AnalyzeReport
                             .Where(f => f.Length > 0)
                             .ToList();
                         if (threadFrames.Count > 0)
-                            sink.Table(["Stack Frame"], threadFrames.Select(f => new[] { f }).ToList(),
+                            sink.Table(["Stack Frame"], threadFrames.Select(f => new[] { DumpHelpers.SanitizeFrame(f) }).ToList(),
                                 "Live thread call stack — where the thread was when the dump was captured");
 
                         sink.EndDetails();

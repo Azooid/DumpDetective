@@ -60,7 +60,7 @@ public sealed class GenSummaryReport
                 sink.StackedBar(genSegs, null, "Committed bytes by generation", valueMode: "size");
         }
 
-        // Object count by generation donut
+        // Object count by generation — stacked bar (same style as committed bytes bar)
         if (totalObj > 0)
         {
             var objSegs = new List<(string, double)>();
@@ -68,7 +68,7 @@ public sealed class GenSummaryReport
             if (data.Gen1ObjCount > 0) objSegs.Add(("Gen1", (double)data.Gen1ObjCount));
             if (data.Gen2ObjCount > 0) objSegs.Add(("Gen2", (double)data.Gen2ObjCount));
             if (objSegs.Count > 1)
-                sink.DonutChart(objSegs, "Object count by generation", $"{totalObj:N0}\nobjects");
+                sink.StackedBar(objSegs, null, "Object count by generation", valueMode: "count");
         }
 
         if (total > 0 && data.Gen2Bytes > total * 0.70)

@@ -35,14 +35,20 @@ namespace DumpDetective.Commands.Trace;
 public sealed class TraceDumpAnalyzeCommand : ICommand
 {
     private readonly IReadOnlyList<ITraceSubAnalyzer> _subAnalyzers;
+    private readonly IReadOnlyList<ITraceSubAnalyzer> _pluginSubAnalyzers;
     private readonly TraceDumpCorrelationReport       _correlationReport;
+    private readonly IReadOnlyList<ITracePlugin>      _pluginTracePlugins;
 
     public TraceDumpAnalyzeCommand(
         IReadOnlyList<ITraceSubAnalyzer> subAnalyzers,
-        TraceDumpCorrelationReport correlationReport)
+        IReadOnlyList<ITraceSubAnalyzer> pluginSubAnalyzers,
+        TraceDumpCorrelationReport correlationReport,
+        IReadOnlyList<ITracePlugin>? pluginTracePlugins = null)
     {
-        _subAnalyzers      = subAnalyzers;
-        _correlationReport = correlationReport;
+        _subAnalyzers       = subAnalyzers;
+        _pluginSubAnalyzers = pluginSubAnalyzers;
+        _correlationReport  = correlationReport;
+        _pluginTracePlugins = pluginTracePlugins ?? [];
     }
 
     public string Name               => "trace-dump-analyze";
@@ -94,6 +100,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
           --slow-ms <ms>           HTTP/SQL slow-request threshold in ms (default: 1000)
           --trace <file>           Explicit trace file path (alternative to positional)
           --dump <file>            Explicit dump file path (alternative to positional)
+          --with-plugins           Include plugin sub-analyzers (default: excluded)
           -o, --output <file>      Write report to file (.html / .md / .txt / .json)
           -h, --help               Show this help
 
@@ -113,6 +120,11 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
         string? processFilter = a.GetOption("process");
         bool    filterSystem  = !a.HasFlag("show-system");
         bool    filterUnresolved = !a.HasFlag("show-unresolved");
+        bool    withPlugins   = a.HasFlag("with-plugins");
+
+        var effectiveSubs = (withPlugins && _pluginSubAnalyzers.Count > 0)
+            ? (IReadOnlyList<ITraceSubAnalyzer>)[.._subAnalyzers, .._pluginSubAnalyzers]
+            : _subAnalyzers;
 
         // ── Resolve trace + dump paths ────────────────────────────────────────
         string? tracePath = a.GetOption("trace")
@@ -188,7 +200,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
 
             // Build one consumer per sub-analyzer, run ONE event loop, then complete.
             var consumerPairs = new List<(ITraceSubAnalyzer Sub, ITraceEventConsumer Consumer)>();
-            foreach (var sub in _subAnalyzers)
+            foreach (var sub in effectiveSubs)
             {
                 if (sub.HasCorrelationPhase || !sub.SupportsConsumer) continue;
                 var consumer = sub.CreateConsumer(runParams, traceFileName);
@@ -214,7 +226,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
             }
 
             // Non-consumer analyzers (reads from results dict)
-            foreach (var sub in _subAnalyzers)
+            foreach (var sub in effectiveSubs)
             {
                 if (sub.HasCorrelationPhase || sub.SupportsConsumer) continue;
                 string? traceInfo = null;
@@ -263,7 +275,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
             // re-renders its report with live heap sizes).
             CommandBase.RunStatus("Enriching reports with dump heap sizes...", _ =>
             {
-                foreach (var sub in _subAnalyzers)
+                foreach (var sub in effectiveSubs)
                     sub.OnDumpAvailable(traceFileName, snap!, captured, results, top);
             });
 
@@ -298,7 +310,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
             _correlationReport.Render(crossFindings, snap!, sink);
 
             // Run correlation-phase sub-analyzers (RootCauseSubAnalyzer).
-            foreach (var sub in _subAnalyzers)
+            foreach (var sub in effectiveSubs)
             {
                 if (!sub.HasCorrelationPhase) continue;
                 string? traceInfo = null;
@@ -331,6 +343,40 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
                     if (captured.TryGetValue(name, out var doc))
                         ReportDocReplay.Replay(doc, sink);
                 }
+            }
+
+            // ── Plugin replay (ITraceSubAnalyzer + ITracePlugin) ────────────
+            // ITraceSubAnalyzer plugins ran via effectiveSubs above.
+            // ITracePlugin plugins (Core-only interface) run here.
+            if (withPlugins)
+            {
+                foreach (var pl in _pluginTracePlugins)
+                {
+                    string? traceInfo = null;
+                    RunAnalyzer(pl.Key, _ =>
+                    {
+                        var cap = new CaptureSink();
+                        cap.Header(pl.SectionTitle, traceFileName, navLevel: 3, commandName: pl.Key);
+                        traceInfo = pl.Analyze(trace!, traceFileName, top, processFilter, cap);
+                        captured[pl.Key] = cap.GetDoc();
+                    }, () => traceInfo);
+                }
+            }
+
+            var allPluginKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (withPlugins)
+            {
+                foreach (var p in _pluginSubAnalyzers) allPluginKeys.Add(p.Key);
+                foreach (var p in _pluginTracePlugins) allPluginKeys.Add(p.Key);
+            }
+            var allPluginDocs = allPluginKeys.Count > 0
+                ? captured.Where(kv => allPluginKeys.Contains(kv.Key)).ToList()
+                : [];
+            if (allPluginDocs.Count > 0)
+            {
+                sink.Header($"Plugins ({allPluginDocs.Count})", traceFileName, navLevel: 2);
+                foreach (var (_, doc) in allPluginDocs)
+                    ReportDocReplay.Replay(doc, sink);
             }
 
             // ── Event Type Inventory ──────────────────────────────────────────
