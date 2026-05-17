@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting;
 
@@ -14,6 +15,7 @@ public static class ReportDocReplay
     {
         foreach (var chapter in doc.Chapters)
         {
+            CommandBase.CurrentPluginName = chapter.PluginName;
             sink.Header(chapter.Title, chapter.Subtitle, chapter.NavLevel, chapter.CommandName);
             foreach (var section in chapter.Sections)
             {
@@ -21,6 +23,7 @@ public static class ReportDocReplay
                     sink.Section(section.Title, section.SectionKey);
                 ReplayElements(section.Elements, sink);
             }
+            CommandBase.CurrentPluginName = null;
         }
     }
 

@@ -35,20 +35,23 @@ namespace DumpDetective.Commands.Trace;
 public sealed class TraceDumpAnalyzeCommand : ICommand
 {
     private readonly IReadOnlyList<ITraceSubAnalyzer> _subAnalyzers;
-    private readonly IReadOnlyList<ITraceSubAnalyzer> _pluginSubAnalyzers;
-    private readonly TraceDumpCorrelationReport       _correlationReport;
-    private readonly IReadOnlyList<ITracePlugin>      _pluginTracePlugins;
+    private readonly IReadOnlyList<ITraceSubAnalyzer>       _pluginSubAnalyzers;
+    private readonly TraceDumpCorrelationReport             _correlationReport;
+    private readonly IReadOnlyList<ITracePlugin>            _pluginTracePlugins;
+    private readonly IReadOnlyDictionary<string, string>?   _pluginTraceNames;
 
     public TraceDumpAnalyzeCommand(
         IReadOnlyList<ITraceSubAnalyzer> subAnalyzers,
         IReadOnlyList<ITraceSubAnalyzer> pluginSubAnalyzers,
         TraceDumpCorrelationReport correlationReport,
-        IReadOnlyList<ITracePlugin>? pluginTracePlugins = null)
+        IReadOnlyList<ITracePlugin>? pluginTracePlugins = null,
+        IReadOnlyDictionary<string, string>? pluginTraceNames = null)
     {
         _subAnalyzers       = subAnalyzers;
         _pluginSubAnalyzers = pluginSubAnalyzers;
         _correlationReport  = correlationReport;
         _pluginTracePlugins = pluginTracePlugins ?? [];
+        _pluginTraceNames   = pluginTraceNames;
     }
 
     public string Name               => "trace-dump-analyze";
@@ -358,9 +361,19 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
                         var cap = new CaptureSink();
                         cap.Header(pl.SectionTitle, traceFileName, navLevel: 3, commandName: pl.Key);
                         traceInfo = pl.Analyze(trace!, traceFileName, top, processFilter, cap);
-                        captured[pl.Key] = cap.GetDoc();
+                        var plDoc = cap.GetDoc();
+                        if (_pluginTraceNames?.TryGetValue(pl.Key, out var plDisplayName) == true)
+                            foreach (var ch in plDoc.Chapters) ch.PluginName ??= plDisplayName;
+                        captured[pl.Key] = plDoc;
                     }, () => traceInfo);
                 }
+
+                // Stamp PluginName on ITraceSubAnalyzer plugin docs captured during Phase 1.
+                if (_pluginTraceNames is not null)
+                    foreach (var sub in _pluginSubAnalyzers)
+                        if (_pluginTraceNames.TryGetValue(sub.Key, out var subDisplayName) &&
+                            captured.TryGetValue(sub.Key, out var subDoc))
+                            foreach (var ch in subDoc.Chapters) ch.PluginName ??= subDisplayName;
             }
 
             var allPluginKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

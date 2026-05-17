@@ -19,6 +19,16 @@ public static class CommandBase
         set => ExecutionContext.SuppressVerbose = value;
     }
 
+    // ── Plugin context (thread-static — safe in parallel sub-report workers) ─
+    /// <summary>
+    /// Set to the owning plugin's display name immediately before executing a
+    /// plugin command; cleared to <see langword="null"/> after.
+    /// Read by <see cref="IRenderSink"/> implementations to inject an
+    /// "⚠ plugin" badge into the report header.
+    /// </summary>
+    [ThreadStatic]
+    public static string? CurrentPluginName;
+
     // ── PersistCache — forwarded to ExecutionContext ──────────────────────────
 
 

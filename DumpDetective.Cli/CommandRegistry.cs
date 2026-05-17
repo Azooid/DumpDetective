@@ -180,6 +180,7 @@ public static class CommandRegistry
         var pluginCommands          = new List<ICommand>();
         var pluginTraceSubAnalyzers  = new List<ITraceSubAnalyzer>();
         var pluginTracePlugins       = new List<ITracePlugin>();
+        var pluginCmdNames          = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _plugins = PluginLoader.LoadAll();
         foreach (var plugin in _plugins)
         {
@@ -194,9 +195,22 @@ public static class CommandRegistry
                     continue;
                 }
                 pluginCommands.Add(cmd);
+                pluginCmdNames[cmd.Name] = plugin.Name;
             }
         }
-
+        _pluginCommandNames = pluginCmdNames;
+        // Build trace-plugin key → plugin display name mapping.
+        var pluginTraceNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var plugin in _plugins)
+        {
+            foreach (var ts in plugin.TraceSubAnalyzers)
+                pluginTraceNames[ts.Key] = plugin.Name;
+            foreach (var tp in plugin.TracePlugins)
+                pluginTraceNames[tp.Key] = plugin.Name;
+        }
+        IReadOnlyDictionary<string, string> pluginTraceNamesRO = pluginTraceNames.Count > 0
+            ? pluginTraceNames
+            : new Dictionary<string, string>();
         // Phase 3: build the full-analyze lists.
         // Built-in list is used by default; plugin commands are opt-in via --with-plugins.
         var builtInFullAnalyze = System.Array.FindAll(analysisCommands, static c => c.IncludeInFullAnalyze);
@@ -218,16 +232,17 @@ public static class CommandRegistry
 
         _commands =
         [
-            new AnalyzeCommand(builtInFullAnalyze, pluginFullAnalyze),
+            new AnalyzeCommand(builtInFullAnalyze, pluginFullAnalyze, _pluginCommandNames),
             ..allDispatchable,
-            new TrendAnalysisCommand(builtInFullAnalyze, pluginFullAnalyze),
-            ..TraceCommandRegistry.BuildOrchestratorCommands(pluginTraceSubs, pluginTracePl),
+            new TrendAnalysisCommand(builtInFullAnalyze, pluginFullAnalyze, _pluginCommandNames),
+            ..TraceCommandRegistry.BuildOrchestratorCommands(pluginTraceSubs, pluginTracePl, pluginTraceNamesRO),
             new RenderCommand(),
             new DiffCommand(),
         ];
     }
 
     private static IReadOnlyList<LoadedPlugin> _plugins = [];
+    private static IReadOnlyDictionary<string, string> _pluginCommandNames = new Dictionary<string, string>();
 
     /// <summary>All registered commands (built-in + plugin).</summary>
     public static IEnumerable<ICommand> All => _commands;
@@ -246,4 +261,7 @@ public static class CommandRegistry
 
     /// <summary>Metadata for all successfully loaded plugins (empty when no plugins are present).</summary>
     internal static IReadOnlyList<LoadedPlugin> Plugins => _plugins;
+
+    /// <summary>Maps plugin command names to their plugin's display name. Empty when no plugins are loaded.</summary>
+    internal static IReadOnlyDictionary<string, string> PluginCommandNames => _pluginCommandNames;
 }

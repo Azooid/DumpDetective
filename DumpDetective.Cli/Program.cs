@@ -49,7 +49,10 @@ var cmd = CommandRegistry.Find(args[0]);
 int result;
 if (cmd is not null)
 {
+    if (CommandRegistry.PluginCommandNames.TryGetValue(args[0], out var pluginNameForCmd))
+        DumpDetective.Core.Utilities.CommandBase.CurrentPluginName = pluginNameForCmd;
     result = cmd.Run(WithDefaultHtmlOutput(args[0], rawArgs));
+    DumpDetective.Core.Utilities.CommandBase.CurrentPluginName = null;
 }
 else
 {

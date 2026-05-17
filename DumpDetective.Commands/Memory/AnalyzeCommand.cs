@@ -13,11 +13,13 @@ public sealed class AnalyzeCommand : ICommand
 {
     private readonly IReadOnlyList<ICommand> _builtInCommands;
     private readonly IReadOnlyList<ICommand> _pluginCommands;
+    private readonly IReadOnlyDictionary<string, string>? _pluginCmdNames;
 
-    public AnalyzeCommand(IReadOnlyList<ICommand> fullAnalyzeCommands, IReadOnlyList<ICommand>? pluginCommands = null)
+    public AnalyzeCommand(IReadOnlyList<ICommand> fullAnalyzeCommands, IReadOnlyList<ICommand>? pluginCommands = null, IReadOnlyDictionary<string, string>? pluginCmdNames = null)
     {
         _builtInCommands = fullAnalyzeCommands;
         _pluginCommands  = pluginCommands ?? [];
+        _pluginCmdNames  = pluginCmdNames;
     }
 
     public string Name               => "analyze";
@@ -174,7 +176,7 @@ public sealed class AnalyzeCommand : ICommand
                 var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
                     ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
                     : _builtInCommands;
-                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log);
+                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log, _pluginCmdNames);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
 

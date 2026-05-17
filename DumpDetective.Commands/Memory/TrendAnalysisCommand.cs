@@ -11,11 +11,13 @@ public sealed class TrendAnalysisCommand : ICommand
 {
     private readonly IReadOnlyList<ICommand> _builtInCommands;
     private readonly IReadOnlyList<ICommand> _pluginCommands;
+    private readonly IReadOnlyDictionary<string, string>? _pluginCmdNames;
 
-    public TrendAnalysisCommand(IReadOnlyList<ICommand> fullAnalyzeCommands, IReadOnlyList<ICommand>? pluginCommands = null)
+    public TrendAnalysisCommand(IReadOnlyList<ICommand> fullAnalyzeCommands, IReadOnlyList<ICommand>? pluginCommands = null, IReadOnlyDictionary<string, string>? pluginCmdNames = null)
     {
         _builtInCommands = fullAnalyzeCommands;
         _pluginCommands  = pluginCommands ?? [];
+        _pluginCmdNames  = pluginCmdNames;
     }
 
     public string Name               => "trend-analysis";
@@ -213,7 +215,7 @@ public sealed class TrendAnalysisCommand : ICommand
                         var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
                             ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
                             : _builtInCommands;
-                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, effectiveCmds, log);
+                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, effectiveCmds, log, _pluginCmdNames);
                         ToolMemoryDiagnostic.EndAnalyzerGroup();
                         ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
                         CommandBase.ClearOverrides();

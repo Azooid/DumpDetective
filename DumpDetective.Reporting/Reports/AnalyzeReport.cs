@@ -53,7 +53,7 @@ public static class AnalyzeReport
     /// Runs all <see cref="ICommand.IncludeInFullAnalyze"/> commands in parallel,
     /// captures each to its own <see cref="CaptureSink"/>, then replays in order.
     /// </summary>
-    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, IReadOnlyList<ICommand> commands, ProgressLogger? log = null)
+    public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, IReadOnlyList<ICommand> commands, ProgressLogger? log = null, IReadOnlyDictionary<string, string>? pluginByCommand = null)
     {
         int total = commands.Count;
 
@@ -78,13 +78,20 @@ public static class AnalyzeReport
                     var csw = Stopwatch.StartNew();
                     try
                     {
+                        if (pluginByCommand is not null)
+                            pluginByCommand.TryGetValue(commands[i].Name, out CommandBase.CurrentPluginName);
                         log.StartParallelItem(commands[i].Name);
                         var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
                         var doc = commands[i].BuildReport(ctx);
                         ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
                         var details = CommandBase.EndTrace();
                         ReportDocReplay.Replay(doc, captures[i]);
-                        foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= commands[i].Name;
+                        string? pluginName = pluginByCommand is not null && pluginByCommand.TryGetValue(commands[i].Name, out var pn) ? pn : null;
+                        foreach (var ch in captures[i].GetDoc().Chapters)
+                        {
+                            ch.CommandName ??= commands[i].Name;
+                            ch.PluginName  ??= pluginName;
+                        }
                         csw.Stop();
                         log.CompleteParallelItem(commands[i].Name, csw.ElapsedMilliseconds, details);
                     }
@@ -98,7 +105,11 @@ public static class AnalyzeReport
                             ex.Message,
                             "This sub-report was skipped. All other reports are unaffected.");
                     }
-                    finally { CommandBase.SuppressVerbose = false; }
+                    finally
+                    {
+                        CommandBase.CurrentPluginName = null;
+                        CommandBase.SuppressVerbose = false;
+                    }
                 });
 
             log.EndParallelBatch(indent: true);
@@ -126,11 +137,18 @@ public static class AnalyzeReport
                             CommandBase.SuppressVerbose = true;
                             try
                             {
+                                if (pluginByCommand is not null)
+                                    pluginByCommand.TryGetValue(commands[i].Name, out CommandBase.CurrentPluginName);
                                 var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
                                 var doc = commands[i].BuildReport(ctx);
                                 ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
                                 ReportDocReplay.Replay(doc, captures[i]);
-                                foreach (var ch in captures[i].GetDoc().Chapters) ch.CommandName ??= commands[i].Name;
+                                string? pluginName2 = pluginByCommand is not null && pluginByCommand.TryGetValue(commands[i].Name, out var pn2) ? pn2 : null;
+                                foreach (var ch in captures[i].GetDoc().Chapters)
+                                {
+                                    ch.CommandName ??= commands[i].Name;
+                                    ch.PluginName  ??= pluginName2;
+                                }
                                 task.Increment(1);
                                 int n = (int)task.Value;
                                 task.Description = n >= total
@@ -147,6 +165,7 @@ public static class AnalyzeReport
                             }
                             finally
                             {
+                                CommandBase.CurrentPluginName = null;
                                 CommandBase.SuppressVerbose = false;
                             }
                         });

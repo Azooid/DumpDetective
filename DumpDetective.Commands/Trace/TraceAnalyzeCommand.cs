@@ -37,17 +37,20 @@ public sealed class TraceAnalyzeCommand : ICommand
     ];
 
     private readonly IReadOnlyList<ITraceSubAnalyzer> _subAnalyzers;
-    private readonly IReadOnlyList<ITraceSubAnalyzer> _pluginSubAnalyzers;
-    private readonly IReadOnlyList<ITracePlugin>      _pluginTracePlugins;
+    private readonly IReadOnlyList<ITraceSubAnalyzer>       _pluginSubAnalyzers;
+    private readonly IReadOnlyList<ITracePlugin>             _pluginTracePlugins;
+    private readonly IReadOnlyDictionary<string, string>?   _pluginTraceNames;
 
     public TraceAnalyzeCommand(
         IReadOnlyList<ITraceSubAnalyzer> subAnalyzers,
         IReadOnlyList<ITraceSubAnalyzer>? pluginSubAnalyzers = null,
-        IReadOnlyList<ITracePlugin>? pluginTracePlugins = null)
+        IReadOnlyList<ITracePlugin>? pluginTracePlugins = null,
+        IReadOnlyDictionary<string, string>? pluginTraceNames = null)
     {
         _subAnalyzers        = subAnalyzers;
         _pluginSubAnalyzers  = pluginSubAnalyzers ?? [];
         _pluginTracePlugins  = pluginTracePlugins ?? [];
+        _pluginTraceNames    = pluginTraceNames;
     }
 
     public string Name               => "trace-analyze";
@@ -271,9 +274,19 @@ public sealed class TraceAnalyzeCommand : ICommand
                         var cap = new CaptureSink();
                         cap.Header(pl.SectionTitle, traceFileName, navLevel: 3, commandName: pl.Key);
                         traceInfo = pl.Analyze(trace!, traceFileName, top, processFilter, cap);
-                        captured[pl.Key] = cap.GetDoc();
+                        var plDoc = cap.GetDoc();
+                        if (_pluginTraceNames?.TryGetValue(pl.Key, out var plDisplayName) == true)
+                            foreach (var ch in plDoc.Chapters) ch.PluginName ??= plDisplayName;
+                        captured[pl.Key] = plDoc;
                     }, () => traceInfo);
                 }
+
+                // Stamp PluginName on ITraceSubAnalyzer plugin docs captured during Phase 1.
+                if (_pluginTraceNames is not null)
+                    foreach (var sub in _pluginSubAnalyzers)
+                        if (_pluginTraceNames.TryGetValue(sub.Key, out var subDisplayName) &&
+                            captured.TryGetValue(sub.Key, out var subDoc))
+                            foreach (var ch in subDoc.Chapters) ch.PluginName ??= subDisplayName;
             }
 
             // Collect all plugin doc keys for the combined replay section.

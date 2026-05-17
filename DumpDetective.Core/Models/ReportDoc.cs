@@ -29,6 +29,13 @@ public sealed class ReportChapter
     /// </summary>
     [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
     public string? CommandName { get; set; }
+    /// <summary>
+    /// Display name of the plugin that produced this chapter, or <see langword="null"/> for built-in commands.
+    /// Set by <c>AnalyzeReport.RenderEmbeddedReports</c> after <c>BuildReport</c> returns.
+    /// Used by <c>ReportDocReplay</c> to inject the ⚠ plugin badge in the HTML header.
+    /// </summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? PluginName { get; set; }
     public List<ReportSection> Sections { get; set; } = [];
 }
 
