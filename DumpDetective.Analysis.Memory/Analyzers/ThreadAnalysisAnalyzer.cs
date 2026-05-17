@@ -48,6 +48,11 @@ public sealed class ThreadAnalysisAnalyzer
                         .ToList()
                     : (IReadOnlyList<string>)[];
 
+                // Committed stack size: StackBase (high) - StackLimit (low) = committed bytes.
+                long stackCommitted = (t.IsAlive && t.StackBase > t.StackLimit)
+                    ? (long)(t.StackBase - t.StackLimit)
+                    : 0;
+
                 infos.Add(new ThreadInfo(
                     ManagedId:      t.ManagedThreadId,
                     OSThreadId:     t.OSThreadId,
@@ -58,18 +63,21 @@ public sealed class ThreadAnalysisAnalyzer
                     Exception:      ex?.Length > 0 ? ex : null,
                     LockInfo:       lock_?.Length > 0 ? lock_ : null,
                     WaitKind:       waitKind,
-                    StackFrames:    frames));
+                    StackFrames:    frames,
+                    StackCommitted: stackCommitted));
             }
         });
 
+        long totalStack = infos.Sum(i => i.StackCommitted);
         return new ThreadAnalysisData(
-            Threads:             infos,
-            TotalCount:          threads.Count,
-            AliveCount:          threads.Count(t => t.IsAlive),
-            MonitorBlockedCount: infos.Count(i => i.WaitKind == WaitKind.Monitor),
-            IndependentWaitCount:infos.Count(i => i.WaitKind == WaitKind.Independent),
-            WithExceptionCount:  threads.Count(t => t.CurrentException is not null),
-            NamedCount:          threadNames.Count);
+            Threads:              infos,
+            TotalCount:           threads.Count,
+            AliveCount:           threads.Count(t => t.IsAlive),
+            MonitorBlockedCount:  infos.Count(i => i.WaitKind == WaitKind.Monitor),
+            IndependentWaitCount: infos.Count(i => i.WaitKind == WaitKind.Independent),
+            WithExceptionCount:   threads.Count(t => t.CurrentException is not null),
+            NamedCount:           threadNames.Count,
+            TotalStackCommitted:  totalStack);
     }
 
     internal static Dictionary<int, string> BuildThreadNameMap(DumpContext ctx)

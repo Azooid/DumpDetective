@@ -169,7 +169,8 @@ public sealed class FinalizerQueueAnalyzer
                 kv.Value.Poh,
                 kv.Value.HasDispose,
                 kv.Value.IsCritical,
-                kv.Value.Addresses),
+                kv.Value.Addresses,
+                SuspectedUndisposed: CheckUndisposed(ctx.Heap, kv.Value)),
             StringComparer.Ordinal);
     }
 
@@ -199,6 +200,38 @@ public sealed class FinalizerQueueAnalyzer
         public bool HasDispose;
         public bool IsCritical;
         public List<ulong> Addresses { get; } = [];
+    }
+
+    private static readonly string[] DisposeFieldNames = ["_disposed", "m_disposed", "disposed", "_isDisposed", "isDisposed"];
+
+    /// <summary>
+    /// Checks sample addresses for a dispose-flag field that is still <see langword="false"/>.
+    /// Returns <see langword="true"/> when at least one instance looks like it was never Disposed.
+    /// </summary>
+    private static bool CheckUndisposed(ClrHeap heap, MutableFinalizerTypeStats stats)
+    {
+        if (!stats.HasDispose || stats.Addresses.Count == 0) return false;
+        foreach (var addr in stats.Addresses.Take(3))
+        {
+            try
+            {
+                var obj = heap.GetObject(addr);
+                if (!obj.IsValid || obj.Type is null) continue;
+                foreach (var fn in DisposeFieldNames)
+                {
+                    var field = obj.Type.GetFieldByName(fn);
+                    if (field is null || field.ElementType != Microsoft.Diagnostics.Runtime.ClrElementType.Boolean) continue;
+                    try
+                    {
+                        bool val = field.Read<bool>(obj, interior: false);
+                        if (!val) return true; // _disposed = false → Dispose() was never called
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+        return false;
     }
 
     private static int GetGen(ClrHeap heap, ulong addr)

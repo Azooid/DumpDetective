@@ -1,7 +1,13 @@
 namespace DumpDetective.Core.Models.CommandData;
 
 /// <summary>Raw data collected by <c>ModuleListAnalyzer</c>.</summary>
-public sealed record ModuleListData(IReadOnlyList<ModuleItem> Modules);
+public sealed record ModuleListData(
+    IReadOnlyList<ModuleItem> Modules,
+    /// <summary>
+    /// Assembly Load Contexts detected from heap objects (requires a walkable heap).
+    /// Empty when heap is not walkable or no ALC instances were found.
+    /// </summary>
+    IReadOnlyList<AlcEntry> AssemblyLoadContexts = default!);
 
 public sealed record ModuleItem(
     string  Path,
@@ -16,3 +22,10 @@ public sealed record ModuleItem(
     int     PdbAge     = 0,
     /// <summary>True when the PDB path stored in the PE matches an existing local file.</summary>
     bool    PdbPresent = false);
+
+/// <summary>Represents one detected <c>AssemblyLoadContext</c> instance.</summary>
+public sealed record AlcEntry(
+    ulong   Address,
+    string  Name,
+    bool    IsCollectible,
+    int     AssemblyCount);

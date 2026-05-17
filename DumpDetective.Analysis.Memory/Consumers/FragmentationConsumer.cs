@@ -62,6 +62,7 @@ public sealed class FragmentationConsumer : IHeapObjectConsumer
             // Bucket keys are fixed integers 0–5 representing logarithmic size ranges:
             // 0: < 128 B, 1: < 1 KB, 2: < 4 KB, 3: < 64 KB, 4: < 1 MB, 5: >= 1 MB.
             info.FreeBytes += size;
+            if (size > info.LargestFreeBlock) info.LargestFreeBlock = size;
             int key = size switch
             {
                 < 128       => 0,
@@ -95,6 +96,7 @@ public sealed class FragmentationConsumer : IHeapObjectConsumer
             if (!SegData.TryGetValue(addr, out var dst)) continue;
             dst.LiveBytes += s.LiveBytes;
             dst.FreeBytes += s.FreeBytes;
+            if (s.LargestFreeBlock > dst.LargestFreeBlock) dst.LargestFreeBlock = s.LargestFreeBlock;
         }
 
         foreach (var (key, sv) in src.Buckets)
@@ -106,11 +108,12 @@ public sealed class FragmentationConsumer : IHeapObjectConsumer
 
     public sealed class MutableSeg(string kind, ulong address, long committed)
     {
-        public string Kind           = kind;
-        public ulong  Address        = address;
-        public long   CommittedBytes = committed;
+        public string Kind             = kind;
+        public ulong  Address          = address;
+        public long   CommittedBytes   = committed;
         public long   LiveBytes;
         public long   FreeBytes;
+        public long   LargestFreeBlock;
         public int    PinnedCount;
     }
 }

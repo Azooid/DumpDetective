@@ -78,10 +78,15 @@ public sealed class HeapFragmentationReport
 
     private static void RenderSegmentTable(HeapFragmentationData data, IRenderSink sink)
     {
+        bool hasLfb = data.Segments.Any(s => s.LargestFreeBlock > 0);
+        var headers = hasLfb
+            ? new[] { "Segment Addr", "Kind", "Committed", "Live", "Free", "Frag %", "Largest Free Block", "Pinned" }
+            : new[] { "Segment Addr", "Kind", "Committed", "Live", "Free", "Frag %", "Pinned" };
+
         var rows = data.Segments.Select(s =>
         {
             double frag = s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0;
-            return new[]
+            var row = new List<string>
             {
                 $"0x{s.Address:X}",
                 s.Kind,
@@ -89,13 +94,46 @@ public sealed class HeapFragmentationReport
                 Fmt(s.LiveBytes),
                 Fmt(s.FreeBytes),
                 $"{frag:F1}%",
-                s.PinnedCount.ToString("N0"),
             };
+            if (hasLfb) row.Add(s.LargestFreeBlock > 0 ? Fmt(s.LargestFreeBlock) : "\u2014");
+            row.Add(s.PinnedCount.ToString("N0"));
+            return row.ToArray();
         }).ToList();
 
         sink.BeginDetails($"Segment Details ({data.Segments.Count} segment(s))");
-        sink.Table(["Segment Addr", "Kind", "Committed", "Live", "Free", "Frag %", "Pinned"], rows);
+        sink.Table(headers, rows,
+            hasLfb ? "Largest Free Block = largest contiguous free run in the segment. Small largest block = severe fragmentation." : null);
         sink.EndDetails();
+
+        // Worst segments by fragmentation %
+        var worstSegs = data.Segments
+            .Where(s => s.CommittedBytes > 0 && s.Kind is not ("Gen0" or "Gen1" or "Ephemeral"))
+            .Select(s => (seg: s, frag: s.FreeBytes * 100.0 / s.CommittedBytes))
+            .Where(x => x.frag >= 30)
+            .OrderByDescending(x => x.frag)
+            .Take(10)
+            .ToList();
+
+        if (worstSegs.Count > 0)
+        {
+            sink.Section("Worst-Fragmented Segments");
+            var worstHeaders = hasLfb
+                ? new[] { "Segment Addr", "Kind", "Frag %", "Free", "Committed", "Largest Free Block", "Pinned" }
+                : new[] { "Segment Addr", "Kind", "Frag %", "Free", "Committed", "Pinned" };
+            var worstRows = worstSegs.Select(x =>
+            {
+                var row = new List<string>
+                {
+                    $"0x{x.seg.Address:X}", x.seg.Kind, $"{x.frag:F1}%",
+                    Fmt(x.seg.FreeBytes), Fmt(x.seg.CommittedBytes),
+                };
+                if (hasLfb) row.Add(x.seg.LargestFreeBlock > 0 ? Fmt(x.seg.LargestFreeBlock) : "\u2014");
+                row.Add(x.seg.PinnedCount.ToString("N0"));
+                return row.ToArray();
+            }).ToList();
+            sink.Table(worstHeaders, worstRows,
+                "Non-ephemeral segments with \u2265 30% fragmentation. A small 'Largest Free Block' relative to 'Free' means the free space is highly fragmented.");
+        }
     }
 
     private static void RenderSegmentAlerts(HeapFragmentationData data, IRenderSink sink, double totalFrag)

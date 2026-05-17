@@ -1,6 +1,7 @@
 ﻿using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
+using DumpDetective.Analysis.Memory.Consumers;
 using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Memory.Analyzers;
@@ -19,12 +20,27 @@ public sealed class LargeObjectsAnalyzer
     {
         var objects = new List<LargeObjectEntry>();
 
+        // Fast path: main heap walk already collected large objects at the default 85 KB threshold.
+        // Only usable when no custom threshold or type filter is specified.
+        bool usedCache = false;
+        if (minSize == 85_000 && filter is null
+            && ctx.GetAnalysis<LargeObjectsConsumerResult>() is { } cached)
+        {
+            foreach (var (typeName, elemType, size, addr) in cached.Objects)
+            {
+                string seg = DetermineSeg(ctx.Heap, addr);
+                objects.Add(new LargeObjectEntry(typeName, elemType, size, seg, addr));
+            }
+            usedCache = true;
+        }
+
         // Objects ≥ 85 KB (the default LOH threshold) live in LOH or POH segments.
         // Enumerate LOH+POH segments directly to skip ~10 M Gen0/1/2 objects.
         bool lohOnly = minSize >= 85_000;
 
         CommandBase.RunStatus($"Finding objects \u2265 {DumpHelpers.FormatSize(minSize)}...", update =>
         {
+            if (usedCache) { update("Using pre-collected large objects from main heap walk."); return; }
             long count = 0;
             var  sw    = System.Diagnostics.Stopwatch.StartNew();
             IEnumerable<ClrObject> src = lohOnly

@@ -126,8 +126,61 @@ public sealed class AsyncStacksAnalyzer : IHeapObjectConsumer
         CommandBase.RunStatus("Scanning async state machines...", update =>
             HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
 
-        ctx.SetAnalysis(_result!);
-        return _result!;
+        var retained = ComputeRetained(ctx, _result!.Entries);
+        var result = _result! with { RetainedByMethod = retained };
+
+        ctx.SetAnalysis(result);
+        return result;
+    }
+
+    private static IReadOnlyList<StateMachineRetained>? ComputeRetained(DumpContext ctx, IReadOnlyList<StateMachineEntry> entries)
+    {
+        if (entries.Count == 0) return null;
+        BfsIndexCache? bfsCache = null;
+        if (BfsIndexCache.IsValid(BfsIndexCache.CachePath(ctx.DumpPath), ctx.DumpPath))
+        {
+            CommandBase.RunStatus("Loading BFS index for async SM retained sizes...", update =>
+                bfsCache = ctx.GetOrCreateAnalysis<BfsCacheBox>(() =>
+                    new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, update))).Cache);
+        }
+        if (bfsCache is null) return null;
+
+        // Group suspended state machines by method; compute BFS retained per group
+        var byMethod = entries
+            .Where(e => e.State == "Awaiting")
+            .GroupBy(e => e.Method, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
+
+        var result = new List<StateMachineRetained>(byMethod.Count);
+        var visited = new HashSet<int>();
+        long nodeCap = Math.Min(500_000L, bfsCache.NodeCount);
+        foreach (var (method, group) in byMethod.OrderByDescending(kv => kv.Value.Count).Take(30))
+        {
+            long ownTotal = 0, retTotal = 0;
+            bool isEst = false;
+            foreach (var e in group.Take(3))
+            {
+                if (!bfsCache.TryGetIndex(e.Addr, out _)) continue;
+                var obj = ctx.Heap.GetObject(e.Addr);
+                if (!obj.IsValid) continue;
+                ownTotal += (long)obj.Size;
+                visited.Clear();
+                var (ret, est) = bfsCache.ComputeRetained(e.Addr, visited, nodeCap);
+                retTotal += ret;
+                if (est) isEst = true;
+            }
+            // Scale sample to full group
+            int sampleCount = Math.Min(group.Count, 3);
+            if (sampleCount > 0 && group.Count > sampleCount)
+            {
+                double scale = (double)group.Count / sampleCount;
+                ownTotal = (long)(ownTotal * scale);
+                retTotal = (long)(retTotal * scale);
+            }
+            result.Add(new StateMachineRetained(method, group.Count, ownTotal, retTotal, isEst));
+        }
+        result.Sort((a, b) => b.RetainedSizeTotal.CompareTo(a.RetainedSizeTotal));
+        return result;
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────

@@ -95,6 +95,99 @@ public sealed class StringDuplicatesReport
                 $"{DumpHelpers.FormatSize(wastedAll)}\nwasted");
 
         RenderInternCandidates(candidates, sink);
+        RenderByteArrayGroups(data, sink);
+        RenderEncodingGroups(data, sink);
+    }
+
+    private static void RenderByteArrayGroups(StringDuplicatesData data, IRenderSink sink)
+    {
+        if (data.ByteArrayGroups is not { Count: > 0 }) return;
+
+        sink.Section("Duplicate byte[] Arrays");
+        sink.Explain(
+            what: "Byte arrays with identical content detected as multiple separate allocations on the heap.",
+            why:  "Duplicate byte arrays arise from repeated serialization, HTTP response caching, or token/key storage. " +
+                  "Unlike strings, byte arrays are never interned automatically. " +
+                  "Pooling identical buffers can eliminate significant allocation churn.",
+            bullets:
+            [
+                "Short arrays (< 64 B) with many copies \u2192 token, key, or constant data — use static readonly or ArrayPool",
+                "Medium arrays (64 B–4 KB) repeated many times \u2192 HTTP body fragments or encoding buffers",
+                "Deduplicate by caching a canonical instance per content hash",
+            ]);
+
+        long totalWasted = data.ByteArrayGroups.Sum(g => (long)g.ArrayLength * (g.Count - 1));
+        sink.KeyValues([
+            ("Duplicate byte[] groups", data.ByteArrayGroups.Count.ToString("N0")),
+            ("Total wasted",            DumpHelpers.FormatSize(totalWasted)),
+        ]);
+
+        var rows = data.ByteArrayGroups
+            .OrderByDescending(g => (long)g.ArrayLength * (g.Count - 1))
+            .Take(50)
+            .Select(g =>
+            {
+                long wasted = (long)g.ArrayLength * (g.Count - 1);
+                return new[]
+                {
+                    g.Count.ToString("N0"),
+                    g.ArrayLength.ToString("N0"),
+                    DumpHelpers.FormatSize(g.TotalSize),
+                    DumpHelpers.FormatSize(wasted),
+                    g.Preview.Length > 60 ? g.Preview[..60] + "\u2026" : g.Preview,
+                };
+            })
+            .ToList();
+
+        sink.Table(["Count", "Length (bytes)", "Total Size", "Wasted", "Content Preview (hex)"], rows,
+            "Top 50 duplicate byte[] groups by wasted bytes. Preview = first 16 bytes as hex.");
+    }
+
+    private static void RenderEncodingGroups(StringDuplicatesData data, IRenderSink sink)
+    {
+        if (data.EncodingGroups is not { Count: > 0 }) return;
+
+        sink.Section("String Encoding Waste");
+        sink.Explain(
+            what: "Analysis of top duplicate strings by their encoding characteristics. " +
+                  "UTF-8 waste = bytes that could be saved by storing the string as UTF-8 instead of UTF-16.",
+            why:  ".NET strings are stored as UTF-16 (2 bytes per character). For pure ASCII content, " +
+                  "this doubles memory compared to a UTF-8 encoding. High UTF-8 waste signals that strings " +
+                  "could be stored more efficiently (e.g. as ReadOnlyMemory<byte> or in a native buffer).",
+            bullets:
+            [
+                "IsAllAscii = all characters fit in 7-bit ASCII (UTF-8 would save 50%)",
+                "IsAllLatin1 = all characters are in ISO-8859-1 range (UTF-8 savings ~50% for chars <= 127)",
+                "Utf8WasteBytes = (string length in UTF-16) - (estimated UTF-8 length) × Count",
+            ]);
+
+        long totalWaste = data.EncodingGroups.Sum(g => g.Utf8WasteBytes);
+        sink.KeyValues([
+            ("Groups analyzed",   data.EncodingGroups.Count.ToString("N0")),
+            ("Total UTF-8 waste", DumpHelpers.FormatSize(totalWaste)),
+        ]);
+
+        var rows = data.EncodingGroups
+            .OrderByDescending(g => g.Utf8WasteBytes)
+            .Take(50)
+            .Select(g =>
+            {
+                string display = g.Value.Length > 55 ? g.Value[..55] + "\u2026" : g.Value;
+                display = display.Replace("\r", "\\r").Replace("\n", "\\n").Replace("\t", "\\t");
+                return new[]
+                {
+                    g.Count.ToString("N0"),
+                    DumpHelpers.FormatSize(g.TotalSize),
+                    DumpHelpers.FormatSize(g.Utf8WasteBytes),
+                    g.IsAllAscii  ? "ASCII"  :
+                    g.IsAllLatin1 ? "Latin1" : "Unicode",
+                    $"\"{display}\"",
+                };
+            })
+            .ToList();
+
+        sink.Table(["Count", "Total Size (UTF-16)", "UTF-8 Waste", "Encoding", "Value"], rows,
+            "UTF-8 Waste = bytes saved if the string were stored as UTF-8 instead of UTF-16, across all copies.");
     }
 
     private static void RenderInternCandidates(

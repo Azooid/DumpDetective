@@ -24,6 +24,28 @@ public sealed class HeapTypeMeta
     public bool     IsCwt        { get; init; }
 
     /// <summary>
+    /// <c>true</c> for <c>System.Data.DataTable</c> and all subclasses (e.g. TypedDataSet
+    /// generated inner tables such as <c>FooDataSet+FooDataTable</c>).
+    /// </summary>
+    public bool     IsDataTable  { get; init; }
+
+    /// <summary>
+    /// The <c>nextRowID</c> or <c>_nextRowID</c> field resolved by walking the base-type
+    /// chain from the concrete type.  Non-null only when <see cref="IsDataTable"/> is
+    /// <c>true</c> and the field was found in the hierarchy.
+    /// </summary>
+    public ClrInstanceField? DataTableNextRowIdField { get; init; }
+
+    /// <summary>
+    /// The <c>rowCollection</c> or <c>_rowCollection</c> field on <c>System.Data.DataTable</c>
+    /// (resolved via base-type chain).  Reading this field gives a <c>DataRowCollection</c>
+    /// object; its base type <c>InternalDataCollectionBase</c> holds the actual ArrayList
+    /// in a field named <c>list</c>.
+    /// Non-null only when <see cref="IsDataTable"/> is <c>true</c> and the field was found.
+    /// </summary>
+    public ClrInstanceField? DataTableRowCollField { get; init; }
+
+    /// <summary>
     /// When non-null, this type is an async state machine and the value is
     /// the extracted outer method name (e.g. <c>MyService.DoWorkAsync</c>).
     /// </summary>

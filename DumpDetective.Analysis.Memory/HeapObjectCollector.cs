@@ -52,21 +52,33 @@ internal static class HeapObjectCollector
         var asyncAnalyzer = new Analyzers.AsyncStacksAnalyzer();       asyncAnalyzer.Reset();
         var eventAnalyzer = new Analyzers.EventAnalysisAnalyzer();     eventAnalyzer.Reset();
 
+        // ── Secondary-metric consumers ────────────────────────────────────────
+        // These are low-overhead consumers that collect data for commands that
+        // previously did independent heap walks during the sub-reports phase.
+        // Adding them here eliminates 4–5 parallel heap walks (each ~120s on large dumps).
+        var dataTable     = new Consumers.DataTableConsumer();
+        var cachePatterns = new Consumers.CachePatternsConsumer();
+        var closures      = new Consumers.ClosureCaptureConsumer();
+        var alc           = new Consumers.AlcConsumer();
+        var largeObjects  = new Consumers.LargeObjectsConsumer(minSize: 85_000);
+
         // ── Single heap walk — all consumers driven in one pass ───────────────
         IReadOnlyList<IHeapObjectConsumer> allConsumers;
         if (extraConsumers is null || extraConsumers.Count == 0)
         {
             allConsumers = [typeStatsC, genCounter, inbound, strings,
                             threadNames, threadPool, httpReqs, cwt,
-                            timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer];
+                            timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer,
+                            dataTable, cachePatterns, closures, alc, largeObjects];
         }
         else
         {
-            var list = new List<IHeapObjectConsumer>(14 + extraConsumers.Count)
+            var list = new List<IHeapObjectConsumer>(19 + extraConsumers.Count)
             {
                 typeStatsC, genCounter, inbound, strings,
                 threadNames, threadPool, httpReqs, cwt,
-                timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer
+                timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer,
+                dataTable, cachePatterns, closures, alc, largeObjects
             };
             list.AddRange(extraConsumers);
             allConsumers = list;
@@ -119,6 +131,17 @@ internal static class HeapObjectCollector
 
         // ── Event leak stats ──────────────────────────────────────────────────
         SnapshotPopulator.ApplyEventLeaks(s, eventAnalyzer.Result!.Groups);
+
+        // ── Secondary-metric consumer results ─────────────────────────────────
+        // Stored so analyzers get a free cache hit instead of re-walking the heap.
+        ctx.SetAnalysis(new Consumers.DataTableConsumerResult(
+            dataTable.DataTableCount, dataTable.DataRowCount, dataTable.DataColumnCount,
+            dataTable.DataViewCount,  dataTable.DataSetCount,
+            dataTable.TotalBytes,     dataTable.TopTables));
+        ctx.SetAnalysis(new Consumers.CachePatternsConsumerResult(cachePatterns.ByType));
+        ctx.SetAnalysis(new Consumers.ClosureCaptureConsumerResult(closures.ByType));
+        ctx.SetAnalysis(new Consumers.AlcConsumerResult(alc.Entries));
+        ctx.SetAnalysis(new Consumers.LargeObjectsConsumerResult(largeObjects.Objects));
 
         // ── Pre-populate HeapSnapshot so EnsureSnapshot() is a no-op later ───
         ctx.PreloadSnapshot(HeapSnapshot.Create(

@@ -19,15 +19,16 @@ public static class AnalyzeReport
     [
         ("Heap Overview",
         [
-            "heap-stats", "gen-summary", "heap-fragmentation", "large-objects", "pinned-objects",
+            "heap-stats", "gen-summary", "heap-fragmentation", "large-objects", "pinned-objects", "memory-pressure",
         ]),
         ("Retention / Leak Signals",
         [
             "memory-leak", "high-refs", "string-duplicates", "static-refs", "weak-refs",
+            "closure-capture", "cache-patterns", "datatable-amp",
         ]),
         ("GC / Lifetime",
         [
-            "finalizer-queue", "handle-table",
+            "finalizer-queue", "handle-table", "gc-root-map",
         ]),
         ("Threads / Concurrency",
         [

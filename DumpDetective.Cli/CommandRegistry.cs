@@ -140,6 +140,26 @@ public static class CommandRegistry
                 new ExceptionAnalysisAnalyzer(),
                 new ExceptionAnalysisReport()),
 
+            new GcRootMapCommand(
+                new GcRootMapAnalyzer(),
+                new GcRootMapReport()),
+
+            new ClosureCaptureCommand(
+                new ClosureCaptureAnalyzer(),
+                new ClosureCaptureReport()),
+
+            new CachePatternsCommand(
+                new CachePatternsAnalyzer(),
+                new CachePatternsReport()),
+
+            new DataTableAmpCommand(
+                new DataTableAmpAnalyzer(),
+                new DataTableAmpReport()),
+
+            new MemoryPressureCommand(
+                new MemoryPressureAnalyzer(),
+                new MemoryPressureReport()),
+
             // ── not included in full-analyze ──────────────────────────────────
             new GcRootsCommand(
                 new GcRootsAnalyzer(),
