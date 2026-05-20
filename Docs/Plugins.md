@@ -29,6 +29,88 @@ Each plugin runs in its own `AssemblyLoadContext`. Private dependencies never co
 
 ---
 
+## Plugin cache integration
+
+Plugins can use the same `DumpContext` analysis-cache model as built-in commands.
+
+Custom plugin caches require only `DumpDetective.Core`. Reusing host-owned memory cache types such as `BfsCacheBox` requires an additional reference to the assembly that defines that cache type.
+
+### Reuse an existing cache
+
+If a built-in command or the host has already populated a cache, read it from `DumpContext`:
+
+```csharp
+var threadNames = ctx.GetAnalysis<ThreadNameMap>();
+var bfsBox   = ctx.GetOrCreateAnalysis<BfsCacheBox>(
+    () => new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, null)));
+var bfs      = bfsBox.Cache;
+```
+
+- `GetAnalysis<T>()` returns a previously stored value or `null`.
+- `GetOrCreateAnalysis<T>()` computes once and shares the result across parallel sub-reports.
+- Use the same `T` consistently when reading and writing the cache entry.
+
+### Create a plugin-owned cache
+
+For plugin-specific state, create your own POCO cache type and store it in `DumpContext`:
+
+```csharp
+public sealed record MyPluginCache(IReadOnlyList<MyRow> Rows);
+
+var cache = ctx.GetOrCreateAnalysis(() => BuildMyPluginCache(ctx));
+```
+
+This is the standalone pattern: your command can build the cache on demand when it runs by itself.
+
+### Participate in the shared heap walk
+
+To avoid a second heap walk during `analyze --full --with-plugins`, implement `ICommandHeapContributor` on your command:
+
+```csharp
+public sealed class MyPluginCommand : ICommand, ICommandHeapContributor
+{
+    private readonly MyPluginConsumer _consumer = new();
+
+    public IReadOnlyList<IHeapObjectConsumer> CreateHeapConsumers()
+        => [_consumer];
+
+    public void PublishResults(DumpContext ctx)
+        => ctx.SetAnalysis(new MyPluginCache(_consumer.Rows));
+}
+```
+
+How this works:
+
+- Standalone command run: your command still uses `ctx.GetOrCreateAnalysis<T>()` and can build the cache itself.
+- `analyze --full --with-plugins`: the host calls `CreateHeapConsumers()`, adds them to the shared `HeapWalker.Walk(...)`, then calls `PublishResults(ctx)` before sub-reports start.
+- Your later `BuildReport` call reads the already-populated cache from `DumpContext` instead of walking the heap again.
+
+### Keep a cache alive during a batch
+
+If your plugin depends on a cache that must not be released until the batch finishes, implement `ICommandCachePin`:
+
+```csharp
+public sealed class MyPluginCommand : ICommand, ICommandCachePin
+{
+    public IReadOnlyList<Type> PinnedCacheTypes =>
+    [
+        typeof(BfsCacheBox),
+        typeof(MyPluginCache),
+    ];
+}
+```
+
+The host pins those cache types before parallel sub-reports run and unpins them afterward. This is the correct way to say "I will use this cache later in the batch; do not release it yet." Use it for caches that are preloaded on the main thread and explicitly released after sub-reports, such as `BfsCacheBox`.
+
+### Recommended plugin pattern
+
+1. Build your cache with `ctx.GetOrCreateAnalysis<T>()` so standalone runs work.
+2. If the cache comes from a heap walk, also implement `ICommandHeapContributor` so full-analysis can pre-populate it during the shared walk.
+3. If the cache must survive an orchestrated batch cleanup step, implement `ICommandCachePin` and list the cache entry types you depend on.
+4. Do not manually clear host caches from plugin code. Let the orchestrator manage cache release.
+
+---
+
 ## Plugin participation modes
 
 | Mode | Interface | Triggered by | Minimum dependency |

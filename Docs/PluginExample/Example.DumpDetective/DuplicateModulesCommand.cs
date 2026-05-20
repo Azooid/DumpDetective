@@ -65,18 +65,13 @@ public sealed class DuplicateModulesCommand : ICommand
     private static void RenderWith(DumpContext ctx, IRenderSink sink, string? filter, bool showAll)
     {
         CommandBase.RenderHeader("Duplicate / Conflicting Assemblies", ctx, sink);
+        var cache = ctx.GetOrCreateAnalysis<DuplicateModulesCache>(() => DuplicateModulesCache.Build(ctx));
 
         // Group every loaded module by its simple name (filename without extension).
         // The same DLL loaded from two different paths, or the same name in two
         // app domains, will both appear in the same group.
-        var allModules = ctx.Runtime.EnumerateModules().ToList();
-
-        var groups = allModules
-            .GroupBy(m =>
-            {
-                string fn = Path.GetFileNameWithoutExtension(m.Name ?? m.AssemblyName ?? "");
-                return fn.Length > 0 ? fn : "<unknown>";
-            }, StringComparer.OrdinalIgnoreCase)
+        var groups = cache.Modules
+            .GroupBy(module => module.SimpleName, StringComparer.OrdinalIgnoreCase)
             .Where(g => filter is null || g.Key.Contains(filter, StringComparison.OrdinalIgnoreCase))
             .Where(g => showAll || g.Count() > 1)
             .OrderByDescending(g => g.Count())
@@ -88,7 +83,7 @@ public sealed class DuplicateModulesCommand : ICommand
 
         sink.KeyValues(
         [
-            ("Total modules in dump",      allModules.Count.ToString("N0")),
+            ("Total modules in dump",      cache.Modules.Count.ToString("N0")),
             ("Assemblies with duplicates", conflicts.ToString("N0")),
             ("Extra copies total",         extraCopies.ToString("N0")),
         ]);
@@ -114,7 +109,7 @@ public sealed class DuplicateModulesCommand : ICommand
             {
                 g.Key,
                 g.Count().ToString(),
-                string.Join("  |  ", g.Select(m => m.Name ?? m.AssemblyName ?? "<dynamic>").Distinct()),
+                string.Join("  |  ", g.Select(module => module.Path).Distinct()),
             }).ToList(),
             caption: $"{groups.Count} entr{(groups.Count == 1 ? "y" : "ies")} shown" +
                      (showAll ? "" : " (duplicates only — pass --all to see every assembly)"));

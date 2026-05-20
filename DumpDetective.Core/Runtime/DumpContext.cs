@@ -15,6 +15,7 @@ public sealed class DumpContext : IDisposable
     private bool _disposed;
     private HeapSnapshot? _snapshot;
     private readonly Dictionary<Type, object> _analysisCache = new();
+    private readonly HashSet<Type> _pinnedAnalysisTypes = [];
     // Thread-safe once-computed results (e.g. thread name map shared by multiple parallel commands)
     private readonly ConcurrentDictionary<Type, object> _onceCache = new();
 
@@ -91,6 +92,45 @@ public sealed class DumpContext : IDisposable
     public void ReplaceAnalysis<T>(T replacement) where T : class
     {
         _onceCache[typeof(T)] = (object)new Lazy<T>(() => replacement);
+    }
+
+    /// <summary>
+    /// Pins <paramref name="analysisType"/> so batch cleanup code can avoid releasing it
+    /// while dependent commands are still running.
+    /// </summary>
+    public void PinAnalysis(Type analysisType)
+    {
+        lock (_pinnedAnalysisTypes)
+            _pinnedAnalysisTypes.Add(analysisType);
+    }
+
+    /// <summary>
+    /// Removes a previous pin for <paramref name="analysisType"/>.
+    /// </summary>
+    public void UnpinAnalysis(Type analysisType)
+    {
+        lock (_pinnedAnalysisTypes)
+            _pinnedAnalysisTypes.Remove(analysisType);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="analysisType"/> is currently pinned.
+    /// </summary>
+    public bool IsAnalysisPinned(Type analysisType)
+    {
+        lock (_pinnedAnalysisTypes)
+            return _pinnedAnalysisTypes.Contains(analysisType);
+    }
+
+    /// <summary>
+    /// Replaces the cached value for <typeparamref name="T"/> unless that type is pinned.
+    /// Returns <see langword="true"/> when the replacement was applied.
+    /// </summary>
+    public bool TryReplaceAnalysis<T>(T replacement) where T : class
+    {
+        if (IsAnalysisPinned(typeof(T))) return false;
+        ReplaceAnalysis(replacement);
+        return true;
     }
 
     private DumpContext(string path, DataTarget dt, ClrRuntime rt, string? archWarning)

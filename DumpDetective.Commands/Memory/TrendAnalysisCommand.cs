@@ -149,8 +149,12 @@ public sealed class TrendAnalysisCommand : ICommand
                 log.Success($"Dump loaded  |  CLR {clrVer}{archNote}", indent: true);
 
                 var (collWs, collMgd) = ToolMemoryDiagnostic.SampleForStep();
+                var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
+                    ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
+                    : _builtInCommands;
+                var heapContributors = full ? CollectHeapContributors(effectiveCmds) : null;
                 snap = full
-                    ? DumpCollector.CollectFull(dumpCtx, log.OnProgress)
+                    ? DumpCollector.CollectFull(dumpCtx, heapContributors ?? [], log.OnProgress)
                     : DumpCollector.CollectLightweight(dumpCtx, log.OnProgress);
                 ToolMemoryDiagnostic.RecordPipelineStep(full ? $"Heap walk + scoring — full ({label})" : $"Heap walk + scoring ({label})", collWs, collMgd);
 
@@ -212,16 +216,22 @@ public sealed class TrendAnalysisCommand : ICommand
 
                         var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                         ToolMemoryDiagnostic.BeginAnalyzerGroup(label);
-                        var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
-                            ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
-                            : _builtInCommands;
-                        AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, effectiveCmds, log, _pluginCmdNames);
-                        ToolMemoryDiagnostic.EndAnalyzerGroup();
+                        var pinnedTypes = CollectPinnedAnalysisTypes(effectiveCmds);
+                        PinAnalysisTypes(dumpCtx, pinnedTypes);
+                        try
+                        {
+                            AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, effectiveCmds, log, _pluginCmdNames);
+                        }
+                        finally
+                        {
+                            UnpinAnalysisTypes(dumpCtx, pinnedTypes);
+                            ToolMemoryDiagnostic.EndAnalyzerGroup();
+                        }
                         ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
                         CommandBase.ClearOverrides();
 
                         // Release BFS cache so CSR arrays are freed before the next dump loads.
-                        dumpCtx.ReplaceAnalysis(new BfsCacheBox(null));
+                        dumpCtx.TryReplaceAnalysis(new BfsCacheBox(null));
 
                         capturedSubReports[i] = cap.GetDoc();
                     }
@@ -249,6 +259,7 @@ public sealed class TrendAnalysisCommand : ICommand
                 $"[bold red]Error:[/] --baseline {baselineArg} is out of range (only {dumpPaths.Count} dump(s) loaded).");
             return 1;
         }
+
 
         // Build effective output list; split raw-save (.json/.bin) from render paths.
         var explicitOutputs = a.OutputPaths;
@@ -330,6 +341,24 @@ public sealed class TrendAnalysisCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning, "trend-analysis requires multiple dump files — use Run() entry point.");
+
+    private static IReadOnlyList<ICommandHeapContributor> CollectHeapContributors(IReadOnlyList<ICommand> commands)
+        => [.. commands.OfType<ICommandHeapContributor>()];
+
+    private static IReadOnlyList<Type> CollectPinnedAnalysisTypes(IReadOnlyList<ICommand> commands)
+        => [.. commands.OfType<ICommandCachePin>().SelectMany(command => command.PinnedCacheTypes).Distinct()];
+
+    private static void PinAnalysisTypes(DumpContext ctx, IReadOnlyList<Type> analysisTypes)
+    {
+        foreach (var analysisType in analysisTypes)
+            ctx.PinAnalysis(analysisType);
+    }
+
+    private static void UnpinAnalysisTypes(DumpContext ctx, IReadOnlyList<Type> analysisTypes)
+    {
+        foreach (var analysisType in analysisTypes)
+            ctx.UnpinAnalysis(analysisType);
+    }
 
 
     // ── CLI-only helpers ──────────────────────────────────────────────────────

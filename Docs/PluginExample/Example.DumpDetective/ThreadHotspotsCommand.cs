@@ -1,7 +1,7 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Runtime;
 using DumpDetective.Core.Utilities;
-using Microsoft.Diagnostics.Runtime;
+using System.Collections.Frozen;
 
 namespace Example.DumpDetective;
 
@@ -61,42 +61,31 @@ public sealed class ThreadHotspotsCommand : ICommand
     private static void RenderWith(DumpContext ctx, IRenderSink sink, int top, int minCount, bool details)
     {
         CommandBase.RenderHeader("Thread Hotspots", ctx, sink);
+        var cache = ctx.GetOrCreateAnalysis<ThreadHotspotsCache>(() => ThreadHotspotsCache.Build(ctx));
+        var threadNames = ctx.GetAnalysis<ThreadNameMap>();
 
-        var runtime = ctx.Runtime;
-        var threads = runtime.Threads;
-
-        // Collect per-thread: OS thread ID + managed stack frames
-        var threadStacks = new List<(ClrThread Thread, List<string> Frames)>();
-
-        foreach (var thread in threads)
-        {
-            var frames = new List<string>();
-            foreach (var frame in thread.EnumerateStackTrace(includeContext: false))
-            {
-                string? method = frame.Method?.Signature ?? frame.Method?.Name;
-                if (method is not null)
-                    frames.Add(method);
-            }
-            threadStacks.Add((thread, frames));
-        }
+        var threadStacks = cache.Threads;
 
         int totalThreads   = threadStacks.Count;
-        int managedThreads = threadStacks.Count(t => t.Frames.Count > 0);
+        int managedThreads = threadStacks.Count(thread => thread.TopFrame is not null);
         int nativeOnly     = totalThreads - managedThreads;
+        int namedThreads   = threadNames is null ? 0 : threadStacks.Count(thread => threadNames.ContainsKey(thread.ManagedThreadId));
 
         sink.KeyValues(
         [
             ("Total threads",           totalThreads.ToString("N0")),
             ("With managed frames",     managedThreads.ToString("N0")),
             ("Native-only / GC helper", nativeOnly.ToString("N0")),
+            ("Named managed threads",   namedThreads.ToString("N0")),
         ]);
 
         // Group by topmost managed frame
         var groups = threadStacks
-            .Where(t => t.Frames.Count > 0)
-            .GroupBy(t => t.Frames[0], StringComparer.Ordinal)
-            .Where(g => g.Count() >= minCount)
-            .OrderByDescending(g => g.Count())
+            .Where(thread => thread.TopFrame is not null)
+            .GroupBy(thread => thread.TopFrame!, StringComparer.Ordinal)
+            .Select(g => (Frame: g.Key, Threads: g.ToList()))
+            .Where(g => g.Threads.Count >= minCount)
+            .OrderByDescending(g => g.Threads.Count)
             .Take(top)
             .ToList();
 
@@ -107,7 +96,7 @@ public sealed class ThreadHotspotsCommand : ICommand
             return;
         }
 
-        int hotspotThreads = groups.Sum(g => g.Count());
+        int hotspotThreads = groups.Sum(g => g.Threads.Count);
         double pct = totalThreads > 0 ? hotspotThreads * 100.0 / totalThreads : 0;
 
         if (pct >= 50)
@@ -125,24 +114,39 @@ public sealed class ThreadHotspotsCommand : ICommand
             ["Threads", "% of total", "Topmost managed frame"],
             groups.Select(g => new[]
             {
-                g.Count().ToString("N0"),
-                totalThreads > 0 ? $"{g.Count() * 100.0 / totalThreads:F1} %" : "—",
-                g.Key,
+                g.Threads.Count.ToString("N0"),
+                totalThreads > 0 ? $"{g.Threads.Count * 100.0 / totalThreads:F1} %" : "—",
+                g.Frame,
             }).ToList(),
             caption: $"Top {groups.Count} group(s) with ≥{minCount} threads each");
 
         if (!details) return;
 
+        var detailsCache = ctx.GetOrCreateAnalysis<ThreadHotspotDetailsCache>(() => ThreadHotspotDetailsCache.Build(ctx));
+        var detailsByManagedId = detailsCache.Threads.ToFrozenDictionary(t => t.ManagedThreadId);
+
         // Detailed per-group stack traces
         sink.Section("Detailed Stack Traces per Group");
         foreach (var g in groups)
         {
-            sink.BeginDetails($"{g.Count()} thread(s) at: {Truncate(g.Key, 80)}", open: false);
-            foreach (var (thread, frames) in g)
+            sink.BeginDetails($"{g.Threads.Count} thread(s) at: {Truncate(g.Frame, 80)}", open: false);
+            foreach (var thread in g.Threads)
             {
-                sink.Text($"Thread OSId=0x{thread.OSThreadId:X}  ManagedId={thread.ManagedThreadId}");
-                foreach (var frame in frames)
-                    sink.Text($"  {frame}");
+                string threadHeader = $"Thread OSId=0x{thread.OsThreadId:X}  ManagedId={thread.ManagedThreadId}";
+                if (threadNames is not null && threadNames.TryGetValue(thread.ManagedThreadId, out var threadName))
+                    threadHeader += $"  Name={threadName}";
+
+                sink.Text(threadHeader);
+                if (detailsByManagedId.TryGetValue(thread.ManagedThreadId, out var fullThread))
+                {
+                    foreach (var frame in fullThread.Frames)
+                        sink.Text($"  {frame}");
+                }
+                else if (thread.TopFrame is not null)
+                {
+                    sink.Text($"  {thread.TopFrame}");
+                }
+
                 sink.BlankLine();
             }
             sink.EndDetails();

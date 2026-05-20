@@ -17,6 +17,15 @@ public static class DumpCollector
         => CollectFromContext(ctx, full: true, progress);
 
     /// <summary>
+    /// Full collection with command-provided heap contributors that piggyback on the
+    /// shared heap walk and publish their results into <see cref="DumpContext"/>.
+    /// </summary>
+    public static DumpSnapshot CollectFull(DumpContext ctx,
+                                           IReadOnlyList<ICommandHeapContributor> heapContributors,
+                                           Action<string>? progress = null)
+        => CollectFromContext(ctx, full: true, progress, heapContributors: heapContributors);
+
+    /// <summary>
     /// Full collection with additional consumers that piggyback on the single heap walk.
     /// Use this to collect e.g. <see cref="FragmentationConsumer"/> or <see cref="BfsPass1Consumer"/>
     /// without a second heap enumeration.
@@ -53,11 +62,12 @@ public static class DumpCollector
     // ── Private collect paths ─────────────────────────────────────────────────
 
     private static DumpSnapshot CollectFromContext(DumpContext ctx, bool full, Action<string>? progress = null,
-                                                   IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
+                                                   IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null,
+                                                   IReadOnlyList<ICommandHeapContributor>? heapContributors = null)
     {
         var snapshot = CreateSnapshot(ctx.DumpPath, ctx.FileTime, full);
         snapshot.ClrVersion = ctx.ClrVersion;
-        CollectAll(ctx.Runtime, snapshot, full, progress, ctx, extraConsumers);
+        CollectAll(ctx.Runtime, snapshot, full, progress, ctx, extraConsumers, heapContributors);
         var (findings, score) = HealthScorer.Score(snapshot, ThresholdLoader.Current.Scoring);
         snapshot.Findings    = findings.ToList();
         snapshot.HealthScore = score;
@@ -108,7 +118,8 @@ public static class DumpCollector
     /// </summary>
     private static void CollectAll(ClrRuntime runtime, DumpSnapshot snapshot, bool full,
                                    Action<string>? progress = null, DumpContext? ctx = null,
-                                   IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
+                                   IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null,
+                                   IReadOnlyList<ICommandHeapContributor>? heapContributors = null)
     {
         // Track elapsed time per sub-collector only when a progress listener is attached
         var sw = progress is not null ? Stopwatch.StartNew() : null;
@@ -139,7 +150,7 @@ public static class DumpCollector
         {
             RuntimeSubCollectors.CollectSegmentLayout(heap, snapshot);
             if (ctx is not null && full)
-                HeapObjectCollector.CollectHeapObjectsCombined(ctx, snapshot, progress, extraConsumers);
+                HeapObjectCollector.CollectHeapObjectsCombined(ctx, snapshot, progress, extraConsumers, heapContributors);
             else
                 HeapObjectCollector.CollectHeapObjects(heap, snapshot, full, progress);
 

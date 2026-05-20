@@ -27,7 +27,8 @@ internal static class HeapObjectCollector
     // and never walks the heap a second time.
 
     internal static void CollectHeapObjectsCombined(DumpContext ctx, DumpSnapshot s, Action<string>? progress = null,
-                                                    IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
+                                                    IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null,
+                                                    IReadOnlyList<ICommandHeapContributor>? heapContributors = null)
     {
         var heap = ctx.Heap;
 
@@ -63,8 +64,22 @@ internal static class HeapObjectCollector
         var largeObjects  = new Consumers.LargeObjectsConsumer(minSize: 85_000);
 
         // ── Single heap walk — all consumers driven in one pass ───────────────
+        var contributorConsumers = heapContributors is not null && heapContributors.Count > 0
+            ? new List<IHeapObjectConsumer>(heapContributors.Count)
+            : null;
+        if (heapContributors is not null)
+        {
+            foreach (var contributor in heapContributors)
+            {
+                var created = contributor.CreateHeapConsumers();
+                if (created.Count == 0) continue;
+                contributorConsumers!.AddRange(created);
+            }
+        }
+
         IReadOnlyList<IHeapObjectConsumer> allConsumers;
-        if (extraConsumers is null || extraConsumers.Count == 0)
+        if ((extraConsumers is null || extraConsumers.Count == 0) &&
+            (contributorConsumers is null || contributorConsumers.Count == 0))
         {
             allConsumers = [typeStatsC, genCounter, inbound, strings,
                             threadNames, threadPool, httpReqs, cwt,
@@ -73,17 +88,28 @@ internal static class HeapObjectCollector
         }
         else
         {
-            var list = new List<IHeapObjectConsumer>(19 + extraConsumers.Count)
+            int extraCount = extraConsumers?.Count ?? 0;
+            int contributorCount = contributorConsumers?.Count ?? 0;
+            var list = new List<IHeapObjectConsumer>(19 + extraCount + contributorCount)
             {
                 typeStatsC, genCounter, inbound, strings,
                 threadNames, threadPool, httpReqs, cwt,
                 timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer,
                 dataTable, cachePatterns, closures, alc, largeObjects
             };
-            list.AddRange(extraConsumers);
+            if (extraConsumers is not null)
+                list.AddRange(extraConsumers);
+            if (contributorConsumers is not null)
+                list.AddRange(contributorConsumers);
             allConsumers = list;
         }
         long freeBytes = HeapWalker.Walk(heap, allConsumers, progress);
+
+        if (heapContributors is not null)
+        {
+            foreach (var contributor in heapContributors)
+                contributor.PublishResults(ctx);
+        }
 
         // ── Populate DumpSnapshot from consumer results ───────────────────────
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
