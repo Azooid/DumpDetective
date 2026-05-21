@@ -16,12 +16,12 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 - One-command health report (`analyze`) with a score and prioritized findings.
 - Deep memory diagnostics (`memory-leak`, `high-refs`, `gc-roots`, `object-inspect`).
 - Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`, `async-trace`, `jit-trace`, `http-trace`, `sql-trace`). Recent versions cache repeated trace event-name classification inside the slowest analyzers so long traces spend less time on string matching.
-- Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 correlation rules that require both files to confirm root causes.
+- Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 built-in correlation rules, plus plugin-extensible rules via `--with-plugins`.
 - Multi-dump trend analysis for comparing behavior over time.
 - Interactive HTML reports with grouped navigation, charts, dark mode, and paged tables.
 - Compiler-generated method names (`<Foo>b__N`, `<>c`, async state machines, generics) are automatically decoded to human-readable form in all stack-frame, callback, and call-tree columns.
 - Export and replay support across HTML, Markdown, text, JSON, and compressed binary.
-- Optional BFS cache (`.bfs.idx`) for faster repeated retained-size analysis on large heaps.
+-BFS cache (`.bfs.idx`) for faster repeated retained-size analysis on large heaps.
 - **Plugin system** — drop a `.NET` class library into `plugins/` or `~/.dumpdetective/plugins/` to add custom analysis commands without modifying the host binary. Plugin commands can participate in `analyze --full` and `trace-analyze --with-plugins` by implementing `ICommand.IncludeInFullAnalyze = true` and/or `ITracePlugin`.
 
 ## Start Here

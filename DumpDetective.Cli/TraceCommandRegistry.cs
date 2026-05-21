@@ -181,6 +181,7 @@ public static class TraceCommandRegistry
     public static ICommand[] BuildOrchestratorCommands(
         IReadOnlyList<ITraceSubAnalyzer>? pluginSubAnalyzers = null,
         IReadOnlyList<ITracePlugin>? pluginTracePlugins = null,
+        IReadOnlyList<ITraceDumpCorrelationRule>? pluginCorrelationRules = null,
         IReadOnlyDictionary<string, string>? pluginTraceNames = null) =>
     [
         new TraceAnalyzeCommand(SubAnalyzers, pluginSubAnalyzers ?? [], pluginTracePlugins ?? [], pluginTraceNames),
@@ -189,6 +190,7 @@ public static class TraceCommandRegistry
             pluginSubAnalyzers ?? [],
             new TraceDumpCorrelationReport(),
             pluginTracePlugins ?? [],
+            pluginCorrelationRules ?? [],
             pluginTraceNames),
     ];
 

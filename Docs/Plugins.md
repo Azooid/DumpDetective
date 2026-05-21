@@ -120,10 +120,63 @@ The host pins those cache types before parallel sub-reports run. Unpinning is de
 | Standalone trace command | `ICommand` with `Kind = CommandKind.Trace` | `DumpDetective my-trace-cmd perf.etl` | `DumpDetective.Core` |
 | Trace sub-analyzer (simple) | `ICommand` + `ITracePlugin` | `trace-analyze --with-plugins` | `DumpDetective.Core` only |
 | Trace sub-analyzer (advanced) | `ICommand` + `ITraceSubAnalyzer` | `trace-analyze --with-plugins` | `DumpDetective.Commands` |
+| Trace+dmp correlation rule | `ICommand` + `ITraceDumpCorrelationRule` | `trace-dump-analyze --with-plugins` | `DumpDetective.Core` only |
 
 `ITracePlugin` (in `DumpDetective.Core`) is the recommended interface for most trace plugins — it requires only Core, making the plugin suitable for NuGet distribution without any compile-time dependency on host command assemblies.
 
 `ITraceSubAnalyzer` (in `DumpDetective.Commands.Trace`) is the advanced interface used by the built-in trace commands. It supports the consumer-based single-pass dispatch pipeline (`SupportsConsumer`) and correlation phases — useful if you want to participate in the same event-dispatch loop as built-in analyzers to avoid re-scanning the trace.
+
+---
+
+## `ITraceDumpCorrelationRule` reference
+
+Use this interface to add custom cross-source findings to `trace-dump-analyze`.
+
+```csharp
+public interface ITraceDumpCorrelationRule
+{
+    string Key { get; }
+    CorrelationFinding? Evaluate(TraceDumpCorrelationContext context);
+}
+```
+
+Behavior:
+- Evaluated only when `trace-dump-analyze --with-plugins` is used.
+- Built-in rules run first, then plugin rules.
+- Returning `null` means "rule did not match".
+- Exceptions in plugin rules are isolated so one rule cannot break the host correlator.
+
+Minimal example:
+
+```csharp
+public sealed class MyRuleCommand : ICommand, ITraceDumpCorrelationRule
+{
+    public string Name => "my-rule-host";
+    public string Description => "Hosts custom correlation rules.";
+    public bool IncludeInFullAnalyze => false;
+    public string Category => "My Plugin";
+    public CommandKind Kind => CommandKind.Trace;
+
+    public string Key => "myplugin.slow-sql-vs-async";
+
+    public CorrelationFinding? Evaluate(TraceDumpCorrelationContext ctx)
+    {
+        if (ctx.Sql is null || ctx.Async is null) return null;
+        if (ctx.Sql.SlowQueryCount < 20 || ctx.Snapshot.AsyncBacklogTotal < 100) return null;
+
+        return new CorrelationFinding(
+            FindingSeverity.Warning,
+            "SQL / Async",
+            "Slow SQL aligns with async backlog growth",
+            $"Observed {ctx.Sql.SlowQueryCount:N0} slow SQL queries with {ctx.Snapshot.AsyncBacklogTotal:N0} awaiting async state machines.",
+            "Inspect slow query plans and reduce synchronous waits in request path.",
+            76,
+            ["sql-trace", "dump", "plugin"]);
+    }
+
+    public int Run(string[] args) => 0;
+}
+```
 
 ---
 
