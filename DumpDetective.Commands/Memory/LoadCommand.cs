@@ -75,7 +75,7 @@ public sealed class LoadCommand : ICommand
 
         target = Path.GetFullPath(target);
 
-        // ── Directory mode: process every .dmp / .mdmp / .etl in the folder ──
+        // ── Directory mode: process every .dmp / .mdmp / .etl / .nettrace ──
         if (Directory.Exists(target))
         {
             var dumps = Directory.EnumerateFiles(target, "*.dmp",  SearchOption.TopDirectoryOnly)
@@ -90,9 +90,14 @@ public sealed class LoadCommand : ICommand
                 .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
                 .ToList();
 
-            if (dumps.Count == 0 && etls.Count == 0)
+            // .nettrace files — EventPipe traces collected from .NET Core apps
+            var nettraces = Directory.EnumerateFiles(target, "*.nettrace", SearchOption.TopDirectoryOnly)
+                .OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            if (dumps.Count == 0 && etls.Count == 0 && nettraces.Count == 0)
             {
-                AnsiConsole.MarkupLine($"[yellow]⚠[/] No .dmp, .mdmp, or .etl files found in: {Markup.Escape(target)}");
+                AnsiConsole.MarkupLine($"[yellow]⚠[/] No .dmp, .mdmp, .etl, or .nettrace files found in: {Markup.Escape(target)}");
                 return 0;
             }
 
@@ -134,6 +139,24 @@ public sealed class LoadCommand : ICommand
                     : $"[yellow]⚠[/] Completed with errors ({etls.Count} ETL file(s) processed).");
             }
 
+            if (nettraces.Count > 0)
+            {
+                AnsiConsole.MarkupLine($"[bold]Found {nettraces.Count} .nettrace file(s) in[/] {Markup.Escape(target)}");
+                AnsiConsole.WriteLine();
+
+                for (int i = 0; i < nettraces.Count; i++)
+                {
+                    AnsiConsole.MarkupLine($"[bold dim]── [[{i + 1}/{nettraces.Count}]] {Markup.Escape(Path.GetFileName(nettraces[i]))} ──[/]");
+                    int result = ConvertNettrace(nettraces[i], force);
+                    if (result != 0) exitCode = result;
+                    AnsiConsole.WriteLine();
+                }
+
+                AnsiConsole.MarkupLine(exitCode == 0
+                    ? $"[green]✓[/] All {nettraces.Count} .nettrace file(s) converted."
+                    : $"[yellow]⚠[/] Completed with errors ({nettraces.Count} .nettrace file(s) processed).");
+            }
+
             return exitCode;
         }
 
@@ -146,6 +169,9 @@ public sealed class LoadCommand : ICommand
 
         if (target.EndsWith(".etl", StringComparison.OrdinalIgnoreCase))
             return ConvertEtl(target, force);
+
+        if (target.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase))
+            return ConvertNettrace(target, force);
 
         return RunSingle(target, force);
     }
@@ -494,6 +520,34 @@ public sealed class LoadCommand : ICommand
         CommandBase.RunStatus("Converting ETL → ETLX…", update =>
         {
             using var trace = TraceOpener.Open(etlPath, update);
+        });
+        log.Check($"Converted → {Path.GetFileName(etlxPath)}  ({sw.Elapsed.TotalSeconds:F1}s)");
+        return 0;
+    }
+
+    private static int ConvertNettrace(string nettraceFile, bool force)
+    {
+        string etlxPath = TraceOpener.CachedEtlxPath(nettraceFile);
+
+        bool cacheValid = !force &&
+                          File.Exists(etlxPath) &&
+                          File.GetLastWriteTimeUtc(etlxPath) >= File.GetLastWriteTimeUtc(nettraceFile);
+
+        if (cacheValid)
+        {
+            AnsiConsole.MarkupLine($"  [dim].etlx already cached — {Markup.Escape(Path.GetFileName(etlxPath))}[/]");
+            return 0;
+        }
+
+        var log = new ProgressLogger();
+        log.SectionHeader($"DumpDetective load (trace)  {AppInfo.Version}");
+        log.Info($"nettrace: {Path.GetFileName(nettraceFile)}");
+        log.InfoM($"Cache: {etlxPath}", indent: true);
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        CommandBase.RunStatus("Converting .nettrace → .etlx…", update =>
+        {
+            using var trace = TraceOpener.Open(nettraceFile, update);
         });
         log.Check($"Converted → {Path.GetFileName(etlxPath)}  ({sw.Elapsed.TotalSeconds:F1}s)");
         return 0;

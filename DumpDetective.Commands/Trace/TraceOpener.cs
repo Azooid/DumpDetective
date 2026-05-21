@@ -43,6 +43,29 @@ internal static class TraceOpener
         if (tracePath.EndsWith(".etlx", StringComparison.OrdinalIgnoreCase))
             return new TraceLog(tracePath);
 
+        // .nettrace — EventPipe format from .NET Core / dotnet-trace.
+        // Convert to .etlx in .ddcache so subsequent opens skip conversion.
+        if (tracePath.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase))
+        {
+            string cachedEtlx = CachedEtlxPath(tracePath);
+
+            bool cacheValid = File.Exists(cachedEtlx) &&
+                              File.GetLastWriteTimeUtc(cachedEtlx) >= File.GetLastWriteTimeUtc(tracePath);
+
+            if (!cacheValid)
+            {
+                statusUpdate?.Invoke("Converting .nettrace → .etlx…");
+                Directory.CreateDirectory(Path.GetDirectoryName(cachedEtlx)!);
+                TraceLog.CreateFromEventPipeDataFile(tracePath, cachedEtlx, opts);
+            }
+            else
+            {
+                statusUpdate?.Invoke("Loading cached .etlx from .ddcache…");
+            }
+
+            return new TraceLog(cachedEtlx);
+        }
+
         // .etl — resolve companions → base, then convert into .ddcache
         if (tracePath.EndsWith(".etl", StringComparison.OrdinalIgnoreCase))
         {

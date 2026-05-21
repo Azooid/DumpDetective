@@ -64,7 +64,7 @@ public sealed class WcfChannelsAnalyzer : IHeapObjectConsumer
 
         Reset();
         CommandBase.RunStatus("Scanning WCF objects...", update =>
-            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         ctx.SetAnalysis(_result!);
         return _result!;

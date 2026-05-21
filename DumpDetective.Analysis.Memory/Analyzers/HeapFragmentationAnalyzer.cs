@@ -89,7 +89,7 @@ public sealed class HeapFragmentationAnalyzer
 
         CommandBase.RunStatus("Measuring fragmentation...", update =>
             HeapWalker.Walk(ctx.Heap, [consumer],
-                CommandBase.StatusProgress(update)));
+                CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         // Apply pinned counts after walk
         foreach (var (addr, count) in pinnedCounts)

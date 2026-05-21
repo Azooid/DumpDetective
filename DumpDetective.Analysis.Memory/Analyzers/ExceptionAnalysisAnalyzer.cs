@@ -117,7 +117,7 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
 
         Reset();
         CommandBase.RunStatus("Scanning exception objects...", update =>
-            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         ctx.SetAnalysis(_result!);
         return _result!;

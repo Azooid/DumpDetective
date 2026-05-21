@@ -103,7 +103,7 @@ internal static class HeapObjectCollector
                 list.AddRange(contributorConsumers);
             allConsumers = list;
         }
-        long freeBytes = HeapWalker.Walk(heap, allConsumers, progress);
+        long freeBytes = HeapWalker.Walk(heap, allConsumers, progress, sequentialOnly: ctx.IsCoreRuntime);
 
         if (heapContributors is not null)
         {
@@ -212,7 +212,7 @@ internal static class HeapObjectCollector
             { typeStatsC, genCounter, inbound, strings };
         allConsumers.AddRange(extraConsumers);
 
-        HeapWalker.Walk(heap, allConsumers, progress, finalizableConsumers);
+        HeapWalker.Walk(heap, allConsumers, progress, finalizableConsumers, sequentialOnly: ctx.IsCoreRuntime);
 
         // Pre-populate HeapSnapshot — same as CollectHeapObjectsCombined, so
         // SharedReferrerCache.Build (and any other consumer of ctx.Snapshot) works normally.
@@ -233,7 +233,7 @@ internal static class HeapObjectCollector
 
     // ── Main heap object walk ─────────────────────────────────────────────────
 
-    internal static void CollectHeapObjects(ClrHeap heap, DumpSnapshot s, bool full, Action<string>? progress = null)
+    internal static void CollectHeapObjects(ClrHeap heap, DumpSnapshot s, bool full, Action<string>? progress = null, bool sequentialOnly = false)
     {
         long committed = 0;
         foreach (var seg in heap.Segments)
@@ -254,7 +254,7 @@ internal static class HeapObjectCollector
             : [typeStatsC, genCounter, exConsumer, asyncC, lwStats];
 
         // ── Single heap walk ──────────────────────────────────────────────────
-        long freeBytes = HeapWalker.Walk(heap, consumers, progress);
+        long freeBytes = HeapWalker.Walk(heap, consumers, progress, sequentialOnly: sequentialOnly);
 
         // ── Populate DumpSnapshot ─────────────────────────────────────────────
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;

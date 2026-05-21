@@ -2,7 +2,7 @@
   "profiles": {
     "DumpDetective.Cli": {
       "commandName": "Project",
-      "commandLineArgs": "analyze \"D:\\Dump\\prod\\w3wp.exe_260421_175618.dmp\" --full --debug --persist  --output w3wp.exe_260421_175618_1.html"
+      "commandLineArgs": "analyze \"D:\\Dump\\prod\\w3wp.exe_260421_175618.dmp\" --full --debug --persist  --output w3wp.exe_260421_175618_1.html --with-plugins"
     },
     "WSL": {
       "commandName": "WSL2",
@@ -10,11 +10,15 @@
     },
     "Load": {
       "commandName": "Project",
-      "commandLineArgs": "load \"D:\\Dump\\prod\\w3wp.exe_260421_175618.dmp\" --full --debug --force"
+      "commandLineArgs": "load \"D:\\Dump\\core\\Main\" --full --debug --force"
     },
     "CPU": {
       "commandName": "Project",
       "commandLineArgs": "trace-analyze \"D:\\Dump\\API\\29_04_2026\\HighCPU_05.etl\" --debug"
+    },
+    "Profile 1": {
+      "commandName": "Project",
+      "commandLineArgs": "--help"
     }
   }
 }

@@ -30,7 +30,7 @@ public sealed class ConfigurationSmellAnalyzer
         bool   serverGc    = heapCount > 1;
         int    aliveCount  = threads.Count(t => t.IsAlive);
         int    blocked     = threads.Count(t => t.IsAlive && IsBlocked(t));
-        string clrVersion  = runtime.ClrInfo?.Version.ToString() ?? "(unknown)";
+        string clrVersion  = ctx.ClrVersion ?? "(unknown)";
         bool   is64        = runtime.DataTarget?.DataReader?.PointerSize == 8;
 
         // ThreadPool values — available from ClrThreadPool when present
