@@ -157,6 +157,19 @@ public sealed class DumpContext : IDisposable
     internal void PreloadSnapshot(HeapSnapshot snap) => _snapshot ??= snap;
 
     /// <summary>
+    /// Pins the in-memory TypeStats dictionary for the duration of a parallel
+    /// analysis window so that the first analyzer to retire its reader cannot
+    /// release it before other parallel workers have had a chance to register.
+    /// Must be balanced by exactly one call to <see cref="UnpinTypeStats"/>.
+    /// </summary>
+    public void PinTypeStats() => _snapshot?.RegisterTypeStatsReader();
+
+    /// <summary>
+    /// Releases the TypeStats pin acquired by <see cref="PinTypeStats"/>.
+    /// </summary>
+    public void UnpinTypeStats() => _snapshot?.RetireTypeStatsReader();
+
+    /// <summary>
     /// Returns a previously cached per-command analysis result, or <see langword="null"/>
     /// if it has not been pre-populated yet.
     /// </summary>

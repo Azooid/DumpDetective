@@ -73,6 +73,12 @@ public static class AnalyzeReport
 
         PinTrackedCaches(ctx, pinTracker);
 
+        // Pin TypeStats for the full duration of the parallel analysis window.
+        // Without this, the first analyzer to Register+Retire can decrement the
+        // ref-count to zero and release TypeStats before other parallel workers
+        // have had a chance to register — causing them to see an empty snapshot.
+        ctx.PinTypeStats();
+
         try
         {
 
@@ -193,6 +199,7 @@ public static class AnalyzeReport
         finally
         {
             UnpinAllRemainingTrackedCaches(ctx, pinTracker);
+            ctx.UnpinTypeStats();   // release the parallel-window pin
         }
 
         // Replay order is grouped for report readability/navigation only.
