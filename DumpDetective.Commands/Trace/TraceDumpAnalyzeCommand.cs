@@ -38,6 +38,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
     private readonly IReadOnlyList<ITraceSubAnalyzer>       _pluginSubAnalyzers;
     private readonly TraceDumpCorrelationReport             _correlationReport;
     private readonly IReadOnlyList<ITracePlugin>            _pluginTracePlugins;
+    private readonly IReadOnlyList<ITraceDumpCorrelationRule> _pluginCorrelationRules;
     private readonly IReadOnlyDictionary<string, string>?   _pluginTraceNames;
 
     public TraceDumpAnalyzeCommand(
@@ -45,17 +46,19 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
         IReadOnlyList<ITraceSubAnalyzer> pluginSubAnalyzers,
         TraceDumpCorrelationReport correlationReport,
         IReadOnlyList<ITracePlugin>? pluginTracePlugins = null,
+        IReadOnlyList<ITraceDumpCorrelationRule>? pluginCorrelationRules = null,
         IReadOnlyDictionary<string, string>? pluginTraceNames = null)
     {
         _subAnalyzers       = subAnalyzers;
         _pluginSubAnalyzers = pluginSubAnalyzers;
         _correlationReport  = correlationReport;
         _pluginTracePlugins = pluginTracePlugins ?? [];
+        _pluginCorrelationRules = pluginCorrelationRules ?? [];
         _pluginTraceNames   = pluginTraceNames;
     }
 
     public string Name               => "trace-dump-analyze";
-    public string Description        => "Combined trace + dump analysis — runs all 29 trace sub-analyzers, a lightweight dump walk, and cross-source correlation.";
+    public string Description        => "Combined trace + dump analysis — runs all 29 trace sub-analyzers, a lightweight dump walk, and cross-source correlation (plugin-extensible with --with-plugins).";
     public bool   IncludeInFullAnalyze => false;
     public string Category             => "Orchestrator / Cross-source";
     public CommandKind Kind               => CommandKind.Trace;
@@ -103,7 +106,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
           --slow-ms <ms>           HTTP/SQL slow-request threshold in ms (default: 1000)
           --trace <file>           Explicit trace file path (alternative to positional)
           --dump <file>            Explicit dump file path (alternative to positional)
-          --with-plugins           Include plugin sub-analyzers (default: excluded)
+          --with-plugins           Include plugin sub-analyzers and plugin correlation rules (default: excluded)
           -o, --output <file>      Write report to file (.html / .md / .txt / .json)
           -h, --help               Show this help
 
@@ -304,7 +307,8 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
                     connPool:       results.GetValueOrDefault("connection-pool-trace")  as ConnectionPoolTraceData,
                     deadlock:       results.GetValueOrDefault("deadlock-trace")         as DeadlockPatternData,
                     handleLeak:     results.GetValueOrDefault("handle-leak-trace")      as HandleLeakTraceData,
-                    retainedByType: retainedByType);
+                        retainedByType: retainedByType,
+                        pluginRules: withPlugins ? _pluginCorrelationRules : []);
             });
             AnsiConsole.MarkupLine($"  [green]✓[/] {crossFindings.Count} cross-source finding(s)");
 

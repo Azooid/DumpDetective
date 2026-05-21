@@ -1,5 +1,6 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models.CommandData;
+using DumpDetective.Core.Utilities;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -67,7 +68,47 @@ public sealed class AsyncStacksReport
 
         RenderTopTable(sink, counts, total, top);
         RenderStateBreakdown(sink, counts, total);
+        RenderRetainedByMethod(sink, data);
         if (showAddr) RenderAddresses(sink, data.Entries);
+    }
+
+    private static void RenderRetainedByMethod(IRenderSink sink, AsyncStacksData data)
+    {
+        if (data.RetainedByMethod is not { Count: > 0 }) return;
+
+        sink.Section("Retained Memory by Suspended Method");
+        sink.Explain(
+            what: "Each suspended async state machine holds references to its captured variables and continuation context. " +
+                  "This section shows the total retained memory attributable to state machines grouped by method name.",
+            why:  "A method awaiting a slow operation while holding large captured objects (HttpContext, DbContext, large arrays) " +
+                  "multiplies that memory pressure by its instance count. The backlog cost is not just the state machine itself " +
+                  "but everything it captures.",
+            bullets:
+            [
+                "Retained >> Own \u00d7 Count \u2192 each instance captures a large external graph",
+                "High retained with low count \u2192 a few expensive suspension points",
+                "High retained with high count \u2192 a widespread bottleneck capturing large objects",
+            ],
+            action: "For the top retained method: check what is captured in the lambda closure at the await site. " +
+                    "Avoid capturing large objects across awaits — extract the data you need before the await call.");
+
+        var rows = data.RetainedByMethod
+            .OrderByDescending(r => r.RetainedSizeTotal)
+            .Select(r => new[]
+            {
+                r.Method.Length > 75 ? r.Method[..75] + "\u2026" : r.Method,
+                r.Count.ToString("N0"),
+                DumpHelpers.FormatSize(r.OwnSizeTotal),
+                r.RetainedSizeTotal > 0
+                    ? DumpHelpers.FormatSize(r.RetainedSizeTotal) + (r.IsEstimated ? " ~" : "")
+                    : "\u2014",
+            })
+            .ToList();
+
+        sink.Table(
+            ["Suspended Method", "Count", "Own Size", "Retained Size"],
+            rows,
+            "Retained = BFS-computed retained bytes (sampled instances, then scaled). '~' = estimated.");
     }
 
     private static void RenderTopTable(IRenderSink sink,

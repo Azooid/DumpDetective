@@ -27,7 +27,8 @@ internal static class HeapObjectCollector
     // and never walks the heap a second time.
 
     internal static void CollectHeapObjectsCombined(DumpContext ctx, DumpSnapshot s, Action<string>? progress = null,
-                                                    IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null)
+                                                    IReadOnlyList<IHeapObjectConsumer>? extraConsumers = null,
+                                                    IReadOnlyList<ICommandHeapContributor>? heapContributors = null)
     {
         var heap = ctx.Heap;
 
@@ -52,26 +53,63 @@ internal static class HeapObjectCollector
         var asyncAnalyzer = new Analyzers.AsyncStacksAnalyzer();       asyncAnalyzer.Reset();
         var eventAnalyzer = new Analyzers.EventAnalysisAnalyzer();     eventAnalyzer.Reset();
 
+        // ── Secondary-metric consumers ────────────────────────────────────────
+        // These are low-overhead consumers that collect data for commands that
+        // previously did independent heap walks during the sub-reports phase.
+        // Adding them here eliminates 4–5 parallel heap walks (each ~120s on large dumps).
+        var dataTable     = new Consumers.DataTableConsumer();
+        var cachePatterns = new Consumers.CachePatternsConsumer();
+        var closures      = new Consumers.ClosureCaptureConsumer();
+        var alc           = new Consumers.AlcConsumer();
+        var largeObjects  = new Consumers.LargeObjectsConsumer(minSize: 85_000);
+
         // ── Single heap walk — all consumers driven in one pass ───────────────
+        var contributorConsumers = heapContributors is not null && heapContributors.Count > 0
+            ? new List<IHeapObjectConsumer>(heapContributors.Count)
+            : null;
+        if (heapContributors is not null)
+        {
+            foreach (var contributor in heapContributors)
+            {
+                var created = contributor.CreateHeapConsumers();
+                if (created.Count == 0) continue;
+                contributorConsumers!.AddRange(created);
+            }
+        }
+
         IReadOnlyList<IHeapObjectConsumer> allConsumers;
-        if (extraConsumers is null || extraConsumers.Count == 0)
+        if ((extraConsumers is null || extraConsumers.Count == 0) &&
+            (contributorConsumers is null || contributorConsumers.Count == 0))
         {
             allConsumers = [typeStatsC, genCounter, inbound, strings,
                             threadNames, threadPool, httpReqs, cwt,
-                            timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer];
+                            timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer,
+                            dataTable, cachePatterns, closures, alc, largeObjects];
         }
         else
         {
-            var list = new List<IHeapObjectConsumer>(14 + extraConsumers.Count)
+            int extraCount = extraConsumers?.Count ?? 0;
+            int contributorCount = contributorConsumers?.Count ?? 0;
+            var list = new List<IHeapObjectConsumer>(19 + extraCount + contributorCount)
             {
                 typeStatsC, genCounter, inbound, strings,
                 threadNames, threadPool, httpReqs, cwt,
-                timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer
+                timerAnalyzer, wcfAnalyzer, connAnalyzer, exAnalyzer, asyncAnalyzer, eventAnalyzer,
+                dataTable, cachePatterns, closures, alc, largeObjects
             };
-            list.AddRange(extraConsumers);
+            if (extraConsumers is not null)
+                list.AddRange(extraConsumers);
+            if (contributorConsumers is not null)
+                list.AddRange(contributorConsumers);
             allConsumers = list;
         }
         long freeBytes = HeapWalker.Walk(heap, allConsumers, progress);
+
+        if (heapContributors is not null)
+        {
+            foreach (var contributor in heapContributors)
+                contributor.PublishResults(ctx);
+        }
 
         // ── Populate DumpSnapshot from consumer results ───────────────────────
         s.FragmentationPct = committed > 0 ? freeBytes * 100.0 / committed : 0;
@@ -119,6 +157,17 @@ internal static class HeapObjectCollector
 
         // ── Event leak stats ──────────────────────────────────────────────────
         SnapshotPopulator.ApplyEventLeaks(s, eventAnalyzer.Result!.Groups);
+
+        // ── Secondary-metric consumer results ─────────────────────────────────
+        // Stored so analyzers get a free cache hit instead of re-walking the heap.
+        ctx.SetAnalysis(new Consumers.DataTableConsumerResult(
+            dataTable.DataTableCount, dataTable.DataRowCount, dataTable.DataColumnCount,
+            dataTable.DataViewCount,  dataTable.DataSetCount,
+            dataTable.TotalBytes,     dataTable.TopTables));
+        ctx.SetAnalysis(new Consumers.CachePatternsConsumerResult(cachePatterns.ByType));
+        ctx.SetAnalysis(new Consumers.ClosureCaptureConsumerResult(closures.ByType));
+        ctx.SetAnalysis(new Consumers.AlcConsumerResult(alc.Entries));
+        ctx.SetAnalysis(new Consumers.LargeObjectsConsumerResult(largeObjects.Objects));
 
         // ── Pre-populate HeapSnapshot so EnsureSnapshot() is a no-op later ───
         ctx.PreloadSnapshot(HeapSnapshot.Create(

@@ -347,6 +347,31 @@ public static class HeapWalker
                 delegateFields = [.. tmp];
         }
 
+        // ── DataTable subtype detection ────────────────────────────────────────
+        bool isDataTable = false;
+        ClrInstanceField? dtNextRowIdField = null;
+        ClrInstanceField? dtRowCollField   = null;
+        if (typeName.Contains("DataTable", StringComparison.Ordinal))
+        {
+            for (var t = type; t is not null; t = t.BaseType)
+            {
+                if (t.Name == "System.Data.DataTable")
+                    isDataTable = true;
+
+                // nextRowID — declared on System.Data.DataTable, any integer element type
+                if (dtNextRowIdField is null)
+                    dtNextRowIdField = t.GetFieldByName("nextRowID")
+                                    ?? t.GetFieldByName("_nextRowID");
+
+                // rowCollection — also declared on System.Data.DataTable
+                if (dtRowCollField is null)
+                    dtRowCollField = t.GetFieldByName("rowCollection")
+                                  ?? t.GetFieldByName("_rowCollection");
+
+                if (isDataTable && dtNextRowIdField is not null && dtRowCollField is not null) break;
+            }
+        }
+
         return new HeapTypeMeta
         {
             Name         = typeName,
@@ -366,7 +391,10 @@ public static class HeapWalker
             IsHttp       = HttpTypeSet.Contains(typeName),
             IsCwt        = typeName.StartsWith("System.Runtime.CompilerServices.ConditionalWeakTable",
                                StringComparison.Ordinal),
-            DelegateFields = delegateFields,
+            IsDataTable             = isDataTable,
+            DataTableNextRowIdField = dtNextRowIdField,
+            DataTableRowCollField   = dtRowCollField,
+            DelegateFields          = delegateFields,
         };
     }
 

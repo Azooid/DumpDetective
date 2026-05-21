@@ -112,7 +112,7 @@ Options: `--top <n>`, `--process <name>`, `--show-system`, `--slow-ms <ms>`, `-o
 
 ### `trace-dump-analyze`
 
-Opens a trace file AND a memory dump captured during the same incident window, runs all 29 trace sub-analyzers plus a lightweight dump heap walk, then runs `TraceDumpCorrelator` to surface **cross-source findings** — patterns that require both sources to detect. The cross-source section appears at the top of the report as the highest-confidence signal.
+Opens a trace file AND a memory dump captured during the same incident window, runs all 29 trace sub-analyzers plus a lightweight dump heap walk, then runs `TraceDumpCorrelator` to surface **cross-source findings** — patterns that require both sources to detect. The cross-source section appears at the top of the report as the highest-confidence signal. With `--with-plugins`, plugin-defined correlation rules are also evaluated after the built-in rules.
 
 **How to capture both files:**
 

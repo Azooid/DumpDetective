@@ -19,12 +19,14 @@ public sealed class StringDuplicatesCommand : ICommand
         Usage: DumpDetective string-duplicates <dump-file> [options]
 
         Options:
-          --top <n>          Number of string groups to show (default 50)
-          --min-count <n>    Minimum duplicate count (default 2)
-          --min-waste <n>    Minimum wasted bytes (default 0)
-          --pattern <str>    Filter by string content substring
-          -o, --output <f>   Write report to file (.html / .md / .txt / .json)
-          -h, --help         Show this help
+          --top <n>           Number of string groups to show (default 50)
+          --min-count <n>     Minimum duplicate count (default 2)
+          --min-waste <n>     Minimum wasted bytes (default 0)
+          --pattern <str>     Filter by string content substring
+          --include-arrays    Also detect duplicate byte[] arrays (slower)
+          --include-encoding  Analyze encoding waste for top string groups (slower)
+          -o, --output <f>    Write report to file (.html / .md / .txt / .json)
+          -h, --help          Show this help
         """;
 
     public int Run(string[] args)
@@ -32,31 +34,36 @@ public sealed class StringDuplicatesCommand : ICommand
         var a = CliArgs.Parse(args);
         if (CommandBase.TryHelp(args, Help)) return 0;
 
-        int     top      = a.GetInt("top",       50);
-        int     minCount = a.GetInt("min-count",  2);
-        long    minWaste = a.GetInt("min-waste",   0);
-        string? pattern  = a.GetOption("pattern");
+        int     top             = a.GetInt("top",       50);
+        int     minCount        = a.GetInt("min-count",  2);
+        long    minWaste        = a.GetInt("min-waste",   0);
+        string? pattern         = a.GetOption("pattern");
+        bool    includeArrays   = a.HasFlag("include-arrays");
+        bool    includeEncoding = a.HasFlag("include-encoding");
 
         return CommandBase.Execute(a.DumpPath, a.EffectiveOutputPaths,
-            (ctx, sink) => RenderWith(ctx, sink, top, minCount, minWaste, pattern));
+            (ctx, sink) => RenderWith(ctx, sink, top, minCount, minWaste, pattern, includeArrays, includeEncoding));
     }
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         RenderWith(ctx, sink,
-            top:      CommandBase.GetOverrideInt("top",       100),
-            minCount: CommandBase.GetOverrideInt("min-count",   2),
-            minWaste: CommandBase.GetOverrideLong("min-waste",   0),
-            pattern:  null);
+            top:             CommandBase.GetOverrideInt("top",       100),
+            minCount:        CommandBase.GetOverrideInt("min-count",   2),
+            minWaste:        CommandBase.GetOverrideLong("min-waste",   0),
+            pattern:         null,
+            includeArrays:   false,
+            includeEncoding: false);
 
 
     private void RenderWith(DumpContext ctx, IRenderSink sink,
-        int top, int minCount, long minWaste, string? pattern)
+        int top, int minCount, long minWaste, string? pattern,
+        bool includeArrays, bool includeEncoding)
     {
         CommandBase.RenderHeader("String Duplicates", ctx, sink);
 
         if (!CommandBase.EnsureCanWalkHeap(ctx.Heap, sink)) return;
 
-        var data = _analyzer.Analyze(ctx);
+        var data = _analyzer.Analyze(ctx, includeArrays, includeEncoding);
         _report.Render(data, sink, top, minCount, minWaste, pattern);
     }
 }

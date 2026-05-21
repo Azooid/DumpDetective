@@ -129,6 +129,15 @@ public sealed class FinalizerQueueReport
         if (finSegs.Count > 0)
             sink.DonutChart(finSegs, "Pending finalizations by type (top 8)", null);
 
+        // Alert for undisposed suspects
+        var undisposed = sortedList.Where(kv => kv.Value.SuspectedUndisposed).ToList();
+        if (undisposed.Count > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{undisposed.Count} type(s) in the finalizer queue are suspected to be undisposed " +
+                "(their _disposed / isDisposed field reads as false).",
+                advice: "Wrap these objects in 'using' statements or call Dispose() explicitly. " +
+                        "Relying on finalization delays cleanup and causes GC pressure.");
+
         var rows = sortedList.Select(kv =>
         {
             var v = kv.Value;
@@ -143,12 +152,14 @@ public sealed class FinalizerQueueReport
                 $"G0:{v.Gen0} G1:{v.Gen1} G2:{v.Gen2} LOH:{v.Loh}" + gen2flag,
                 v.HasDispose ? "✓" : "—",
                 v.IsCritical ? "✓" : "—",
+                v.SuspectedUndisposed ? "⚠ Yes" : "—",
             };
         }).ToList();
         sink.Table(
-            ["Type", "Count", "Total Size", "Avg Size", "Gen Distribution", "IDisposable", "Critical"],
+            ["Type", "Count", "Total Size", "Avg Size", "Gen Distribution", "IDisposable", "Critical", "Undisposed?"],
             rows,
-            $"Top {rows.Count} of {totalTypes} types by size — ⚠N = N objects in Gen2/LOH");
+            $"Top {rows.Count} of {totalTypes} types by size — ⚠N = N objects in Gen2/LOH. " +
+            "Undisposed? = _disposed field reads false on sampled instances.");
     }
 
     private static void RenderAddresses(IRenderSink sink,

@@ -22,6 +22,7 @@ public sealed class ModuleListReport
         RenderModuleTable(data, sink, duplicates.Count);
         if (duplicates.Count > 0) RenderDuplicateAccordions(duplicates, sink);
         RenderSymbolsSection(data, sink);
+        RenderAlcSection(data, sink);
     }
 
     private static void RenderModuleTable(ModuleListData data, IRenderSink sink, int dupCount)
@@ -125,5 +126,63 @@ public sealed class ModuleListReport
             .ToList();
         sink.Table(["Assembly", "Kind", "PDB GUID", "Age", "Present", "PDB Path"], rows,
             $"Symbol identity for {withPdb.Count} module(s)");
+    }
+
+    private static void RenderAlcSection(ModuleListData data, IRenderSink sink)
+    {
+        if (data.AssemblyLoadContexts is not { Count: > 0 }) return;
+
+        sink.Section("Assembly Load Contexts");
+        sink.Explain(
+            what: "AssemblyLoadContext (ALC) instances found on the managed heap. Each ALC is an isolation boundary — " +
+                  "assemblies loaded into different contexts cannot share types, even if the assembly name and version match.",
+            why:  "Plugin systems, hot-reload scenarios, and dependency injection containers sometimes create multiple ALCs. " +
+                  "Collectible ALCs (marked IsCollectible=true) should be collected once all references to their types are released. " +
+                  "Non-collectible ALCs live for the lifetime of the process.",
+            bullets:
+            [
+                "IsCollectible=false + many assemblies \u2192 permanent memory tied to this ALC for the process lifetime",
+                "IsCollectible=true \u2192 intended to be unloaded; confirm references are released after plugin teardown",
+                "Multiple ALCs with the same name \u2192 may indicate repeated plugin load without unload (ALC leak)",
+            ],
+            action: "For collectible ALCs: ensure no GC handles or static fields reference types from the ALC. " +
+                    "Use WeakReference<AssemblyLoadContext> to monitor unloading. " +
+                    "Call AssemblyLoadContext.Unload() explicitly when done.");
+
+        int collectibleCount    = data.AssemblyLoadContexts.Count(a => a.IsCollectible);
+        int nonCollectibleCount = data.AssemblyLoadContexts.Count(a => !a.IsCollectible);
+
+        sink.KeyValues([
+            ("Total ALCs",      data.AssemblyLoadContexts.Count.ToString("N0")),
+            ("Collectible",     collectibleCount.ToString("N0")),
+            ("Non-collectible", nonCollectibleCount.ToString("N0")),
+        ]);
+
+        // Warn about multiple ALCs with the same name (possible ALC leak)
+        var nameDups = data.AssemblyLoadContexts
+            .GroupBy(a => a.Name, StringComparer.OrdinalIgnoreCase)
+            .Where(g => g.Count() > 1)
+            .ToList();
+        if (nameDups.Count > 0)
+            sink.Alert(AlertLevel.Warning,
+                $"{nameDups.Count} ALC name(s) have multiple instances — possible AssemblyLoadContext leak.",
+                advice: "Each repeated ALC with the same name suggests a plugin was re-loaded without unloading the previous instance. " +
+                        "Ensure Unload() is called and awaited before reloading.");
+
+        var alcRows = data.AssemblyLoadContexts
+            .OrderByDescending(a => a.AssemblyCount)
+            .Select(a => new[]
+            {
+                $"0x{a.Address:X}",
+                a.Name.Length > 50 ? a.Name[..50] + "\u2026" : a.Name,
+                a.IsCollectible ? "Yes" : "No",
+                a.AssemblyCount.ToString("N0"),
+            })
+            .ToList();
+
+        sink.Table(
+            ["Address", "ALC Name", "Collectible", "Assembly Count"],
+            alcRows,
+            "Assembly Count = number of assemblies loaded into this context at time of dump.");
     }
 }

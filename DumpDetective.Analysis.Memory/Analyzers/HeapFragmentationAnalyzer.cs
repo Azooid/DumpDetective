@@ -105,7 +105,7 @@ public sealed class HeapFragmentationAnalyzer
         var segments = consumer.SegData.Values
             .Where(s => s.CommittedBytes > 0)
             .OrderByDescending(s => s.CommittedBytes > 0 ? s.FreeBytes * 100.0 / s.CommittedBytes : 0)
-            .Select(s => new HeapSegmentInfo(s.Kind, s.Address, s.CommittedBytes, s.LiveBytes, s.FreeBytes, s.PinnedCount))
+            .Select(s => new HeapSegmentInfo(s.Kind, s.Address, s.CommittedBytes, s.LiveBytes, s.FreeBytes, s.PinnedCount, s.LargestFreeBlock))
             .ToList();
 
         var distribution = consumer.Buckets

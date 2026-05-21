@@ -1,5 +1,7 @@
 ﻿using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Runtime;
+using DumpDetective.Analysis.Memory.Consumers;
+using Microsoft.Diagnostics.Runtime;
 
 namespace DumpDetective.Analysis.Memory.Analyzers;
 
@@ -49,7 +51,64 @@ public sealed class ModuleListAnalyzer
             .ThenBy(m => m.FileName)
             .ToList();
 
-        return new ModuleListData(modules);
+        var alcs = DetectAssemblyLoadContexts(ctx);
+        return new ModuleListData(modules, alcs);
+    }
+
+    private static IReadOnlyList<AlcEntry> DetectAssemblyLoadContexts(DumpContext ctx)
+    {
+        // Fast path: ALC instances already enumerated during the main heap walk.
+        if (ctx.GetAnalysis<AlcConsumerResult>() is { } cached)
+            return cached.Entries
+                .Select(e => new AlcEntry(e.Address, e.Name, e.IsCollectible, e.AssemblyCount))
+                .ToList();
+
+        if (!ctx.Heap.CanWalkHeap) return [];
+        var result = new List<AlcEntry>();
+        try
+        {
+            // Walk heap looking for AssemblyLoadContext instances
+            foreach (var obj in ctx.Heap.EnumerateObjects())
+            {
+                if (!obj.IsValid || obj.Type is null) continue;
+                string name = obj.Type.Name ?? string.Empty;
+                if (!name.EndsWith("AssemblyLoadContext", StringComparison.Ordinal) &&
+                    !name.Contains("AssemblyLoadContext", StringComparison.Ordinal)) continue;
+                // Skip the static default context wrapper types
+                if (name.Contains("DefaultAssemblyLoadContext") ||
+                    name.Contains("IndividualTestAssemblyLoadContext")) { }
+
+                string displayName = name;
+                bool isCollectible = false;
+                int  asmCount = 0;
+                try
+                {
+                    var nameField = obj.Type.GetFieldByName("_name");
+                    if (nameField is not null)
+                        displayName = obj.ReadStringField("_name") ?? name;
+                    var collField = obj.Type.GetFieldByName("_isCollectible");
+                    if (collField is not null)
+                        isCollectible = collField.Read<bool>(obj, interior: false);
+                    var loadedField = obj.Type.GetFieldByName("_loadedAssemblies");
+                    if (loadedField is not null)
+                    {
+                        var listObj = loadedField.ReadObject(obj, interior: false);
+                        if (listObj.IsValid)
+                        {
+                            var cntField = listObj.Type?.GetFieldByName("_size") ??
+                                          listObj.Type?.GetFieldByName("_count");
+                            if (cntField is not null)
+                                asmCount = cntField.Read<int>(listObj, interior: false);
+                        }
+                    }
+                }
+                catch { }
+                result.Add(new AlcEntry(obj.Address, displayName, isCollectible, asmCount));
+                if (result.Count >= 100) break; // safety cap
+            }
+        }
+        catch { }
+        return result;
     }
 
     private static string ModuleKind(string path)

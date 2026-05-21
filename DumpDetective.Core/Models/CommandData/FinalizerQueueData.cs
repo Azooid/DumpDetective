@@ -20,4 +20,9 @@ public sealed record FinalizerTypeStats(
     int                   Poh,
     bool                  HasDispose,
     bool                  IsCritical,
-    IReadOnlyList<ulong>  Addresses);
+    IReadOnlyList<ulong>  Addresses,
+    /// <summary>
+    /// True when at least one sampled instance has a dispose-flag field (e.g. _disposed, m_disposed)
+    /// that reads as <see langword="false"/>, indicating Dispose() was never called.
+    /// </summary>
+    bool                  SuspectedUndisposed = false);

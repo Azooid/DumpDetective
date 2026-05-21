@@ -46,6 +46,9 @@ public sealed class MemoryLeakReport
         RenderCountSuspects(sink, data.CountSuspects, data.MinCount, includeSystem);
         RenderSizeSuspects(sink, data.SizeSuspects);
 
+        // ── Top Retainers (BFS retained size, if available) ───────────────────
+        RenderTopRetainers(sink, data);
+
         // ── Step 3 — Accumulation Pattern Checks ──────────────────────────────
         sink.Section("Step 3  —  Accumulation Pattern Checks");
         sink.Explain(
@@ -107,6 +110,52 @@ public sealed class MemoryLeakReport
             ("Finalizer queue backlog",           "finalizer-queue <dump>"),
             ("Compare two dumps over time",       "trend-analysis <dump1> <dump2> --full"),
         ]);
+    }
+
+    private static void RenderTopRetainers(IRenderSink sink, MemoryLeakData data)
+    {
+        // Combine count suspects and size suspects, filter to those with BFS retained size computed.
+        var withRetained = data.CountSuspects
+            .Concat(data.SizeSuspects)
+            .Where(t => t.RetainedSize > 0)
+            .DistinctBy(t => t.Name)
+            .OrderByDescending(t => t.RetainedSize)
+            .Take(20)
+            .ToList();
+
+        if (withRetained.Count == 0) return;
+
+        sink.Section("Top Retainers  —  BFS Retained Size");
+        sink.Explain(
+            what: "The same suspect types ranked by BFS-computed retained size: the total memory that would be freed " +
+                  "if ALL instances of this type were collected, including every object they transitively reference.",
+            why:  "Instance count or own size can be misleading — a single object with a small footprint " +
+                  "can retain hundreds of MB via its reference graph. BFS retained size reveals the true cost.",
+            bullets:
+            [
+                "Retained >> Own → the object holds references to large external graphs (arrays, collections, cached data)",
+                "Retained ≈ Own → the object is self-contained; its own data IS the leak",
+                "High retained count with few instances → each instance is expensive; focus on preventing just a few allocations",
+            ],
+            action: "Start with the highest retained size entry. Trace the GC root chain (Step 4) to find the anchor preventing collection.");
+
+        sink.Table(
+            ["Type", "Count", "Own Size", "Retained Size", "Ratio", "in Gen2"],
+            withRetained.Select(t =>
+            {
+                double ratio = t.Size > 0 ? (double)t.RetainedSize / t.Size : 0;
+                return new[]
+                {
+                    t.Name.Length > 65 ? t.Name[..65] + "\u2026" : t.Name,
+                    t.Count.ToString("N0"),
+                    DumpHelpers.FormatSize(t.Size),
+                    DumpHelpers.FormatSize(t.RetainedSize),
+                    $"{ratio:F1}\u00d7",
+                    t.Gen2Count > 0 ? $"{t.Gen2Count:N0}  ({DumpHelpers.FormatSize(t.Gen2Size)})" : "\u2014",
+                };
+            }).ToList(),
+            "Retained size = BFS-computed: total bytes freed if all instances were collected (sampled, then scaled). " +
+            "Ratio = retained / own size.");
     }
 
     private static void RenderHeapSnapshot(IRenderSink sink, MemoryLeakData data, int top)
@@ -490,13 +539,19 @@ public sealed class MemoryLeakReport
                 $"({rc.Count:N0} instances  /  {DumpHelpers.FormatSize(rc.TotalSize)})",
                 open: open);
 
-            int shown = Math.Min(rc.SampleChains.Count, 3);
-            sink.Text($"  Showing root chain for {shown} of {rc.Count:N0} instance(s):");
-            sink.BlankLine();
+            // Group identical chains (dedup by step sequence)
+            var grouped = rc.SampleChains
+                .GroupBy(sc => string.Join("|", sc.Chain.Select(s => s.Line)))
+                .ToList();
 
-            foreach (var sc in rc.SampleChains.Take(3))
+            int uniqueShown = 0;
+            foreach (var grp in grouped.Take(3))
             {
-                sink.Text($"  \u250c\u2500 Instance  0x{sc.Addr:X16}  ({DumpHelpers.FormatSize(sc.OwnSize)})");
+                var sc = grp.First();
+                int multiplicity = grp.Count();
+                string prefix = multiplicity > 1 ? $"  [\u00d7{multiplicity} instances — same chain]\n" : string.Empty;
+
+                sink.Text($"{prefix}  \u250c\u2500 Instance  0x{sc.Addr:X16}  ({DumpHelpers.FormatSize(sc.OwnSize)})");
 
                 if (sc.Chain.Count == 0)
                     sink.Text("  \u2514\u25ba (object is itself a direct GC root)");
@@ -505,7 +560,11 @@ public sealed class MemoryLeakReport
                         sink.Text(step.IsRoot ? $"  \u2514\u25ba ROOT  {step.Line}" : $"  \u2502   \u2192 {step.Line}");
 
                 sink.BlankLine();
+                uniqueShown++;
             }
+
+            if (grouped.Count > 3)
+                sink.Text($"  ... and {grouped.Count - 3} more unique chain shape(s) not shown.");
 
             sink.EndDetails();
         }

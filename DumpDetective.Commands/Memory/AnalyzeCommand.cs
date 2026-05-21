@@ -108,8 +108,12 @@ public sealed class AnalyzeCommand : ICommand
 
             var collSw = Stopwatch.StartNew();
             var (collWs, collMgd) = ToolMemoryDiagnostic.SampleForStep();
+            var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
+                ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
+                : _builtInCommands;
+            var heapContributors = full ? CollectHeapContributors(effectiveCmds) : null;
             var snap = full
-                ? DumpCollector.CollectFull(dumpCtx, log.OnProgress)
+                ? DumpCollector.CollectFull(dumpCtx, heapContributors ?? [], log.OnProgress)
                 : DumpCollector.CollectLightweight(dumpCtx, log.OnProgress);
             ToolMemoryDiagnostic.RecordPipelineStep(full ? "Heap walk + scoring (full)" : "Heap walk + scoring", collWs, collMgd);
 
@@ -173,16 +177,13 @@ public sealed class AnalyzeCommand : ICommand
                 dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsReady));
 
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
-                var effectiveCmds = (withPlugins && _pluginCommands.Count > 0)
-                    ? (IReadOnlyList<ICommand>)[.._builtInCommands, .._pluginCommands]
-                    : _builtInCommands;
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log, _pluginCmdNames);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
 
                 // Release the BFS cache after all sub-reports have consumed it so the
                 // large CSR arrays (IndexToAddr, Sizes, Offsets, Children) can be collected.
-                dumpCtx.ReplaceAnalysis(new BfsCacheBox(null));
+                dumpCtx.TryReplaceAnalysis(new BfsCacheBox(null));
             }
 
             if (sink.IsFile)
@@ -214,4 +215,7 @@ public sealed class AnalyzeCommand : ICommand
         var snap = DumpCollector.CollectFull(ctx);
         AnalyzeReport.RenderReport(snap, sink, ctx: ctx);
     }
+
+    private static IReadOnlyList<ICommandHeapContributor> CollectHeapContributors(IReadOnlyList<ICommand> commands)
+        => [.. commands.OfType<ICommandHeapContributor>()];
 }

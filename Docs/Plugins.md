@@ -29,6 +29,88 @@ Each plugin runs in its own `AssemblyLoadContext`. Private dependencies never co
 
 ---
 
+## Plugin cache integration
+
+Plugins can use the same `DumpContext` analysis-cache model as built-in commands.
+
+Custom plugin caches require only `DumpDetective.Core`. Reusing host-owned memory cache types such as `BfsCacheBox` requires an additional reference to the assembly that defines that cache type.
+
+### Reuse an existing cache
+
+If a built-in command or the host has already populated a cache, read it from `DumpContext`:
+
+```csharp
+var threadNames = ctx.GetAnalysis<ThreadNameMap>();
+var bfsBox   = ctx.GetOrCreateAnalysis<BfsCacheBox>(
+    () => new BfsCacheBox(BfsIndexCache.TryLoad(ctx.DumpPath, null)));
+var bfs      = bfsBox.Cache;
+```
+
+- `GetAnalysis<T>()` returns a previously stored value or `null`.
+- `GetOrCreateAnalysis<T>()` computes once and shares the result across parallel sub-reports.
+- Use the same `T` consistently when reading and writing the cache entry.
+
+### Create a plugin-owned cache
+
+For plugin-specific state, create your own POCO cache type and store it in `DumpContext`:
+
+```csharp
+public sealed record MyPluginCache(IReadOnlyList<MyRow> Rows);
+
+var cache = ctx.GetOrCreateAnalysis(() => BuildMyPluginCache(ctx));
+```
+
+This is the standalone pattern: your command can build the cache on demand when it runs by itself.
+
+### Participate in the shared heap walk
+
+To avoid a second heap walk during `analyze --full --with-plugins`, implement `ICommandHeapContributor` on your command:
+
+```csharp
+public sealed class MyPluginCommand : ICommand, ICommandHeapContributor
+{
+    private readonly MyPluginConsumer _consumer = new();
+
+    public IReadOnlyList<IHeapObjectConsumer> CreateHeapConsumers()
+        => [_consumer];
+
+    public void PublishResults(DumpContext ctx)
+        => ctx.SetAnalysis(new MyPluginCache(_consumer.Rows));
+}
+```
+
+How this works:
+
+- Standalone command run: your command still uses `ctx.GetOrCreateAnalysis<T>()` and can build the cache itself.
+- `analyze --full --with-plugins`: the host calls `CreateHeapConsumers()`, adds them to the shared `HeapWalker.Walk(...)`, then calls `PublishResults(ctx)` before sub-reports start.
+- Your later `BuildReport` call reads the already-populated cache from `DumpContext` instead of walking the heap again.
+
+### Keep a cache alive until last dependent command finishes
+
+If your plugin depends on a cache that must not be released before all commands that use it have completed, implement `ICommandCachePin`:
+
+```csharp
+public sealed class MyPluginCommand : ICommand, ICommandCachePin
+{
+    public IReadOnlyList<Type> PinnedCacheTypes =>
+    [
+        typeof(BfsCacheBox),
+        typeof(MyPluginCache),
+    ];
+}
+```
+
+The host pins those cache types before parallel sub-reports run. Unpinning is dependency-aware: each cache type is released as soon as the last command that declared that type in `PinnedCacheTypes` completes. This is the correct way to say "I will use this cache later in the batch; do not release it yet." Use it for caches that are preloaded on the main thread and explicitly released after sub-reports, such as `BfsCacheBox`.
+
+### Recommended plugin pattern
+
+1. Build your cache with `ctx.GetOrCreateAnalysis<T>()` so standalone runs work.
+2. If the cache comes from a heap walk, also implement `ICommandHeapContributor` so full-analysis can pre-populate it during the shared walk.
+3. If the cache must survive an orchestrated batch cleanup step, implement `ICommandCachePin` and list the cache entry types you depend on.
+4. Do not manually clear host caches from plugin code. Let the orchestrator manage cache release.
+
+---
+
 ## Plugin participation modes
 
 | Mode | Interface | Triggered by | Minimum dependency |
@@ -38,10 +120,63 @@ Each plugin runs in its own `AssemblyLoadContext`. Private dependencies never co
 | Standalone trace command | `ICommand` with `Kind = CommandKind.Trace` | `DumpDetective my-trace-cmd perf.etl` | `DumpDetective.Core` |
 | Trace sub-analyzer (simple) | `ICommand` + `ITracePlugin` | `trace-analyze --with-plugins` | `DumpDetective.Core` only |
 | Trace sub-analyzer (advanced) | `ICommand` + `ITraceSubAnalyzer` | `trace-analyze --with-plugins` | `DumpDetective.Commands` |
+| Trace+dmp correlation rule | `ICommand` + `ITraceDumpCorrelationRule` | `trace-dump-analyze --with-plugins` | `DumpDetective.Core` only |
 
 `ITracePlugin` (in `DumpDetective.Core`) is the recommended interface for most trace plugins — it requires only Core, making the plugin suitable for NuGet distribution without any compile-time dependency on host command assemblies.
 
 `ITraceSubAnalyzer` (in `DumpDetective.Commands.Trace`) is the advanced interface used by the built-in trace commands. It supports the consumer-based single-pass dispatch pipeline (`SupportsConsumer`) and correlation phases — useful if you want to participate in the same event-dispatch loop as built-in analyzers to avoid re-scanning the trace.
+
+---
+
+## `ITraceDumpCorrelationRule` reference
+
+Use this interface to add custom cross-source findings to `trace-dump-analyze`.
+
+```csharp
+public interface ITraceDumpCorrelationRule
+{
+    string Key { get; }
+    CorrelationFinding? Evaluate(TraceDumpCorrelationContext context);
+}
+```
+
+Behavior:
+- Evaluated only when `trace-dump-analyze --with-plugins` is used.
+- Built-in rules run first, then plugin rules.
+- Returning `null` means "rule did not match".
+- Exceptions in plugin rules are isolated so one rule cannot break the host correlator.
+
+Minimal example:
+
+```csharp
+public sealed class MyRuleCommand : ICommand, ITraceDumpCorrelationRule
+{
+    public string Name => "my-rule-host";
+    public string Description => "Hosts custom correlation rules.";
+    public bool IncludeInFullAnalyze => false;
+    public string Category => "My Plugin";
+    public CommandKind Kind => CommandKind.Trace;
+
+    public string Key => "myplugin.slow-sql-vs-async";
+
+    public CorrelationFinding? Evaluate(TraceDumpCorrelationContext ctx)
+    {
+        if (ctx.Sql is null || ctx.Async is null) return null;
+        if (ctx.Sql.SlowQueryCount < 20 || ctx.Snapshot.AsyncBacklogTotal < 100) return null;
+
+        return new CorrelationFinding(
+            FindingSeverity.Warning,
+            "SQL / Async",
+            "Slow SQL aligns with async backlog growth",
+            $"Observed {ctx.Sql.SlowQueryCount:N0} slow SQL queries with {ctx.Snapshot.AsyncBacklogTotal:N0} awaiting async state machines.",
+            "Inspect slow query plans and reduce synchronous waits in request path.",
+            76,
+            ["sql-trace", "dump", "plugin"]);
+    }
+
+    public int Run(string[] args) => 0;
+}
+```
 
 ---
 

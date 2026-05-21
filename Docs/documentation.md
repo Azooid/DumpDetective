@@ -25,6 +25,7 @@ DumpDetective render report.bin --output report.md
 |---|---|
 | [Memory Analysis Guide](Memory-Guide.md) | Workflows, triage paths, and all memory command options |
 | [Trace Analysis Guide](Trace-Guide.md) | Workflows and all trace command options |
+| [Cache Inventory](cache.md) | Built-in system caches, storage locations, lifecycle, and cleanup |
 | [Plugin System](Plugins.md) | How to write and install external plugin commands |
 | [Memory Commands](#memory-commands) | All 31 dump-analysis commands with links to detailed docs |
 | [Trace Commands](#trace-commands) | All 12 trace commands with links to detailed docs |

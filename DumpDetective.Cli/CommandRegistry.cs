@@ -140,6 +140,26 @@ public static class CommandRegistry
                 new ExceptionAnalysisAnalyzer(),
                 new ExceptionAnalysisReport()),
 
+            new GcRootMapCommand(
+                new GcRootMapAnalyzer(),
+                new GcRootMapReport()),
+
+            new ClosureCaptureCommand(
+                new ClosureCaptureAnalyzer(),
+                new ClosureCaptureReport()),
+
+            new CachePatternsCommand(
+                new CachePatternsAnalyzer(),
+                new CachePatternsReport()),
+
+            new DataTableAmpCommand(
+                new DataTableAmpAnalyzer(),
+                new DataTableAmpReport()),
+
+            new MemoryPressureCommand(
+                new MemoryPressureAnalyzer(),
+                new MemoryPressureReport()),
+
             // ── not included in full-analyze ──────────────────────────────────
             new GcRootsCommand(
                 new GcRootsAnalyzer(),
@@ -229,13 +249,16 @@ public static class CommandRegistry
         IReadOnlyList<ITracePlugin> pluginTracePl = pluginTracePlugins.Count > 0
             ? pluginTracePlugins
             : [];
+        IReadOnlyList<ITraceDumpCorrelationRule> pluginCorrelationRules = pluginCommands.Count > 0
+            ? pluginCommands.OfType<ITraceDumpCorrelationRule>().ToArray()
+            : [];
 
         _commands =
         [
             new AnalyzeCommand(builtInFullAnalyze, pluginFullAnalyze, _pluginCommandNames),
             ..allDispatchable,
             new TrendAnalysisCommand(builtInFullAnalyze, pluginFullAnalyze, _pluginCommandNames),
-            ..TraceCommandRegistry.BuildOrchestratorCommands(pluginTraceSubs, pluginTracePl, pluginTraceNamesRO),
+            ..TraceCommandRegistry.BuildOrchestratorCommands(pluginTraceSubs, pluginTracePl, pluginCorrelationRules, pluginTraceNamesRO),
             new RenderCommand(),
             new DiffCommand(),
         ];

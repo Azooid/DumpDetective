@@ -23,7 +23,9 @@ public sealed record ThreadAnalysisData(
     /// <summary>Threads waiting on WaitHandle/Task/Semaphore — normal background waiting.</summary>
     int                       IndependentWaitCount,
     int                       WithExceptionCount,
-    int                       NamedCount)
+    int                       NamedCount,
+    /// <summary>Sum of committed stack bytes across all alive threads (StackBase − StackLimit).</summary>
+    long                      TotalStackCommitted = 0)
 {
     /// <summary>Total of Monitor + Independent — kept for backward compat with existing report code.</summary>
     public int BlockedCount => MonitorBlockedCount + IndependentWaitCount;
@@ -39,4 +41,6 @@ public sealed record ThreadInfo(
     string?                 Exception,
     string?                 LockInfo,
     WaitKind                WaitKind,
-    IReadOnlyList<string>   StackFrames);
+    IReadOnlyList<string>   StackFrames,
+    /// <summary>Committed stack memory in bytes (StackBase − StackLimit). 0 when unavailable.</summary>
+    long                    StackCommitted = 0);

@@ -103,6 +103,59 @@ public sealed class ThreadAnalysisReport
             RenderThreadCards(sink, toShow, title);
 
         RenderExceptionDetails(sink, toShow);
+        RenderStackMemory(sink, data);
+    }
+
+    private static void RenderStackMemory(IRenderSink sink, ThreadAnalysisData data)
+    {
+        if (data.TotalStackCommitted <= 0) return;
+
+        sink.Section("Stack Memory");
+        sink.Explain(
+            what: "Thread stack virtual address space committed at the time of capture.",
+            why:  "Each thread has a dedicated stack (default 1 MB on Windows for .NET). " +
+                  "Hundreds of threads each committing 512 KB–1 MB can silently consume several hundred MB of " +
+                  "virtual address space — a significant pressure source distinct from the managed heap.",
+            bullets:
+            [
+                "TotalStackCommitted = StackBase \u2212 StackLimit summed across all alive threads",
+                "Thread count \u00d7 1 MB typical stack = rough upper bound; actual depends on stack depth",
+                "High stack consumption per thread \u2192 deep recursion or very deep call chains",
+            ]);
+
+        sink.KeyValues([
+            ("Total stack committed", DumpHelpers.FormatSize(data.TotalStackCommitted)),
+            ("Alive threads",         data.AliveCount.ToString("N0")),
+            ("Avg per thread",        DumpHelpers.FormatSize(data.AliveCount > 0 ? data.TotalStackCommitted / data.AliveCount : 0)),
+        ]);
+
+        if (data.TotalStackCommitted > 200_000_000)
+            sink.Alert(AlertLevel.Warning,
+                $"Thread stacks commit {DumpHelpers.FormatSize(data.TotalStackCommitted)} — " +
+                "high thread count is consuming significant virtual address space.",
+                advice: "Reduce thread count using async I/O and thread pool patterns instead of per-request dedicated threads.");
+
+        // Per-thread stack size table (only threads with data, top 30 by size)
+        var withStack = data.Threads
+            .Where(t => t.IsAlive && t.StackCommitted > 0)
+            .OrderByDescending(t => t.StackCommitted)
+            .Take(30)
+            .ToList();
+
+        if (withStack.Count == 0) return;
+
+        sink.BeginDetails($"Per-thread stack sizes  —  top {withStack.Count} alive threads", open: false);
+        sink.Table(
+            ["Mgd ID", "OS ID", "Thread Name", "Category", "Stack Committed"],
+            withStack.Select(t => new[]
+            {
+                t.ManagedId.ToString(),
+                $"{t.OSThreadId}",
+                t.Name ?? "",
+                t.Category,
+                DumpHelpers.FormatSize(t.StackCommitted),
+            }).ToList());
+        sink.EndDetails();
     }
 
     private static void RenderThreadTable(IRenderSink sink, IReadOnlyList<ThreadInfo> threads, string title)

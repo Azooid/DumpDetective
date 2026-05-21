@@ -2,6 +2,7 @@ using DumpDetective.Core.Models;
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Utilities;
+using DumpDetective.Core.Interfaces;
 
 namespace DumpDetective.Analysis.Trace;
 
@@ -48,9 +49,29 @@ public static class TraceDumpCorrelator
         DeadlockPatternData?      deadlock    = null,
         RetryStormData?           retryStorm  = null,
         HandleLeakTraceData?      handleLeak  = null,
-        IReadOnlyDictionary<string, long>? retainedByType = null)
+        IReadOnlyDictionary<string, long>? retainedByType = null,
+        IReadOnlyList<ITraceDumpCorrelationRule>? pluginRules = null)
     {
         var findings = new List<CorrelationFinding>(16);
+        var context = new TraceDumpCorrelationContext(
+            Snapshot: snap,
+            Alloc: alloc,
+            Gc: gc,
+            Contention: contention,
+            Exceptions: exceptions,
+            Starvation: starvation,
+            Http: http,
+            Async: async_,
+            Sql: sql,
+            Cpu: cpu,
+            Finalizer: finalizer,
+            AllocBurst: allocBurst,
+            Loh: loh,
+            ConnectionPool: connPool,
+            Deadlock: deadlock,
+            RetryStorm: retryStorm,
+            HandleLeak: handleLeak,
+            RetainedByType: retainedByType);
 
         CheckAllocConvergesWithHeapDominance(findings, alloc, snap, retainedByType);
         CheckAsyncBacklogConfirmsStarvation(findings, starvation, async_, snap);
@@ -69,6 +90,23 @@ public static class TraceDumpCorrelator
         CheckConnPoolTraceVsDumpConnections(findings, connPool, snap);
         CheckDeadlockTraceVsBlockedThreads(findings, deadlock, snap);
         CheckHandleLeakTraceVsPinnedHandles(findings, handleLeak, snap);
+
+        if (pluginRules is { Count: > 0 })
+        {
+            foreach (var rule in pluginRules)
+            {
+                try
+                {
+                    var finding = rule.Evaluate(context);
+                    if (finding is not null)
+                        findings.Add(finding);
+                }
+                catch
+                {
+                    // Plugin rule failures should not break the host correlator.
+                }
+            }
+        }
 
         findings.Sort(static (a, b) => b.Score.CompareTo(a.Score));
         return findings;
