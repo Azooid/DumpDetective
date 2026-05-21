@@ -85,9 +85,9 @@ How this works:
 - `analyze --full --with-plugins`: the host calls `CreateHeapConsumers()`, adds them to the shared `HeapWalker.Walk(...)`, then calls `PublishResults(ctx)` before sub-reports start.
 - Your later `BuildReport` call reads the already-populated cache from `DumpContext` instead of walking the heap again.
 
-### Keep a cache alive during a batch
+### Keep a cache alive until last dependent command finishes
 
-If your plugin depends on a cache that must not be released until the batch finishes, implement `ICommandCachePin`:
+If your plugin depends on a cache that must not be released before all commands that use it have completed, implement `ICommandCachePin`:
 
 ```csharp
 public sealed class MyPluginCommand : ICommand, ICommandCachePin
@@ -100,7 +100,7 @@ public sealed class MyPluginCommand : ICommand, ICommandCachePin
 }
 ```
 
-The host pins those cache types before parallel sub-reports run and unpins them afterward. This is the correct way to say "I will use this cache later in the batch; do not release it yet." Use it for caches that are preloaded on the main thread and explicitly released after sub-reports, such as `BfsCacheBox`.
+The host pins those cache types before parallel sub-reports run. Unpinning is dependency-aware: each cache type is released as soon as the last command that declared that type in `PinnedCacheTypes` completes. This is the correct way to say "I will use this cache later in the batch; do not release it yet." Use it for caches that are preloaded on the main thread and explicitly released after sub-reports, such as `BfsCacheBox`.
 
 ### Recommended plugin pattern
 

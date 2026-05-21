@@ -55,6 +55,7 @@ If you are new, use this path:
 - [Documentation Index](Docs/documentation.md) — all commands with links to detailed docs, triage playbooks, output format reference
 - [Memory Analysis Guide](Docs/Memory-Guide.md) — all dump commands, options, and workflows
 - [Trace Analysis Guide](Docs/Trace-Guide.md) — all trace commands, options, and collection recipes
+- [Cache Inventory](Docs/cache.md) — built-in system caches (session, `.ddcache`, BFS, ETLX), lifecycle, and cleanup
 - [Plugin System](Docs/Plugins.md) — how to write and install external plugin commands
 - [Testing](Docs/Testing.md)
 
@@ -86,13 +87,13 @@ Hardware requirements scale with the dump you are analysing. The numbers below a
 
 | Component | Recommended | Why |
 |---|---|---|
-| RAM | 16 GB free minimum, 24 GB preferred for `analyze --full` on very large dumps | Heap walk, BFS cache load, and the heaviest sub-reports can temporarily push peak working set into the 15-17 GB range on 100M+ object dumps; newer BFS caching intentionally trades more RAM for less repeated retained-size work |
+| RAM | 16 GB free minimum, 20 GB preferred for `analyze --full --with-plugins` on ~25 GB dumps | Latest measured runs on a ~25 GB dump peaked at 11.00 GB WS (without plugins) and 11.96 GB WS (with plugins). Keeping 16+ GB free avoids paging; extra headroom is recommended for concurrent tools and larger object graphs |
 | Storage | **NVMe SSD** | Random I/O across entire dump file; faster SSD = faster heap walk |
 | CPU | **8 physical cores (16 logical)** | Heap walk uses 8 workers; a second concurrent walk (event-analysis or heap-fragmentation) can spin up another 8 — 16 logical cores prevents contention |
 
-> **Rule of thumb:** free RAM should scale with both dump size and analysis mode. Lightweight or single-command runs are usually much cheaper than `analyze --full`. For very large dumps, keep at least 16 GB free; 24 GB+ is safer if you want all sub-reports, BFS-heavy retention analysis, and fragmentation metrics in one run.
+> **Rule of thumb:** free RAM should scale with both dump size and analysis mode. Lightweight or single-command runs are usually much cheaper than `analyze --full`. For ~25 GB production dumps, plan for at least 16 GB free RAM and prefer 20 GB+ when using `--with-plugins`.
 
-> **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. An NVMe SSD completes a 25 GB / 110 M object dump in ~6–8 minutes. A spinning disk will typically take 20–40 minutes for the same dump and may cause the OS to thrash swap.
+> **SSD vs HDD:** ClrMD memory-maps the dump and accesses it with highly random I/O during the heap walk, BFS, and fragmentation scan. On NVMe, recent 25 GB full runs completed in ~3.4 minutes. A spinning disk can still take dramatically longer and may cause OS paging under memory pressure.
 
 ---
 
@@ -137,6 +138,14 @@ dotnet publish DumpDetective.Cli -r win-x64 -c Release
 ```
 
 The output is a single native binary: `DumpDetective.Cli.exe`.
+
+### Latest Build Verification (May 2026)
+
+| Command | Result | Notes |
+|---|---|---|
+| `dotnet build .\Docs\PluginExample\Example.DumpDetective\Example.DumpDetective.csproj` | Success | Plugin deployed warning is expected from the example plugin deploy target |
+
+This build was used for the benchmark logs in [Performance & Resource Expectations](#performance--resource-expectations).
 
 ### Running Tests
 
@@ -577,7 +586,7 @@ The BFS index is built in 3 passes with 8 parallel workers. Pass 1 enumerates al
 | **Total build** | **211.9 s** | **217.1 s** | **237.2 s** |
 | Load (subsequent runs) | 9.8 s | 10.2 s | 11.5 s |
 
-With caches loaded, all 23 sub-reports in `analyze --full` complete in **6–7 s per dump** — versus 230–300 s without caches for the five BFS-heavy sub-reports. Trace analyzers also cache repeated event-name classification so large `.nettrace` / `.etl` files avoid re-evaluating the same provider/event strings on every event. See [Performance & Resource Expectations](#performance--resource-expectations) for a full before/after benchmark.
+With caches loaded, sub-reports in `analyze --full` complete much faster than cold runs because BFS-heavy analyzers reuse the pre-built index. On the latest ~25 GB benchmark, sub-report wall time was **28.5s** without plugins (29 reports) and **22.7s** with Example plugins (32 reports). Trace analyzers also cache repeated event-name classification so large `.nettrace` / `.etl` files avoid re-evaluating the same provider/event strings on every event. See [Performance & Resource Expectations](#performance--resource-expectations) for the full side-by-side benchmark.
 
 **Cache tradeoff (~100 M object heap):**
 
@@ -980,45 +989,56 @@ DumpDetective processes dumps by walking every managed object on the heap. Run t
 
 ### Measured Full-Analyze Benchmark
 
-The numbers below come from a real `DumpDetective analyze --full` run on a production-style IIS worker dump of **~25 GB** with **110,472,530 managed objects**.
+The numbers below are from two real runs on the same IIS worker dump (about 25 GB, 86,546,865 managed objects), using `analyze --full` with and without Example plugin commands.
 
-**End-to-end timings**
+Commands:
 
-| Stage | Time |
+- Without plugins: `DumpDetective analyze w3wp.exe_260421_175618.dmp --full`
+- With plugins: `DumpDetective analyze w3wp.exe_260421_175618.dmp --full --with-plugins`
+
+Included plugin commands in the plugin run: `duplicate-modules`, `namespace-heap`, `thread-hotspots`.
+
+**End-to-end comparison (same dump)**
+
+| Metric | Without plugins | With Example plugins | Delta |
+|---|---:|---:|---:|
+| Collection total | 156.7s | 168.6s | +11.9s |
+| Heap walk | 132.6s | 144.6s | +12.0s |
+| Finalizer queue scan | 22.2s | 22.7s | +0.5s |
+| BFS index load | 16.3s | 10.5s | -5.8s |
+| Sub-reports wall time (parallel) | 28.5s (29 reports) | 22.7s (32 reports) | -5.8s |
+| Total execution time | 203.1s | 203.4s | +0.3s |
+
+**Peak memory comparison**
+
+| Metric | Without plugins | With Example plugins | Delta |
+|---|---:|---:|---:|
+| Working set peak | 11.00 GB | 11.96 GB | +0.96 GB |
+| Managed heap peak | 9.07 GB | 8.92 GB | -0.15 GB |
+| Private bytes peak | 11.96 GB | 12.86 GB | +0.90 GB |
+
+**Collection throughput comparison**
+
+| Step | Without plugins | With Example plugins |
+|---|---:|---:|
+| Thread scan | 158 objs, 417ms, ~378/s | 158 objs, 424ms, ~372/s |
+| Handle scan | 12,687 objs, 1.1s, ~11,639/s | 12,687 objs, 658ms, ~19,281/s |
+| Heap walk | 86,546,865 objs, 132.6s, ~652,676/s | 86,546,865 objs, 144.6s, ~598,530/s |
+| Finalizer queue | 4,248,457 objs, 22.2s, ~191,449/s | 4,248,457 objs, 22.7s, ~187,520/s |
+
+**Plugin analyzer overhead in the full run**
+
+| Plugin analyzer | Time |
 |---|---:|
-| Dump load | ~1s |
-| Collection total | 112.9s |
-| BFS index load | 12.3s |
-| All 23 sub-reports (parallel) | 281.5s |
-| Total execution time | 409.0s |
+| duplicate-modules | 14ms |
+| namespace-heap | 37ms |
+| thread-hotspots | 5.0s |
 
-**Collection breakdown**
-
-| Step | Objects | Time | Throughput |
-|---|---:|---:|---:|
-| Thread scan | 155 | 419ms | ~369/s |
-| Handle scan | 19,418 | 2.5s | ~7,782/s |
-| Heap walk | 110,472,530 | 77.0s | ~1,434,559/s |
-| Finalizer queue scan | 4,273,410 | 32.9s | ~129,839/s |
-
-**Peak tool memory usage**
-
-| Metric | Start | Peak | Growth |
-|---|---:|---:|---:|
-| Working set | 10.6 MB | 15.53 GB | +15.52 GB |
-| Managed heap | 245.6 KB | 15.65 GB | +15.65 GB |
-| Private bytes | 5.9 MB | 16.68 GB | +16.68 GB |
-
-**What this means in practice**
-
-- The single heap walk processes ~110.5 M objects in ~77 s on an NVMe machine — dump load itself takes only ~1 s.
-- `analyze --full` wall-clock time is dominated by the BFS-heavy sub-reports (`memory-leak`, `high-refs`, `event-analysis`, `heap-fragmentation`, `large-objects`, `finalizer-queue`), not by dump load or initial collection time.
-- BFS cache load (+4.2 GB RAM) is the single largest memory spike. If RAM is tight, use targeted commands rather than `--full`, or run on a machine with at least 16 GB free.
-- For a dump of this scale, **NVMe storage and 16 GB+ free RAM are required**. Plan for 24 GB+ if you run `analyze --full` regularly.
+The plugin-enabled run produced effectively the same total wall-clock time on this dataset (+0.3s overall), with a modest increase in peak working set.
 
 ### Heap walk throughput
 
-The single-pass heap walk (which feeds all analysis consumers simultaneously) typically runs at roughly **1,000,000–2,000,000 objects/second** on production machines, with the lower end more representative for very large heaps.
+The single-pass heap walk (which feeds all analysis consumers simultaneously) typically runs at roughly **500,000–1,500,000 objects/second** on production machines, with the lower end common for very large heaps and plugin-enabled full runs.
 
 See the measured benchmark above for a concrete large-dump example.
 
@@ -1033,31 +1053,18 @@ See the measured benchmark above for a concrete large-dump example.
 
 > Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
 >
-> `analyze --full` includes all 23 sub-reports. `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
+> `analyze --full` runs all built-in sub-reports in parallel (29 in the current build). With `--with-plugins`, plugin sub-reports are appended (32 in the Example plugin benchmark). `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
 
 ### What drives `--full` time
 
-`analyze --full` runs all 23 sub-reports in parallel; wall-clock time equals the **slowest** sub-report, not their sum. The five slow ones each do additional heap traversals:
+`analyze --full` runs sub-reports in parallel; wall-clock time equals the **slowest** sub-report, not their sum.
 
-| Sub-report | ~10 M objects | ~100 M objects |
-|---|---|---|
-| `static-refs` | ~6 s | ~5.8 min |
-| `heap-fragmentation` | ~5 s | ~4.0 min |
-| `event-analysis` | ~6 s | ~4.0 min |
-| `memory-leak` / `high-refs` (shared BFS) | ~6 s | ~4.4 min |
-| `finalizer-queue` | ~0.5 s | ~2.5 min |
-| All others | < 0.3 s | usually < 30 s (`large-objects` can exceed that on very large heaps) |
+Latest measured longest sub-reports on the ~25 GB / 86.5 M object dataset:
 
-Recent measured sub-report timings on a 110 M object production dump (without pre-built BFS cache):
-
-| Sub-report | Time | Notes |
-|---|---:|---|
-| `static-refs` | 349.9 s | Exact full BFS retained-size traversal |
-| `high-refs` | 262.0 s | Builds shared referrer map |
-| `memory-leak` | 262.5 s | GC roots map + shared referrer map + root tracing |
-| `event-analysis` | 240.1 s | Static root map + detailed event scan |
-| `heap-fragmentation` | 239.4 s | Fragmentation measurement dominates |
-| `finalizer-queue` | 149.6 s | 134.9 s queue read + 14.7 s resurrection scan |
+| Run | Top 1 | Top 2 | Top 3 | Top 4 | Top 5 |
+|---|---|---|---|---|---|
+| Without plugins | `large-objects` 28.5s | `static-refs` 24.6s | `closure-capture` 16.3s | `gc-root-map` 15.8s | `event-analysis` 3.7s |
+| With plugins | `large-objects` 22.7s | `static-refs` 21.2s | `closure-capture` 12.6s | `gc-root-map` 12.3s | `thread-hotspots` 5.0s |
 
 ### Memory usage
 
@@ -1070,7 +1077,8 @@ Verified against real dumps:
 | Dump size | Object count | Peak working set | Ratio |
 |---|---|---|---|
 | 3.65 GB | 10.7 M | 2.09 GB | 0.57× |
-| ~25 GB | 110.5 M | 15.53 GB | 0.62× |
+| ~25 GB (no plugins) | 86.5 M | 11.00 GB | 0.44× |
+| ~25 GB (`--with-plugins`) | 86.5 M | 11.96 GB | 0.48× |
 
 The ratio stays well below 1× because:
 - ClrMD memory-maps the dump rather than loading it — only touched pages are resident.
@@ -1155,7 +1163,7 @@ Each dump's heap walk and BFS load is the main memory spike. Sub-reports add rel
 
 ### BFS retained-size cache (`.bfs.idx`)
 
-Run `load` once per dump to pre-build all analysis caches. With caches loaded, all 23 sub-reports in `analyze --full` complete in **6–7 s per dump** regardless of heap size — versus 230–300 s without caches for the five BFS-heavy sub-reports. The [`load` command section](#load) covers options, measured build timings across three dump sizes, and the RAM tradeoff. The `trend-analysis --full` benchmark above has a measured end-to-end comparison across three ~25 GB production dumps: **1827.9 s without caches → 365.3 s with, ~5× speedup**. Use `close` to delete all caches when a dump is no longer needed.
+Run `load` once per dump to pre-build all analysis caches. Cache reuse removes repeated retained-size graph construction and keeps full-report runs consistent at large object counts. The [`load` command section](#load) covers options, measured build timings across three dump sizes, and the RAM tradeoff. The `trend-analysis --full` benchmark above has a measured end-to-end comparison across three ~25 GB production dumps: **1827.9 s without caches → 365.3 s with, ~5× speedup**. Use `close` to delete all caches when a dump is no longer needed.
 
 ---
 

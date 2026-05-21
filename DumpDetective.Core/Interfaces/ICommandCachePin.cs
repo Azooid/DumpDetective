@@ -2,9 +2,9 @@ namespace DumpDetective.Core.Interfaces;
 
 /// <summary>
 /// Optional extension for commands that require one or more analysis cache entries
-/// to remain available for the duration of a batch run.
+/// to remain available while dependent sub-reports are still running.
 /// The orchestrator pins these types before parallel sub-reports start and unpins
-/// them after the batch completes.
+/// each type as soon as the last command that declared that type has completed.
 /// </summary>
 public interface ICommandCachePin
 {

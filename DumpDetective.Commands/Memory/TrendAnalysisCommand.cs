@@ -216,15 +216,12 @@ public sealed class TrendAnalysisCommand : ICommand
 
                         var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                         ToolMemoryDiagnostic.BeginAnalyzerGroup(label);
-                        var pinnedTypes = CollectPinnedAnalysisTypes(effectiveCmds);
-                        PinAnalysisTypes(dumpCtx, pinnedTypes);
                         try
                         {
                             AnalyzeReport.RenderEmbeddedReports(dumpCtx, cap, effectiveCmds, log, _pluginCmdNames);
                         }
                         finally
                         {
-                            UnpinAnalysisTypes(dumpCtx, pinnedTypes);
                             ToolMemoryDiagnostic.EndAnalyzerGroup();
                         }
                         ToolMemoryDiagnostic.RecordPipelineStep($"Sub-reports ({label})", subWs, subMgd);
@@ -344,21 +341,6 @@ public sealed class TrendAnalysisCommand : ICommand
 
     private static IReadOnlyList<ICommandHeapContributor> CollectHeapContributors(IReadOnlyList<ICommand> commands)
         => [.. commands.OfType<ICommandHeapContributor>()];
-
-    private static IReadOnlyList<Type> CollectPinnedAnalysisTypes(IReadOnlyList<ICommand> commands)
-        => [.. commands.OfType<ICommandCachePin>().SelectMany(command => command.PinnedCacheTypes).Distinct()];
-
-    private static void PinAnalysisTypes(DumpContext ctx, IReadOnlyList<Type> analysisTypes)
-    {
-        foreach (var analysisType in analysisTypes)
-            ctx.PinAnalysis(analysisType);
-    }
-
-    private static void UnpinAnalysisTypes(DumpContext ctx, IReadOnlyList<Type> analysisTypes)
-    {
-        foreach (var analysisType in analysisTypes)
-            ctx.UnpinAnalysis(analysisType);
-    }
 
 
     // ── CLI-only helpers ──────────────────────────────────────────────────────

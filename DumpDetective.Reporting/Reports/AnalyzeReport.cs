@@ -6,6 +6,7 @@ using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Collections.Generic;
 
 namespace DumpDetective.Reporting.Reports;
 
@@ -15,6 +16,12 @@ namespace DumpDetective.Reporting.Reports;
 /// </summary>
 public static class AnalyzeReport
 {
+    private sealed class CachePinTracker
+    {
+        public required Type[][] CommandPins { get; init; }
+        public required ConcurrentDictionary<Type, int> RemainingCounts { get; init; }
+    }
+
     private static readonly (string Heading, string[] Names)[] s_fullAnalyzeGroups =
     [
         ("Heap Overview",
@@ -57,122 +64,135 @@ public static class AnalyzeReport
     public static void RenderEmbeddedReports(DumpContext ctx, IRenderSink sink, IReadOnlyList<ICommand> commands, ProgressLogger? log = null, IReadOnlyDictionary<string, string>? pluginByCommand = null)
     {
         int total = commands.Count;
+        var pinTracker = BuildCachePinTracker(commands);
 
         var captures = new CaptureSink[total];
         for (int i = 0; i < total; i++) captures[i] = new CaptureSink();
 
         var overallSw = Stopwatch.StartNew();
 
-        if (log is not null)
-        {
-            log.BeginParallelBatch("Building sub-reports", total, indent: true);
+        PinTrackedCaches(ctx, pinTracker);
 
-            // NoBuffering: each thread picks the next available index one-at-a-time
-            // in enumeration order, so the LPT ordering in CommandRegistry is honoured.
-            Parallel.ForEach(
-                Partitioner.Create(Enumerable.Range(0, total), EnumerablePartitionerOptions.NoBuffering),
-                new ParallelOptions { MaxDegreeOfParallelism = 8 },
-                i =>
-                {
-                    CommandBase.SuppressVerbose = true;
-                    CommandBase.BeginTrace();
-                    var csw = Stopwatch.StartNew();
-                    try
+        try
+        {
+
+            if (log is not null)
+            {
+                log.BeginParallelBatch("Building sub-reports", total, indent: true);
+
+                // NoBuffering: each thread picks the next available index one-at-a-time
+                // in enumeration order, so the LPT ordering in CommandRegistry is honoured.
+                Parallel.ForEach(
+                    Partitioner.Create(Enumerable.Range(0, total), EnumerablePartitionerOptions.NoBuffering),
+                    new ParallelOptions { MaxDegreeOfParallelism = 8 },
+                    i =>
                     {
-                        if (pluginByCommand is not null)
-                            pluginByCommand.TryGetValue(commands[i].Name, out CommandBase.CurrentPluginName);
-                        log.StartParallelItem(commands[i].Name);
-                        var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
-                        var doc = commands[i].BuildReport(ctx);
-                        ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
-                        var details = CommandBase.EndTrace();
-                        ReportDocReplay.Replay(doc, captures[i]);
-                        string? pluginName = pluginByCommand is not null && pluginByCommand.TryGetValue(commands[i].Name, out var pn) ? pn : null;
-                        foreach (var ch in captures[i].GetDoc().Chapters)
+                        CommandBase.SuppressVerbose = true;
+                        CommandBase.BeginTrace();
+                        var csw = Stopwatch.StartNew();
+                        try
                         {
-                            ch.CommandName ??= commands[i].Name;
-                            ch.PluginName  ??= pluginName;
+                            if (pluginByCommand is not null)
+                                pluginByCommand.TryGetValue(commands[i].Name, out CommandBase.CurrentPluginName);
+                            log.StartParallelItem(commands[i].Name);
+                            var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
+                            var doc = commands[i].BuildReport(ctx);
+                            ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
+                            var details = CommandBase.EndTrace();
+                            ReportDocReplay.Replay(doc, captures[i]);
+                            string? pluginName = pluginByCommand is not null && pluginByCommand.TryGetValue(commands[i].Name, out var pn) ? pn : null;
+                            foreach (var ch in captures[i].GetDoc().Chapters)
+                            {
+                                ch.CommandName ??= commands[i].Name;
+                                ch.PluginName  ??= pluginName;
+                            }
+                            csw.Stop();
+                            log.CompleteParallelItem(commands[i].Name, csw.ElapsedMilliseconds, details);
                         }
-                        csw.Stop();
-                        log.CompleteParallelItem(commands[i].Name, csw.ElapsedMilliseconds, details);
-                    }
-                    catch (Exception ex)
-                    {
-                        CommandBase.EndTrace();
-                        csw.Stop();
-                        log.Warn($"{commands[i].Name} failed: {ex.Message}", indent: true);
-                        captures[i].Alert(AlertLevel.Warning,
-                            $"⚠ {commands[i].Name} could not complete",
-                            ex.Message,
-                            "This sub-report was skipped. All other reports are unaffected.");
-                    }
-                    finally
-                    {
-                        CommandBase.CurrentPluginName = null;
-                        CommandBase.SuppressVerbose = false;
-                    }
-                });
-
-            log.EndParallelBatch(indent: true);
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[dim]  Building sub-reports...[/]");
-
-            AnsiConsole.Progress()
-                .AutoRefresh(true)
-                .AutoClear(false)
-                .HideCompleted(false)
-                .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new ElapsedTimeColumn())
-                .Start(pCtx =>
-                {
-                    var task = pCtx.AddTask($"[bold]Sub-reports[/]  [dim]0/{total}[/]", maxValue: total);
-
-                    // NoBuffering: each thread picks the next available index one-at-a-time
-                    // in enumeration order, so the LPT ordering in CommandRegistry is honoured.
-                    Parallel.ForEach(
-                        Partitioner.Create(Enumerable.Range(0, total), EnumerablePartitionerOptions.NoBuffering),
-                        new ParallelOptions { MaxDegreeOfParallelism = 8 },
-                        i =>
+                        catch (Exception ex)
                         {
-                            CommandBase.SuppressVerbose = true;
-                            try
-                            {
-                                if (pluginByCommand is not null)
-                                    pluginByCommand.TryGetValue(commands[i].Name, out CommandBase.CurrentPluginName);
-                                var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
-                                var doc = commands[i].BuildReport(ctx);
-                                ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
-                                ReportDocReplay.Replay(doc, captures[i]);
-                                string? pluginName2 = pluginByCommand is not null && pluginByCommand.TryGetValue(commands[i].Name, out var pn2) ? pn2 : null;
-                                foreach (var ch in captures[i].GetDoc().Chapters)
-                                {
-                                    ch.CommandName ??= commands[i].Name;
-                                    ch.PluginName  ??= pluginName2;
-                                }
-                                task.Increment(1);
-                                int n = (int)task.Value;
-                                task.Description = n >= total
-                                    ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
-                                    : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(commands[i].Description)}[/]";
-                            }
-                            catch (Exception ex)
-                            {
-                                captures[i].Alert(AlertLevel.Warning,
-                                    $"⚠ {commands[i].Name} could not complete",
-                                    ex.Message,
-                                    "This sub-report was skipped. All other reports are unaffected.");
-                                task.Increment(1);
-                            }
-                            finally
-                            {
-                                CommandBase.CurrentPluginName = null;
-                                CommandBase.SuppressVerbose = false;
-                            }
-                        });
-                });
+                            CommandBase.EndTrace();
+                            csw.Stop();
+                            log.Warn($"{commands[i].Name} failed: {ex.Message}", indent: true);
+                            captures[i].Alert(AlertLevel.Warning,
+                                $"⚠ {commands[i].Name} could not complete",
+                                ex.Message,
+                                "This sub-report was skipped. All other reports are unaffected.");
+                        }
+                        finally
+                        {
+                            CompleteTrackedPinsForCommand(ctx, pinTracker, i);
+                            CommandBase.CurrentPluginName = null;
+                            CommandBase.SuppressVerbose = false;
+                        }
+                    });
 
-            AnsiConsole.MarkupLine($"[dim]  ✓ {total}/{total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+                log.EndParallelBatch(indent: true);
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[dim]  Building sub-reports...[/]");
+
+                AnsiConsole.Progress()
+                    .AutoRefresh(true)
+                    .AutoClear(false)
+                    .HideCompleted(false)
+                    .Columns(new TaskDescriptionColumn(), new ProgressBarColumn(), new PercentageColumn(), new ElapsedTimeColumn())
+                    .Start(pCtx =>
+                    {
+                        var task = pCtx.AddTask($"[bold]Sub-reports[/]  [dim]0/{total}[/]", maxValue: total);
+
+                        // NoBuffering: each thread picks the next available index one-at-a-time
+                        // in enumeration order, so the LPT ordering in CommandRegistry is honoured.
+                        Parallel.ForEach(
+                            Partitioner.Create(Enumerable.Range(0, total), EnumerablePartitionerOptions.NoBuffering),
+                            new ParallelOptions { MaxDegreeOfParallelism = 8 },
+                            i =>
+                            {
+                                CommandBase.SuppressVerbose = true;
+                                try
+                                {
+                                    if (pluginByCommand is not null)
+                                        pluginByCommand.TryGetValue(commands[i].Name, out CommandBase.CurrentPluginName);
+                                    var (wsBefore, mgdBefore) = ToolMemoryDiagnostic.SampleForStep();
+                                    var doc = commands[i].BuildReport(ctx);
+                                    ToolMemoryDiagnostic.RecordAnalyzerStep(commands[i].Name, wsBefore, mgdBefore);
+                                    ReportDocReplay.Replay(doc, captures[i]);
+                                    string? pluginName2 = pluginByCommand is not null && pluginByCommand.TryGetValue(commands[i].Name, out var pn2) ? pn2 : null;
+                                    foreach (var ch in captures[i].GetDoc().Chapters)
+                                    {
+                                        ch.CommandName ??= commands[i].Name;
+                                        ch.PluginName  ??= pluginName2;
+                                    }
+                                    task.Increment(1);
+                                    int n = (int)task.Value;
+                                    task.Description = n >= total
+                                        ? $"[bold]Sub-reports[/]  [dim]{total}/{total}  Done[/]"
+                                        : $"[bold]Sub-reports[/]  [dim]{n}/{total}  {Markup.Escape(commands[i].Description)}[/]";
+                                }
+                                catch (Exception ex)
+                                {
+                                    captures[i].Alert(AlertLevel.Warning,
+                                        $"⚠ {commands[i].Name} could not complete",
+                                        ex.Message,
+                                        "This sub-report was skipped. All other reports are unaffected.");
+                                    task.Increment(1);
+                                }
+                                finally
+                                {
+                                    CompleteTrackedPinsForCommand(ctx, pinTracker, i);
+                                    CommandBase.CurrentPluginName = null;
+                                    CommandBase.SuppressVerbose = false;
+                                }
+                            });
+                    });
+
+                AnsiConsole.MarkupLine($"[dim]  ✓ {total}/{total} sub-reports  ({overallSw.Elapsed.TotalSeconds:F1}s)[/]");
+            }
+        }
+        finally
+        {
+            UnpinAllRemainingTrackedCaches(ctx, pinTracker);
         }
 
         // Replay order is grouped for report readability/navigation only.
@@ -206,6 +226,66 @@ public static class AnalyzeReport
             foreach (var idx in indexes)
                 ReportDocReplay.Replay(captures[idx].GetDoc(), sink);
         }
+    }
+
+    private static CachePinTracker BuildCachePinTracker(IReadOnlyList<ICommand> commands)
+    {
+        var commandPins = new Type[commands.Count][];
+        var counts = new Dictionary<Type, int>();
+
+        for (int i = 0; i < commands.Count; i++)
+        {
+            if (commands[i] is not ICommandCachePin pin || pin.PinnedCacheTypes.Count == 0)
+            {
+                commandPins[i] = [];
+                continue;
+            }
+
+            var uniqueTypes = pin.PinnedCacheTypes
+                .Where(static t => t is not null)
+                .Distinct()
+                .ToArray();
+
+            commandPins[i] = uniqueTypes;
+            foreach (var analysisType in uniqueTypes)
+                counts[analysisType] = counts.TryGetValue(analysisType, out int cur) ? cur + 1 : 1;
+        }
+
+        return new CachePinTracker
+        {
+            CommandPins = commandPins,
+            RemainingCounts = new ConcurrentDictionary<Type, int>(counts),
+        };
+    }
+
+    private static void PinTrackedCaches(DumpContext ctx, CachePinTracker tracker)
+    {
+        foreach (var analysisType in tracker.RemainingCounts.Keys)
+            ctx.PinAnalysis(analysisType);
+    }
+
+    private static void CompleteTrackedPinsForCommand(DumpContext ctx, CachePinTracker tracker, int commandIndex)
+    {
+        var pins = tracker.CommandPins[commandIndex];
+        if (pins.Length == 0) return;
+
+        foreach (var analysisType in pins)
+        {
+            int remaining = tracker.RemainingCounts.AddOrUpdate(
+                analysisType,
+                addValueFactory: static _ => 0,
+                updateValueFactory: static (_, cur) => cur > 0 ? cur - 1 : 0);
+
+            if (remaining == 0 && tracker.RemainingCounts.TryRemove(analysisType, out _))
+                ctx.UnpinAnalysis(analysisType);
+        }
+    }
+
+    private static void UnpinAllRemainingTrackedCaches(DumpContext ctx, CachePinTracker tracker)
+    {
+        foreach (var analysisType in tracker.RemainingCounts.Keys)
+            ctx.UnpinAnalysis(analysisType);
+        tracker.RemainingCounts.Clear();
     }
 
     // ── Scored summary renderer ───────────────────────────────────────────────

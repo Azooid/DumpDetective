@@ -177,16 +177,7 @@ public sealed class AnalyzeCommand : ICommand
                 dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsReady));
 
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
-                var pinnedTypes = CollectPinnedAnalysisTypes(effectiveCmds);
-                PinAnalysisTypes(dumpCtx, pinnedTypes);
-                try
-                {
-                    AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log, _pluginCmdNames);
-                }
-                finally
-                {
-                    UnpinAnalysisTypes(dumpCtx, pinnedTypes);
-                }
+                AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log, _pluginCmdNames);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);
                 CommandBase.ClearOverrides();
 
@@ -227,22 +218,4 @@ public sealed class AnalyzeCommand : ICommand
 
     private static IReadOnlyList<ICommandHeapContributor> CollectHeapContributors(IReadOnlyList<ICommand> commands)
         => [.. commands.OfType<ICommandHeapContributor>()];
-
-    private static IReadOnlyList<Type> CollectPinnedAnalysisTypes(IReadOnlyList<ICommand> commands)
-        => [.. commands
-            .OfType<ICommandCachePin>()
-            .SelectMany(command => command.PinnedCacheTypes)
-            .Distinct()];
-
-    private static void PinAnalysisTypes(DumpContext ctx, IReadOnlyList<Type> analysisTypes)
-    {
-        foreach (var analysisType in analysisTypes)
-            ctx.PinAnalysis(analysisType);
-    }
-
-    private static void UnpinAnalysisTypes(DumpContext ctx, IReadOnlyList<Type> analysisTypes)
-    {
-        foreach (var analysisType in analysisTypes)
-            ctx.UnpinAnalysis(analysisType);
-    }
 }
