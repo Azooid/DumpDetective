@@ -235,8 +235,9 @@ public static class HeapWalker
     }
 
     /// <summary>
-    /// Sequential heap walk — used for .NET Core / NativeAOT dumps where parallel
-    /// segment access is unsafe (causes "The handle is invalid" errors).
+    /// Sequential heap walk — used for .NET Core / NativeAOT dumps where the ELF
+    /// core-dump reader uses a single-seek-pointer <see cref="FileStream"/> that
+    /// is not safe for concurrent access from multiple threads.
     /// Consumers receive objects directly without cloning; no merging step needed.
     /// </summary>
     private static long WalkSequential(

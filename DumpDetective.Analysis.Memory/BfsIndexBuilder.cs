@@ -97,8 +97,17 @@ public static class BfsIndexBuilder
     // .NET Core dump data readers are not thread-safe across segment accesses.
     // Using Parallel.ForEach(heap.Segments) on those dumps causes
     // "The handle is invalid" errors. Fall back to single-threaded iteration.
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="flavor"/> identifies a runtime
+    /// whose dump data reader is not thread-safe for concurrent segment access
+    /// (.NET Core, NativeAOT).  Extracted for unit-testability.
+    /// </summary>
+    internal static bool IsSequentialFlavor(ClrFlavor? flavor)
+        => flavor is ClrFlavor.Core or ClrFlavor.NativeAOT;
+
     private static bool IsSequentialOnly(ClrHeap heap)
-        => heap.Runtime?.ClrInfo?.Flavor is ClrFlavor.Core or ClrFlavor.NativeAOT;
+        => IsSequentialFlavor(heap.Runtime?.ClrInfo?.Flavor);
 
     // ── Pass 1: assign stable integer indices, collect sizes ─────────────────
     // Phase 1a: each segment collects its own (addr, size) list in parallel.
