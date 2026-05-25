@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -52,14 +53,23 @@ public sealed class SqlTraceAnalyzer
         internal readonly Dictionary<string, QueryAcc> QueryAcc = new(StringComparer.OrdinalIgnoreCase);
         internal readonly Dictionary<string, DbAcc> DbAcc = new(StringComparer.OrdinalIgnoreCase);
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind = ComputeSqlKind(evName);
+            // Microsoft-Diagnostics-DiagnosticSource/Event carries EF Core events inside
+            // its payload; the outer event name is always "Event" so normal classification
+            // cannot distinguish them.  Route them to the dedicated handler.
+            if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsumeDiagnosticSourceEvent(ev, timestampMs, threadId);
+                return;
+            }
+
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind = ComputeSqlKind(meta.EventName);
             if (kind == 0) return;
 
             if (kind == 1)
@@ -107,7 +117,85 @@ public sealed class SqlTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeSqlKind(eventName); return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            // DiagnosticSource outer events all share EventName="Event" and cannot be
+            // classified from the name alone; let them through and filter in Consume().
+            if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == SqlCommandStart => 1,
+                    _ when meta.Kind == SqlCommandStop => ComputeSqlKind(meta.EventName),
+                    _ when meta.IsKnown => 0,
+                    _ => ComputeSqlKind(meta.EventName)
+                };
+            return v != 0;
+        }
+
+        /// <summary>
+        /// Handles EF Core command events bridged through Microsoft-Diagnostics-DiagnosticSource.
+        /// Matches on SourceName (contains "EntityFramework") and the inner EventName suffix
+        /// (CommandExecuting / CommandExecuted / CommandError).
+        /// </summary>
+        private void ConsumeDiagnosticSourceEvent(TraceEvent ev, double timestampMs, int threadId)
+        {
+            string? sourceName = GetStringPayloadRaw(ev, "SourceName", "sourceName");
+            if (sourceName is null ||
+                !sourceName.Contains("EntityFramework", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            string? innerEventName = GetStringPayloadRaw(ev, "EventName", "eventName");
+            if (innerEventName is null) return;
+
+            byte kind;
+            if (innerEventName.EndsWith("CommandExecuting", StringComparison.OrdinalIgnoreCase))
+                kind = 1;
+            else if (innerEventName.EndsWith("CommandExecuted", StringComparison.OrdinalIgnoreCase))
+                kind = 2;
+            else if (innerEventName.EndsWith("CommandError", StringComparison.OrdinalIgnoreCase))
+                kind = 3;
+            else
+                return;
+
+            string key = GetEfCorrelationKey(ev, threadId);
+
+            if (kind == 1)
+            {
+                string cmd = GetEfCommandText(ev);
+                string db  = GetEfDatabase(ev);
+                Pending[key] = (timestampMs, cmd, db);
+                return;
+            }
+
+            bool isErr = kind == 3;
+            if (!Pending.TryGetValue(key, out var entry))
+            {
+                if (isErr) Commands.Add(new SqlCommandEntry(
+                    "(unknown)", "(unknown)", 0, timestampMs, threadId, true));
+                return;
+            }
+
+            Pending.Remove(key);
+            double durationMs = Math.Max(0, timestampMs - entry.StartMs);
+            Commands.Add(new SqlCommandEntry(
+                entry.Command, entry.Db, durationMs, entry.StartMs, threadId, isErr));
+
+            string queryKey = NormalizeQuery(entry.Command);
+            if (!QueryAcc.TryGetValue(queryKey, out var qacc))
+                QueryAcc[queryKey] = qacc = new QueryAcc { Text = entry.Command };
+            qacc.Count++;
+            qacc.TotalMs += durationMs;
+            if (durationMs > qacc.MaxMs) qacc.MaxMs = durationMs;
+            if (isErr) qacc.Errors++;
+
+            if (!DbAcc.TryGetValue(entry.Db, out var dacc))
+                DbAcc[entry.Db] = dacc = new DbAcc();
+            dacc.Count++;
+            dacc.TotalMs += durationMs;
+        }
 
         public void OnComplete() { }
     }
@@ -388,6 +476,65 @@ public sealed class SqlTraceAnalyzer
         }
         catch { /* PayloadNames not available */ }
         return "(no command text)";
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // DiagnosticSource / EF Core payload helpers
+    // ─────────────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Builds a correlation key for an EF Core DiagnosticSource command event.
+    /// Tries CommandId (Guid) from the Arguments string first; falls back to thread ID.
+    /// </summary>
+    private static string GetEfCorrelationKey(TraceEvent ev, int threadId)
+    {
+        string? args = GetStringPayloadRaw(ev, "Arguments");
+        if (args is not null)
+        {
+            string? cmdId = ExtractArgValue(args, "CommandId")
+                         ?? ExtractArgValue(args, "commandId");
+            if (cmdId is { Length: > 0 }) return "efcmd:" + cmdId;
+        }
+        return $"t{threadId}";
+    }
+
+    /// <summary>
+    /// Tries to extract SQL command text from the EF Core DiagnosticSource Arguments field.
+    /// The DiagnosticSource ETW bridge serialises top-level event-data properties; when the
+    /// CommandText is not present (because Command is a DbCommand object whose ToString()
+    /// returns the type name), a descriptive fallback label is returned instead.
+    /// </summary>
+    private static string GetEfCommandText(TraceEvent ev)
+    {
+        string? args = GetStringPayloadRaw(ev, "Arguments");
+        if (args is not null)
+        {
+            string? text = ExtractArgValue(args, "CommandText")
+                        ?? ExtractArgValue(args, "commandText");
+            if (text is { Length: > 0 } &&
+                !text.Contains("SqlCommand",  StringComparison.OrdinalIgnoreCase) &&
+                !text.Contains("NpgsqlCommand", StringComparison.OrdinalIgnoreCase) &&
+                !text.EndsWith("Command",     StringComparison.OrdinalIgnoreCase))
+                return text.Length > 500 ? text[..500] + "\u2026" : text;
+        }
+        // SQL text not captured via DiagnosticSource bridge — this shows in the
+        // hasNoTextCommands alert and prompts the user to add Microsoft-EntityFrameworkCore.
+        return "(no SQL text — EF Core via DiagnosticSource)";
+    }
+
+    /// <summary>Extracts the database name from EF Core DiagnosticSource Arguments.</summary>
+    private static string GetEfDatabase(TraceEvent ev)
+    {
+        string? args = GetStringPayloadRaw(ev, "Arguments");
+        if (args is not null)
+        {
+            string? db = ExtractArgValue(args, "Database")
+                      ?? ExtractArgValue(args, "database");
+            if (db is { Length: > 0 } &&
+                !db.Contains("Connection", StringComparison.OrdinalIgnoreCase))
+                return db;
+        }
+        return "(EF Core)";
     }
 
     // Normalize query for grouping: replace literal values with placeholders

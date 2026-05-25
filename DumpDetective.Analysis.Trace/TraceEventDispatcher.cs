@@ -76,10 +76,11 @@ public static class TraceEventDispatcher
         var sw        = progress is not null ? Stopwatch.StartNew() : null;
         long lastMs   = 0;
 
-        // Routing table: evName → subset of consumers that want this event type.
-        // Built lazily on first occurrence of each unique event name so the per-event
-        // inner loop dispatches only to interested consumers instead of all 20+.
-        var routing       = new Dictionary<string, ITraceEventConsumer[]>(128, StringComparer.OrdinalIgnoreCase);
+        // Routing table: evName → (meta, consumers-that-want-this-event).
+        // Built lazily on first occurrence of each unique event name: EventNormalizer.Classify
+        // is called once, a TraceEventMeta is constructed, and each consumer's WantsEvent is
+        // queried once.  The hot loop dispatches only to opted-in consumers via the cached targets.
+        var routing       = new Dictionary<string, (TraceEventMeta Meta, ITraceEventConsumer[] Targets)>(128, StringComparer.OrdinalIgnoreCase);
         var eventCounts   = new Dictionary<string, long>(128, StringComparer.OrdinalIgnoreCase);
         var providerNames = new Dictionary<string, string>(128, StringComparer.OrdinalIgnoreCase);
 
@@ -101,22 +102,27 @@ public static class TraceEventDispatcher
                 double tsMs     = ev.TimeStampRelativeMSec;
                 int    threadId = ev.ThreadID;
 
-                if (!routing.TryGetValue(evName, out var targets))
+                if (!routing.TryGetValue(evName, out var entry))
                 {
-                    // First time we see this event name — ask each consumer once, cache result.
-                    var buf = new List<ITraceEventConsumer>(consumers.Count);
+                    // First time we see this event name — classify once, ask each consumer once.
+                    string provider = ev.ProviderName ?? "";
+                    var kind        = EventNormalizer.Classify(ev);
+                    var meta        = new TraceEventMeta(evName, provider, kind);
+                    var buf         = new List<ITraceEventConsumer>(consumers.Count);
                     for (int i = 0; i < consumers.Count; i++)
-                        if (consumers[i].WantsEvent(evName))
+                        if (consumers[i].WantsEvent(in meta))
                             buf.Add(consumers[i]);
-                    routing[evName]       = targets = buf.ToArray();
+                    routing[evName]       = entry = (meta, buf.ToArray());
                     eventCounts[evName]   = 0;
-                    providerNames[evName] = ev.ProviderName ?? "";
+                    providerNames[evName] = provider;
                 }
 
                 System.Runtime.InteropServices.CollectionsMarshal.GetValueRefOrAddDefault(eventCounts, evName, out _)++;
 
+                var targets = entry.Targets;
+                var evMeta  = entry.Meta;
                 for (int i = 0; i < targets.Length; i++)
-                    targets[i].Consume(ev, evName, procName, tsMs, threadId);
+                    targets[i].Consume(ev, in evMeta, procName, tsMs, threadId);
 
                 count++;
                 if (sw is not null)
@@ -143,7 +149,7 @@ public static class TraceEventDispatcher
         // Build ConsumerCounts from routing table (already complete after the walk).
         var consumerCounts = new Dictionary<string, int>(routing.Count, StringComparer.OrdinalIgnoreCase);
         foreach (var kvp in routing)
-            consumerCounts[kvp.Key] = kvp.Value.Length;
+            consumerCounts[kvp.Key] = kvp.Value.Targets.Length;
 
         return new DispatchStats(count, eventCounts, consumerCounts, providerNames);
     }

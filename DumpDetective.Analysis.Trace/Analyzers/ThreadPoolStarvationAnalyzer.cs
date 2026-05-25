@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -45,12 +46,12 @@ public sealed class ThreadPoolStarvationAnalyzer
         internal int StarvCount;
         internal uint TpMax, TpFinal;
 
-        public void Consume(Microsoft.Diagnostics.Tracing.TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(Microsoft.Diagnostics.Tracing.TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
-            if (!EventCounts.TryGetValue(evName, out int cnt)) cnt = 0;
-            EventCounts[evName] = cnt + 1;
+            if (!EventCounts.TryGetValue(meta.EventName, out int cnt)) cnt = 0;
+            EventCounts[meta.EventName] = cnt + 1;
 
-            if (evName.Contains("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase))
+            if (meta.EventName.Contains("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase))
             {
                 int src = TryGetInt(ev, "WaitSource");
                 Events.Add(new WaitEventSummary(
@@ -58,7 +59,7 @@ public sealed class ThreadPoolStarvationAnalyzer
                     WaitSourceName: WaitSourceNames.GetValueOrDefault(src, $"Unknown({src})"),
                     TopFrames:      []));
             }
-            else if (evName.Contains("Adjustment", StringComparison.OrdinalIgnoreCase))
+            else if (meta.EventName.Contains("Adjustment", StringComparison.OrdinalIgnoreCase))
             {
                 int    reason     = TryGetInt(ev, "Reason");
                 uint   newCount   = (uint)TryGetInt(ev, "NewWorkerThreadCount");
@@ -71,6 +72,14 @@ public sealed class ThreadPoolStarvationAnalyzer
                     newCount, rName, avgThrough));
             }
         }
+
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == WaitHandleWaitStart || meta.Kind == ThreadPoolAdjustment => true,
+            _ when meta.IsKnown => false,
+            _ => meta.EventName.Contains("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.Contains("Adjustment",          StringComparison.OrdinalIgnoreCase)
+        };
 
         public void OnComplete() { }
     }

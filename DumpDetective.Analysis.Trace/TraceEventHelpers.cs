@@ -86,4 +86,21 @@ internal static class TraceEventHelpers
         foreach (var kv in buckets) tl[kv.Key - minB] = kv.Value;
         return tl;
     }
+
+    /// <summary>
+    /// Extracts a value from the DiagnosticSource Arguments string format:
+    /// <c>[Key->"value",Key2->"value2",...]</c>
+    /// Returns <see langword="null"/> if the key is absent.
+    /// </summary>
+    internal static string? ExtractArgValue(string arguments, string key)
+    {
+        string needle = key + "->\"";
+        int idx = arguments.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return null;
+        int start = idx + needle.Length;
+        if (start >= arguments.Length) return null;
+        int end = arguments.IndexOf('"', start);
+        if (end < 0) return null;
+        return arguments[start..end];
+    }
 }

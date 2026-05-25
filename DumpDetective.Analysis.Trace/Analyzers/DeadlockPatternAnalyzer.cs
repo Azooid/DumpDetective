@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -42,24 +43,24 @@ public sealed class DeadlockPatternAnalyzer
         internal double TotalWait;
         internal double MaxWait;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind =
-                    evName.EndsWith("ContentionStart",     StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Contention/Start",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase) ||
-                    (evName.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) &&
-                     evName.Contains("Start",      StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
-                    evName.EndsWith("ContentionStop",      StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Contention/Stop",     StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("WaitHandleWaitStop",  StringComparison.OrdinalIgnoreCase) ||
-                    (evName.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) &&
-                     evName.Contains("Stop",       StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind =
+                    meta.EventName.EndsWith("ContentionStart",     StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.Contains("Contention/Start",    StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase) ||
+                    (meta.EventName.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) &&
+                     meta.EventName.Contains("Start",      StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
+                    meta.EventName.EndsWith("ContentionStop",      StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.Contains("Contention/Stop",     StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("WaitHandleWaitStop",  StringComparison.OrdinalIgnoreCase) ||
+                    (meta.EventName.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) &&
+                     meta.EventName.Contains("Stop",       StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
                     (byte)0;
             bool isWaitStart = kind == 1;
             bool isWaitStop  = kind == 2;
@@ -67,7 +68,7 @@ public sealed class DeadlockPatternAnalyzer
             if (isWaitStart)
             {
                 string frame = TopUserFrame(ev);
-                Active[threadId] = new ActiveWait(timestampMs, frame, evName);
+                Active[threadId] = new ActiveWait(timestampMs, frame, meta.EventName);
 
                 // Check all currently active waits for overlap patterns
                 foreach (var kv in Active)
@@ -95,7 +96,23 @@ public sealed class DeadlockPatternAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.EndsWith("ContentionStart", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Contention/Start", StringComparison.OrdinalIgnoreCase) || eventName.Contains("WaitHandle", StringComparison.OrdinalIgnoreCase) ? (byte)1 : eventName.EndsWith("ContentionStop", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Contention/Stop", StringComparison.OrdinalIgnoreCase) ? (byte)2 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == ContentionStart || meta.Kind == WaitHandleWaitStart => 1,
+                    _ when meta.Kind == ContentionStop || meta.Kind == WaitHandleWaitStop => 2,
+                    _ when meta.IsKnown                    => 0,
+                    _ => meta.EventName.EndsWith("ContentionStart",    StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.Contains("Contention/Start",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.Contains("WaitHandle",         StringComparison.OrdinalIgnoreCase) ? (byte)1
+                       : meta.EventName.EndsWith("ContentionStop",     StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.Contains("Contention/Stop",    StringComparison.OrdinalIgnoreCase) ? (byte)2
+                       : (byte)0
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -40,20 +41,27 @@ public sealed class ConnectionPoolTraceAnalyzer
         internal int TotalOpens;
         internal int TotalCloses;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind =
-                    evName.EndsWith("ConnectionOpen",  StringComparison.OrdinalIgnoreCase) ||
-                    (evName.Contains("SqlConnection",  StringComparison.OrdinalIgnoreCase) &&
-                     evName.Contains("Open",           StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
-                    evName.EndsWith("ConnectionClose", StringComparison.OrdinalIgnoreCase) ||
-                    (evName.Contains("SqlConnection",  StringComparison.OrdinalIgnoreCase) &&
-                     evName.Contains("Close",          StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
+            // EF Core and SqlClient can fire connection events via DiagnosticSource.
+            if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsumeConnectionDiagnosticSource(ev, timestampMs, threadId);
+                return;
+            }
+
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind =
+                    meta.EventName.EndsWith("ConnectionOpen",  StringComparison.OrdinalIgnoreCase) ||
+                    (meta.EventName.Contains("SqlConnection",  StringComparison.OrdinalIgnoreCase) &&
+                     meta.EventName.Contains("Open",           StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
+                    meta.EventName.EndsWith("ConnectionClose", StringComparison.OrdinalIgnoreCase) ||
+                    (meta.EventName.Contains("SqlConnection",  StringComparison.OrdinalIgnoreCase) &&
+                     meta.EventName.Contains("Close",          StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
                     (byte)0;
             if (kind == 0) return;
             bool isOpen  = kind == 1;
@@ -93,9 +101,80 @@ public sealed class ConnectionPoolTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.EndsWith("ConnectionOpen", StringComparison.OrdinalIgnoreCase) || (eventName.Contains("SqlConnection", StringComparison.OrdinalIgnoreCase) && eventName.Contains("Open", StringComparison.OrdinalIgnoreCase)) ? (byte)1 : eventName.EndsWith("ConnectionClose", StringComparison.OrdinalIgnoreCase) || (eventName.Contains("SqlConnection", StringComparison.OrdinalIgnoreCase) && eventName.Contains("Close", StringComparison.OrdinalIgnoreCase)) ? (byte)2 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            // EF Core fires Database.Connection.ConnectionOpening/ConnectionClosed via DiagnosticSource.
+            if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
+                return true;
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == SqlConnectionOpen => 1,
+                    _ when meta.Kind == SqlConnectionClose => 2,
+                    _ when meta.IsKnown => 0,
+                    _ => meta.EventName.EndsWith("ConnectionOpen", StringComparison.OrdinalIgnoreCase) ||
+                         (meta.EventName.Contains("SqlConnection", StringComparison.OrdinalIgnoreCase) &&
+                          meta.EventName.Contains("Open",          StringComparison.OrdinalIgnoreCase)) ? (byte)1
+                       : meta.EventName.EndsWith("ConnectionClose", StringComparison.OrdinalIgnoreCase) ||
+                         (meta.EventName.Contains("SqlConnection", StringComparison.OrdinalIgnoreCase) &&
+                          meta.EventName.Contains("Close",         StringComparison.OrdinalIgnoreCase)) ? (byte)2
+                       : (byte)0
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
+
+        private void ConsumeConnectionDiagnosticSource(TraceEvent ev, double timestampMs, int threadId)
+        {
+            string sourceName  = SafeStr(ev, "SourceName");
+            string innerEvName = SafeStr(ev, "EventName");
+            string arguments   = SafeStr(ev, "Arguments");
+
+            // Handle EF Core connection events (SourceName contains "EntityFrameworkCore") and
+            // Microsoft.Data.SqlClient via DiagnosticSource.
+            if (!sourceName.Contains("EntityFramework", StringComparison.OrdinalIgnoreCase) &&
+                !sourceName.Contains("SqlClient",       StringComparison.OrdinalIgnoreCase))
+                return;
+
+            bool isOpen  = innerEvName.EndsWith("ConnectionOpening", StringComparison.OrdinalIgnoreCase) ||
+                           innerEvName.EndsWith("ConnectionOpened",   StringComparison.OrdinalIgnoreCase);
+            bool isClose = innerEvName.EndsWith("ConnectionClosed",   StringComparison.OrdinalIgnoreCase) ||
+                           innerEvName.EndsWith("ConnectionClosing",   StringComparison.OrdinalIgnoreCase);
+            if (!isOpen && !isClose) return;
+
+            string db = ExtractArgValue(arguments, "Database") ?? "";
+            if (db.Length == 0) db = ExtractArgValue(arguments, "DataSource") ?? "";
+            if (db.Length == 0) db = sourceName;
+
+            if (!DbAccs.TryGetValue(db, out var acc))
+                DbAccs[db] = acc = new DbAcc();
+
+            if (isOpen)
+            {
+                TotalOpens++;
+                CurrentOpen++;
+                if (CurrentOpen > PeakOpen) PeakOpen = CurrentOpen;
+                OpenByThread[threadId] = db;
+                acc.Opens++;
+
+                int bucket = (int)(timestampMs / 1000.0);
+                PerSecond.TryGetValue(bucket, out int pv);
+                PerSecond[bucket] = Math.Max(pv, CurrentOpen);
+                if (CurrentOpen > acc.PeakConcurrent) acc.PeakConcurrent = CurrentOpen;
+            }
+            else
+            {
+                TotalCloses++;
+                if (CurrentOpen > 0) CurrentOpen--;
+                OpenByThread.Remove(threadId);
+                acc.Closes++;
+
+                int bucket = (int)(timestampMs / 1000.0);
+                PerSecond.TryGetValue(bucket, out int pv);
+                PerSecond[bucket] = Math.Max(pv, CurrentOpen);
+            }
+        }
     }
 
     public ITraceEventConsumer CreateConsumer(string? processFilter = null)

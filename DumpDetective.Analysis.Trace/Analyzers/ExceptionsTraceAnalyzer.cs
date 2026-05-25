@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -33,18 +34,18 @@ public sealed class ExceptionsTraceAnalyzer
         internal readonly Dictionary<string, TypeAcc> ByType = new(StringComparer.Ordinal);
         internal readonly List<ExceptionEvent> Events = new();
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out bool isEx))
-                EvKind[evName] = isEx =
-                    evName.EndsWith("Exception/Start",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ExceptionThrown",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("Exception",          StringComparison.OrdinalIgnoreCase) ||
-                    evName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!EvKind.TryGetValue(meta.EventName, out bool isEx))
+                EvKind[meta.EventName] = isEx =
+                    meta.EventName.EndsWith("Exception/Start",    StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("ExceptionThrown",    StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("Exception",          StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0;
             if (!isEx) return;
 
             string exType = SafeStr(ev, "ExceptionType");
@@ -62,7 +63,20 @@ public sealed class ExceptionsTraceAnalyzer
             acc.Count++;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("Exception", StringComparison.OrdinalIgnoreCase) || eventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == ExceptionThrown || meta.Kind == ExceptionCatchStart || meta.Kind == ExceptionCatchStop => true,
+                    _ when meta.IsKnown                                          => false,
+                    _ => meta.EventName.EndsWith("Exception/Start",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("ExceptionThrown",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("Exception",         StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0
+                };
+            return v;
+        }
 
         public void OnComplete() { }
     }

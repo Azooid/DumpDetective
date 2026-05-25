@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -35,21 +36,21 @@ public sealed class JitTraceAnalyzer
         internal readonly Dictionary<string, ModuleAcc> ByModule = new(StringComparer.OrdinalIgnoreCase);
         internal bool TimingAvailable;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind =
-                    evName.IndexOf("JittingStarted",   StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("MethodJitStart",   StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1 :
-                    evName.IndexOf("MethodLoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Method/LoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("MethodLoad/Verbose",StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)2 :
-                    evName.IndexOf("MethodLoad",       StringComparison.OrdinalIgnoreCase) >= 0 &&
-                    evName.IndexOf("Verbose",          StringComparison.OrdinalIgnoreCase) < 0 ? (byte)3 :
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind =
+                    meta.EventName.IndexOf("JittingStarted",   StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("MethodJitStart",   StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1 :
+                    meta.EventName.IndexOf("MethodLoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("Method/LoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("MethodLoad/Verbose",StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)2 :
+                    meta.EventName.IndexOf("MethodLoad",       StringComparison.OrdinalIgnoreCase) >= 0 &&
+                    meta.EventName.IndexOf("Verbose",          StringComparison.OrdinalIgnoreCase) < 0 ? (byte)3 :
                     (byte)0;
             if (kind == 0) return;
 
@@ -112,7 +113,24 @@ public sealed class JitTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.IndexOf("JittingStarted", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("MethodJitStart", StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1 : eventName.IndexOf("MethodLoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Method/LoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)2 : eventName.IndexOf("MethodLoad", StringComparison.OrdinalIgnoreCase) >= 0 && eventName.IndexOf("Verbose", StringComparison.OrdinalIgnoreCase) < 0 ? (byte)3 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == JitMethodStart => 1,
+                    _ when meta.Kind == JitMethodLoad => 2,
+                    _ when meta.IsKnown => 0,
+                    _ => meta.EventName.IndexOf("JittingStarted",    StringComparison.OrdinalIgnoreCase) >= 0 ||
+                         meta.EventName.IndexOf("MethodJitStart",    StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1
+                       : meta.EventName.IndexOf("MethodLoadVerbose", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                         meta.EventName.IndexOf("Method/LoadVerbose",StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)2
+                       : meta.EventName.IndexOf("MethodLoad",        StringComparison.OrdinalIgnoreCase) >= 0 &&
+                         meta.EventName.IndexOf("Verbose",           StringComparison.OrdinalIgnoreCase) < 0  ? (byte)3
+                       : (byte)0
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

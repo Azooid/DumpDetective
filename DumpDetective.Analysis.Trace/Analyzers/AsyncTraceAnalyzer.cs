@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -50,14 +51,14 @@ public sealed class AsyncTraceAnalyzer
         internal int ScheduledCount;
         internal int CompletedCount;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind = ComputeAsyncKind(evName);
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind = ComputeAsyncKind(meta.EventName);
             if (kind == 0) return;
 
             // ── Task/Scheduled ────────────────────────────────────────────────────────────────
@@ -116,7 +117,21 @@ public sealed class AsyncTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeAsyncKind(eventName); return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == TaskScheduled => 1,
+                    _ when meta.Kind == TaskCompleted => 2,
+                    _ when meta.Kind == TaskWaitBegin => 3,
+                    _ when meta.Kind == TaskWaitEnd => 4,
+                    _ when meta.Kind == AwaiterContinuation => 5,
+                    _ when meta.IsKnown => 0,
+                    _ => ComputeAsyncKind(meta.EventName)
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

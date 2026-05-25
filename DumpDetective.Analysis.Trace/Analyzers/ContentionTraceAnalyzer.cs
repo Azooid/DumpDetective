@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -33,18 +34,18 @@ public sealed class ContentionTraceAnalyzer
         internal readonly List<ContentionEvent> Events = new();
         internal readonly Dictionary<string, HotspotAcc> Hotspots = new(StringComparer.Ordinal);
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind =
-                    evName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ContentionStart",  StringComparison.OrdinalIgnoreCase) ? (byte)1 :
-                    evName.EndsWith("Contention/Stop",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ContentionStop",   StringComparison.OrdinalIgnoreCase) ? (byte)2 :
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind =
+                    meta.EventName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("ContentionStart",  StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    meta.EventName.EndsWith("Contention/Stop",  StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("ContentionStop",   StringComparison.OrdinalIgnoreCase) ? (byte)2 :
                     (byte)0;
             if (kind == 0) return;
 
@@ -73,7 +74,22 @@ public sealed class ContentionTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.EndsWith("Contention/Start", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ContentionStart", StringComparison.OrdinalIgnoreCase) ? (byte)1 : eventName.EndsWith("Contention/Stop", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ContentionStop", StringComparison.OrdinalIgnoreCase) ? (byte)2 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == ContentionStart => 1,
+                    _ when meta.Kind == ContentionStop => 2,
+                    _ when meta.IsKnown => 0,
+                    _ => meta.EventName.EndsWith("Contention/Start",  StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("ContentionStart",   StringComparison.OrdinalIgnoreCase) ? (byte)1
+                       : meta.EventName.EndsWith("Contention/Stop",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("ContentionStop",    StringComparison.OrdinalIgnoreCase) ? (byte)2
+                       : (byte)0
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

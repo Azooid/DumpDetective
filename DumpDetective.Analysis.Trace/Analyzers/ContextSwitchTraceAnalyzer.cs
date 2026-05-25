@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -62,13 +63,13 @@ public sealed class ContextSwitchTraceAnalyzer
         internal readonly Dictionary<int, double> PerSecond = new(4096);
         internal readonly Dictionary<int, long> WaitReasons = new(64);
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
-            if (!EvKind.TryGetValue(evName, out bool isCSwitch))
-                EvKind[evName] = isCSwitch =
-                    evName.IndexOf("CSwitch",        StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!EvKind.TryGetValue(meta.EventName, out bool isCSwitch))
+                EvKind[meta.EventName] = isCSwitch =
+                    meta.EventName.IndexOf("CSwitch",        StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0;
             if (!isCSwitch) return;
 
             double tsMs = timestampMs;
@@ -137,7 +138,19 @@ public sealed class ContextSwitchTraceAnalyzer
             if (voluntary) acc.Voluntary++;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.IndexOf("CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == ThreadContextSwitch => true,
+                    _ when meta.IsKnown => false,
+                    _ => meta.EventName.IndexOf("CSwitch",        StringComparison.OrdinalIgnoreCase) >= 0 ||
+                         meta.EventName.IndexOf("Thread/CSwitch", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                         meta.EventName.IndexOf("Context Switch", StringComparison.OrdinalIgnoreCase) >= 0
+                };
+            return v;
+        }
 
         public void OnComplete() { }
     }

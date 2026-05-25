@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -36,17 +37,17 @@ public sealed class LohTraceAnalyzer
         internal int Gen2WithGrowth;
         internal long PrevLoh = -1;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out bool isHeapStats))
-                EvKind[evName] = isHeapStats =
-                    evName.EndsWith("GCHeapStats",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("GC/HeapStats", StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("HeapStats",    StringComparison.OrdinalIgnoreCase);
+            if (!EvKind.TryGetValue(meta.EventName, out bool isHeapStats))
+                EvKind[meta.EventName] = isHeapStats =
+                    meta.EventName.EndsWith("GCHeapStats",  StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("GC/HeapStats", StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.Contains("HeapStats",    StringComparison.OrdinalIgnoreCase);
             if (!isHeapStats) return;
 
             long loh = SafeLong(ev, "GenerationSize3");
@@ -61,7 +62,19 @@ public sealed class LohTraceAnalyzer
             PrevLoh = loh;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("GCHeapStats", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("GC/HeapStats", StringComparison.OrdinalIgnoreCase) || eventName.Contains("HeapStats", StringComparison.OrdinalIgnoreCase); return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == GCHeapStats => true,
+                    _ when meta.IsKnown => false,
+                    _ => meta.EventName.EndsWith("GCHeapStats",  StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("GC/HeapStats", StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.Contains("HeapStats",    StringComparison.OrdinalIgnoreCase)
+                };
+            return v;
+        }
 
         public void OnComplete() { }
     }
