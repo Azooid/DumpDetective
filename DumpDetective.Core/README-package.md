@@ -13,7 +13,7 @@ Reference this package from your plugin project to implement `ICommand`, `ITrace
     ExcludeAssets="runtime" keeps the host's DLLs out of your plugin output folder.
     The host provides all Core (and transitive ClrMD / TraceEvent) assemblies at runtime.
   -->
-  <PackageReference Include="DumpDetective.Core" Version="3.0.1" ExcludeAssets="runtime" />
+  <PackageReference Include="DumpDetective.Core" Version="3.3.1" ExcludeAssets="runtime" />
 </ItemGroup>
 ```
 
