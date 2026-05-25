@@ -6,10 +6,93 @@ Complete standalone reference for trace workflows and commands. For the full doc
 
 ## Supported Inputs
 
-- `.nettrace`
-- `.etl`
+- `.nettrace` — EventPipe traces from `dotnet-trace collect` (Windows and Linux)
+- `.etl` — Windows ETW traces from PerfView, `dotnet-trace collect` on Windows, or `wpr`
 
-`.etl.zip` is not supported.
+`.etl.zip` is not supported. Convert with PerfView first: **File → Save As → `.etl`**.
+
+### ETL vs .nettrace — what to expect
+
+| | `.nettrace` | `.etl` |
+|---|---|---|
+| Platform | Windows + Linux | Windows only |
+| Collection mechanism | EventPipe (in-process) | ETW (kernel) |
+| Kernel events (context switches, DPCs) | No | Yes (`context-switch-trace`) |
+| Typical file size | Small–medium | Large (kernel frames inflate stack payloads) |
+| Exception / JIT counts | Accurate | Accurate from v3.3.0 (prior versions inflated ~2–3×) |
+
+---
+
+## Collecting a Trace
+
+### dotnet-trace — .NET Core / Linux / Windows (EventPipe)
+
+```bash
+dotnet-trace collect \
+  --process-id <PID> \
+  --duration 00:01:00 \
+  --buffersize 4096 \
+  --output app_$(date +%Y%m%d_%H%M%S).nettrace \
+  --providers "Microsoft-DotNETCore-SampleProfiler,\
+Microsoft-Windows-DotNETRuntime:0x4c14fccbd:5,\
+Microsoft-Diagnostics-DiagnosticSource:0xFFFFFFFFFFFFFFFF:4,\
+Microsoft.AspNetCore.Hosting:0xFFFFFFFFFFFFFFFF:4,\
+Microsoft.AspNetCore.Server.Kestrel:0xFFFFFFFFFFFFFFFF:5,\
+Microsoft.Data.SqlClient.EventSource:0x007F:4,\
+System.Net.Http:0xFFFFFFFFFFFFFFFF:4,\
+System.Threading.Tasks.TplEventSource:0xFFFFFFFFFFFDFFF7:4,\
+Microsoft.AspNetCore.Routing:0xFFFFFFFFFFFFFFFF:5"
+```
+
+**Provider notes:**
+
+| Provider | Keywords | Level | Captures |
+|---|---|---|---|
+| `Microsoft-DotNETCore-SampleProfiler` | — | — | CPU call stacks (1 ms sampling) |
+| `Microsoft-Windows-DotNETRuntime` | `0x4c14fccbd` | `5` (Verbose) | GC, exceptions, JIT, contention, allocations (level 5 required for `GCAllocationTick`) |
+| `Microsoft-Diagnostics-DiagnosticSource` | `0xFFFFFFFFFFFFFFFF` | `4` | DiagnosticSource events (EF, HttpClient activity) |
+| `Microsoft.AspNetCore.Hosting` | `0xFFFFFFFFFFFFFFFF` | `4` | Request start/stop, unhandled exceptions |
+| `Microsoft.AspNetCore.Server.Kestrel` | `0xFFFFFFFFFFFFFFFF` | `5` | Connection and request-processing events |
+| `Microsoft.Data.SqlClient.EventSource` | `0x007F` | `4` | SQL command timing and connection pool events |
+| `System.Net.Http` | `0xFFFFFFFFFFFFFFFF` | `4` | HttpClient request lifecycle |
+| `System.Threading.Tasks.TplEventSource` | `0xFFFFFFFFFFFDFFF7` | `4` | Task scheduling and async continuations (mask suppresses `DebugFacilityMessage` noise) |
+| `Microsoft.AspNetCore.Routing` | `0xFFFFFFFFFFFFFFFF` | `5` | Route matching and endpoint selection |
+
+Find the PID with `dotnet-trace ps` or `ps aux | grep dotnet`.  
+On Windows, drop the `$(date ...)` substitution and use a plain filename.
+
+---
+
+### PerfView — Windows ETW
+
+```bat
+PerfView.exe "/DataFile:<OUTPUT_PATH.etl>" ^
+  /BufferSizeMB:4096 ^
+  /CircularMB:<MAX_SIZE_MB> ^
+  /StackCompression ^
+  /MaxCollectSec:<SECONDS> ^
+  /ClrEvents:GC,GCHandle,Binder,Security,AppDomainResourceManagement,Contention,Exception,Threading,JITSymbols,Type,GCHeapSurvivalAndMovement,GCHeapAndTypeNames,Stack,ThreadTransfer,Codesymbols,Compilation,JitTracing,Default ^
+  /KernelEvents:ContextSwitch,Thread,Process,Profile,FileIO,FileIOInit ^
+  /Providers:Microsoft-Diagnostics-DiagnosticSource:0xFFFFFFFFFFFFFFFF:Informational ^
+  /NoGui /JITInlining /NetworkCapture ^
+  /FocusProcess:<PID_OR_EXE_NAME> ^
+  /NoNGenRundown /ThreadTime ^
+  /Merge:false /Zip:false /NoView ^
+  collect
+```
+
+**Key flags:**
+
+| Flag | Effect |
+|---|---|
+| `/CircularMB` | Ring-buffer cap; set to available free disk × 0.7 for a safety margin |
+| `/MaxCollectSec` | Hard stop after N seconds; omit for manual stop (`Ctrl+C` or `PerfView stop`) |
+| `/ThreadTime` | Adds context-switch events; enables `context-switch-trace` in DumpDetective |
+| `/FocusProcess` | Limits symbol resolution to one process; reduces post-processing time |
+| `/Merge:false /Zip:false` | Leaves the raw `.etl` on disk; merge/zip manually after collection if needed |
+| `/NoNGenRundown` | Skips NGen method rundown; safe when JIT symbols are available |
+
+> **Note:** PerfView ETL files can be 1 GB+ due to kernel frames in every stack. Use `/CircularMB` to cap file size on long captures.
 
 ---
 
@@ -98,6 +181,8 @@ DumpDetective threadpool-starvation perf.etl --top 50 --output starvation.html
 ### `trace-analyze`
 
 Runs all 29 sub-analyzers (`cpu-trace`, `alloc-trace`, `alloc-burst-trace`, `gc-trace`, `finalizer-trace`, `loh-trace`, `contention-trace`, `exceptions-trace`, `deadlock-trace`, `retry-storm-trace`, `threadpool-starvation`, `async-trace`, `context-switch-trace`, `task-scheduler-trace`, `jit-trace`, `http-trace`, `kestrel-trace`, `aspnetcore-pipeline-trace`, `sql-trace`, `json-trace`, `connection-pool-trace`, `socket-trace`, `dns-trace`, `process-lifecycle-trace`, `file-io-trace`, `handle-leak-trace`, `otel-trace`, `anomaly-trace`, `root-cause-trace`) in a single pass over the trace file and produces a combined report. The report opens with a **Trace Summary** dashboard giving a cross-cutting health overview and pattern detector findings before the per-analyzer chapters. Start here before running focused commands.
+
+Each analyzer declares which event names it cares about via a `WantsEvent` filter. The classifier pipeline evaluates this filter before deserializing the event payload, so analyzers that cover rare events (deadlocks, retry storms, process lifecycle) add negligible overhead to long traces.
 
 ```bash
 DumpDetective trace-analyze app.nettrace

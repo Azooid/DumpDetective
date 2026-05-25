@@ -2,7 +2,7 @@
 
 A command-line tool for understanding .NET production incidents from dumps and traces.
 
-DumpDetective analyzes `.dmp` / `.mdmp` memory dumps and `.nettrace` / `.etl` traces, then generates human-readable reports that help you answer practical questions quickly:
+DumpDetective analyzes `.dmp` / `.mdmp` memory dumps (Windows and Linux/.NET Core 8) and `.nettrace` / `.etl` traces, then generates human-readable reports that help you answer practical questions quickly:
 
 - Why is memory growing?
 - What is retaining objects?
@@ -15,7 +15,7 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 
 - One-command health report (`analyze`) with a score and prioritized findings.
 - Deep memory diagnostics (`memory-leak`, `high-refs`, `gc-roots`, `object-inspect`).
-- Combined trace diagnostics (`trace-analyze`) plus focused trace commands (`cpu-trace`, `alloc-trace`, `gc-trace`, `contention-trace`, `exceptions-trace`, `threadpool-starvation`, `async-trace`, `jit-trace`, `http-trace`, `sql-trace`). Recent versions cache repeated trace event-name classification inside the slowest analyzers so long traces spend less time on string matching.
+- Combined trace diagnostics (`trace-analyze`) runs 29 sub-analyzers in a single pass — CPU, allocations, GC, exceptions, contention, deadlocks, retry storms, ThreadPool starvation, async tasks, JIT, HTTP, Kestrel, ASP.NET Core pipeline, SQL, JSON serialization, connection pools, sockets, DNS, file I/O, handles, LOH, finalizers, process lifecycle, OpenTelemetry, and anomaly detection. A classifier pipeline pre-filters events per analyzer so large ETL files process faster.
 - Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 built-in correlation rules, plus plugin-extensible rules via `--with-plugins`.
 - Multi-dump trend analysis for comparing behavior over time.
 - Interactive HTML reports with grouped navigation, charts, dark mode, and paged tables.
@@ -102,7 +102,7 @@ Hardware requirements scale with the dump you are analysing. The numbers below a
 Install as a global .NET tool from [NuGet.org](https://www.nuget.org/packages/DumpDetective.Cli):
 
 ```bash
-dotnet tool install --global DumpDetective.Cli --version 3.2.0
+dotnet tool install --global DumpDetective.Cli --version 3.3.0
 ```
 
 Once installed, the tool is available as:

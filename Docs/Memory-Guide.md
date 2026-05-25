@@ -6,7 +6,9 @@ Complete standalone reference for memory-dump workflows and commands. For the fu
 
 ## Scope
 
-Input file types: `.dmp`, `.mdmp`
+Input file types: `.dmp`, `.mdmp`, Linux ELF core dumps (`.core`, no extension)
+
+> **Linux / .NET Core 8 dumps** — dumps captured via `dotnet-dump collect` on Linux, or ELF core dumps from containerized workloads, are supported from v3.3.0. Open them the same way as Windows dumps; DumpDetective detects the format automatically.
 
 Primary use cases:
 
