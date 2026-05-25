@@ -8,7 +8,10 @@ public sealed record ThreadPoolStarvationData(
     int                                 StarvationAdjustmentCount,
     uint                                TpMaxActive,
     uint                                TpFinalActive,
-    IReadOnlyDictionary<string, int>    EventCounts);
+    IReadOnlyDictionary<string, int>    EventCounts,
+    double                              AvgQueueWaitMs = 0.0,
+    double                              MaxQueueWaitMs = 0.0,
+    int                                 LongQueueWaitCount = 0);
 
 public sealed record WaitEventSummary(
     int                   ThreadId,

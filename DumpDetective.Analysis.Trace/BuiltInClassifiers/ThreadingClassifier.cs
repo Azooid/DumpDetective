@@ -38,6 +38,9 @@ internal sealed class ThreadingClassifier : IProviderScopedClassifier
         if (Contains(name, "TaskWait/Send")        || Contains(name, "TaskWaitSend"))       return TaskWaitSend;
         if (Contains(name, "TraceSynchronousWork/Start"))                                    return TraceSynchronousWorkStart;
         if (Contains(name, "TraceSynchronousWork/Stop"))                                     return TraceSynchronousWorkStop;
+        // TraceOperation = async-method lifecycle markers (TplEventSource EventId 14/15)
+        if (Contains(name, "TraceOperation/Start") || Contains(name, "TraceOperationStart")) return TraceOperationStart;
+        if (Contains(name, "TraceOperation/Stop")  || Contains(name, "TraceOperationStop"))  return TraceOperationStop;
 
         // ── Awaiter / continuation ────────────────────────────────────────────
         if (Contains(name, "Awaiter") || Contains(name, "ContinuationScheduled") ||

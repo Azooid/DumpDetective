@@ -45,6 +45,9 @@ public sealed class ThreadPoolStarvationAnalyzer
         internal readonly Dictionary<string, int> EventCounts = new(StringComparer.Ordinal);
         internal int StarvCount;
         internal uint TpMax, TpFinal;
+        // work-item queue-wait tracking
+        internal readonly Dictionary<int, double> PendingTaskIds = new();
+        internal readonly List<double> QueueWaits = new();
 
         public void Consume(Microsoft.Diagnostics.Tracing.TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
@@ -71,14 +74,34 @@ public sealed class ThreadPoolStarvationAnalyzer
                 Adjustments.Add(new TpAdjustmentRecord(ev.TimeStamp.ToString("HH:mm:ss.fff"),
                     newCount, rName, avgThrough));
             }
+            else if (meta.Kind == TaskScheduledSend || meta.Kind == TaskScheduled ||
+                     (!meta.IsKnown && meta.EventName.Contains("TaskScheduled", StringComparison.OrdinalIgnoreCase)))
+            {
+                int taskId = TryGetInt(ev, "TaskID");
+                if (taskId != 0) PendingTaskIds[taskId] = timestampMs;
+            }
+            else if (meta.Kind == TaskExecuteStart ||
+                     (!meta.IsKnown && meta.EventName.Contains("TaskExecute/Start", StringComparison.OrdinalIgnoreCase)))
+            {
+                int taskId = TryGetInt(ev, "TaskID");
+                if (taskId != 0 && PendingTaskIds.Remove(taskId, out double scheduledMs))
+                {
+                    double wait = timestampMs - scheduledMs;
+                    if (wait >= 0) QueueWaits.Add(wait);
+                }
+            }
         }
 
         public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
         {
-            _ when meta.Kind == WaitHandleWaitStart || meta.Kind == ThreadPoolAdjustment => true,
+            _ when meta.Kind == WaitHandleWaitStart || meta.Kind == ThreadPoolAdjustment
+                || meta.Kind == TaskScheduledSend   || meta.Kind == TaskScheduled
+                || meta.Kind == TaskExecuteStart => true,
             _ when meta.IsKnown => false,
             _ => meta.EventName.Contains("WaitHandleWaitStart", StringComparison.OrdinalIgnoreCase) ||
-                 meta.EventName.Contains("Adjustment",          StringComparison.OrdinalIgnoreCase)
+                 meta.EventName.Contains("Adjustment",          StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.Contains("TaskScheduled",       StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.Contains("TaskExecute/Start",   StringComparison.OrdinalIgnoreCase)
         };
 
         public void OnComplete() { }
@@ -98,9 +121,15 @@ public sealed class ThreadPoolStarvationAnalyzer
             .Select(g => new WaitEventSummary(g.Key.ThreadId, g.Key.WaitSourceName, []))
             .ToList();
 
+        const double LongWaitThresholdMs = 100.0;
+        double avgWait  = c.QueueWaits.Count > 0 ? c.QueueWaits.Average() : 0.0;
+        double maxWait  = c.QueueWaits.Count > 0 ? c.QueueWaits.Max()     : 0.0;
+        int    longWaits = c.QueueWaits.Count(w => w > LongWaitThresholdMs);
+
         string info = $"{traceFileName}  |  events: {totalEvents:N0}";
         return new ThreadPoolStarvationData(info, totalEvents, groupedEvents,
-            c.Adjustments.TakeLast(50).ToList(), c.StarvCount, c.TpMax, c.TpFinal, c.EventCounts);
+            c.Adjustments.TakeLast(50).ToList(), c.StarvCount, c.TpMax, c.TpFinal, c.EventCounts,
+            avgWait, maxWait, longWaits);
     }
 
     public ThreadPoolStarvationData Analyze(TraceLog trace, string traceFileName, int top = 10,

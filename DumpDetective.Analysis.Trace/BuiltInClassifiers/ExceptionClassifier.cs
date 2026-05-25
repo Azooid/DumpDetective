@@ -15,8 +15,12 @@ internal sealed class ExceptionClassifier : IProviderScopedClassifier
     public TraceEventKind Classify(string provider, string name)
     {
         // More-specific catch handlers before the generic throw
+        if (Contains(name, "ExceptionFinally/Stop")  || EndsWith(name, "ExceptionFinallyStop"))  return ExceptionFinallyStop;
+        if (Contains(name, "ExceptionFinally/Start") || EndsWith(name, "ExceptionFinallyStart")) return ExceptionFinallyStart;
         if (Contains(name, "ExceptionCatch/Stop")  || EndsWith(name, "ExceptionCatchStop"))  return ExceptionCatchStop;
         if (Contains(name, "ExceptionCatch/Start") || EndsWith(name, "ExceptionCatchStart")) return ExceptionCatchStart;
+        // Exception/Stop = .NET Framework exception-handling-complete event (after catch runs)
+        if (Contains(name, "Exception/Stop")       || EndsWith(name, "ExceptionHandled"))    return ExceptionHandled;
         if (Contains(name, "Exception/Start")      || EndsWith(name, "ExceptionThrown")
                                                    || EndsWith(name, "Exception"))            return ExceptionThrown;
         return Unknown;

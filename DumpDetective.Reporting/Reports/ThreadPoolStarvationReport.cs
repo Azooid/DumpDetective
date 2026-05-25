@@ -49,9 +49,26 @@ public sealed class ThreadPoolStarvationReport
         if (!hasStarvation && !hasWaitEvents)
             sink.Alert(AlertLevel.Info, "No starvation signals detected in the trace.");
 
+        RenderQueueWaitStats(sink, data);
         RenderWaitEventTable(sink, data, top);
         RenderAdjustments(sink, data);
         RenderEventDistribution(sink, data, top);
+    }
+
+    private static void RenderQueueWaitStats(IRenderSink sink, ThreadPoolStarvationData data)
+    {
+        if (data.MaxQueueWaitMs <= 0) return;
+        sink.Section("Work Item Queue Delay");
+        sink.KeyValues([
+            ("Avg queue wait",    $"{data.AvgQueueWaitMs:F2} ms"),
+            ("Max queue wait",    $"{data.MaxQueueWaitMs:F2} ms"),
+            ("Long waits (>100 ms)", data.LongQueueWaitCount.ToString("N0")),
+        ]);
+        if (data.MaxQueueWaitMs > 100)
+            sink.Alert(AlertLevel.Warning,
+                $"Work items waited up to {data.MaxQueueWaitMs:F1} ms before a thread picked them up.",
+                "High queue delay means the thread pool has fewer threads than needed for the current load.",
+                "Check starvation adjustments below. Consider ThreadPool.SetMinThreads() to pre-warm threads.");
     }
 
     private static void RenderWaitEventTable(IRenderSink sink, ThreadPoolStarvationData data, int top)

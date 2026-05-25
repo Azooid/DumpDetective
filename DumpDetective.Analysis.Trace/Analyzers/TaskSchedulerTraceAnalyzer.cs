@@ -110,7 +110,7 @@ public sealed class TaskSchedulerTraceAnalyzer
                 EvKind[meta.EventName] = v = meta.Kind switch
                 {
                     _ when meta.Kind == TaskScheduled => 1,
-                    _ when meta.Kind == TaskCompleted => 2,
+                    _ when meta.Kind == TaskCompleted || meta.Kind == TaskExecuteStop => 2,
                     _ when meta.Kind == TaskWaitBegin => 3,
                     _ when meta.Kind == TaskWaitEnd => 4,
                     _ when meta.IsKnown => 0,
@@ -177,7 +177,8 @@ public sealed class TaskSchedulerTraceAnalyzer
             n.Contains("TaskScheduled",     StringComparison.OrdinalIgnoreCase)) return 1;
         if (n.Contains("Task/Completed",   StringComparison.OrdinalIgnoreCase) ||
             n.Contains("TaskCompleted",     StringComparison.OrdinalIgnoreCase) ||
-            n.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase)) return 2;
+            n.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("TaskExecute/Stop",  StringComparison.OrdinalIgnoreCase)) return 2;
         if (n.Contains("TaskWaitBegin",    StringComparison.OrdinalIgnoreCase) ||
             n.Contains("Task/Wait/Begin",   StringComparison.OrdinalIgnoreCase)) return 3;
         if (n.Contains("TaskWaitEnd",      StringComparison.OrdinalIgnoreCase) ||

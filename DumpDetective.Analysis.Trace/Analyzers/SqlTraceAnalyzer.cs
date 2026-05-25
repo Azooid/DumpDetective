@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Analysis.Trace.TraceEventHelpers;
 using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -52,6 +53,12 @@ public sealed class SqlTraceAnalyzer
         internal readonly List<SqlCommandEntry> Commands = new();
         internal readonly Dictionary<string, QueryAcc> QueryAcc = new(StringComparer.OrdinalIgnoreCase);
         internal readonly Dictionary<string, DbAcc> DbAcc = new(StringComparer.OrdinalIgnoreCase);
+        // EF Core DiagnosticSource events are collected separately so they can be discarded when
+        // native SqlClient EventSource events are also present (both represent the same commands).
+        internal bool HasNativeSqlEvents;
+        internal readonly List<SqlCommandEntry> _diagCmds = [];
+        internal readonly Dictionary<string, QueryAcc> _diagQueryAcc = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly Dictionary<string, DbAcc> _diagDbAcc = new(StringComparer.OrdinalIgnoreCase);
 
         public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
@@ -80,6 +87,7 @@ public sealed class SqlTraceAnalyzer
                 if (cmd == "(no command text)")
                     cmd = MakeNoTextLabel(ev);
                 Pending[key] = (timestampMs, cmd, db);
+                HasNativeSqlEvents = true;
                 return;
             }
 
@@ -173,26 +181,26 @@ public sealed class SqlTraceAnalyzer
             bool isErr = kind == 3;
             if (!Pending.TryGetValue(key, out var entry))
             {
-                if (isErr) Commands.Add(new SqlCommandEntry(
+                if (isErr) _diagCmds.Add(new SqlCommandEntry(
                     "(unknown)", "(unknown)", 0, timestampMs, threadId, true));
                 return;
             }
 
             Pending.Remove(key);
             double durationMs = Math.Max(0, timestampMs - entry.StartMs);
-            Commands.Add(new SqlCommandEntry(
+            _diagCmds.Add(new SqlCommandEntry(
                 entry.Command, entry.Db, durationMs, entry.StartMs, threadId, isErr));
 
             string queryKey = NormalizeQuery(entry.Command);
-            if (!QueryAcc.TryGetValue(queryKey, out var qacc))
-                QueryAcc[queryKey] = qacc = new QueryAcc { Text = entry.Command };
+            if (!_diagQueryAcc.TryGetValue(queryKey, out var qacc))
+                _diagQueryAcc[queryKey] = qacc = new QueryAcc { Text = entry.Command };
             qacc.Count++;
             qacc.TotalMs += durationMs;
             if (durationMs > qacc.MaxMs) qacc.MaxMs = durationMs;
             if (isErr) qacc.Errors++;
 
-            if (!DbAcc.TryGetValue(entry.Db, out var dacc))
-                DbAcc[entry.Db] = dacc = new DbAcc();
+            if (!_diagDbAcc.TryGetValue(entry.Db, out var dacc))
+                _diagDbAcc[entry.Db] = dacc = new DbAcc();
             dacc.Count++;
             dacc.TotalMs += durationMs;
         }
@@ -207,24 +215,30 @@ public sealed class SqlTraceAnalyzer
                                      string? processFilter = null)
     {
         var c = (Consumer)consumer;
-        if (c.Commands.Count == 0)
+        // Prefer native SqlClient events over EF Core DiagnosticSource to avoid double-counting.
+        // Both represent the same SQL commands; native events carry real SQL text and DB names.
+        var commands = (c.HasNativeSqlEvents || c._diagCmds.Count == 0) ? c.Commands : c._diagCmds;
+        var queryAcc = (c.HasNativeSqlEvents || c._diagQueryAcc.Count == 0) ? c.QueryAcc : c._diagQueryAcc;
+        var dbAcc    = (c.HasNativeSqlEvents || c._diagDbAcc.Count == 0)    ? c.DbAcc    : c._diagDbAcc;
+
+        if (commands.Count == 0)
         {
             return new SqlTraceData(
                 $"{traceFileName}  |  No SQL events — see collection guidance",
                 processFilter, 0, 0, 0, 0, 0, c.SlowMs, 0, [], [], [], null, false);
         }
 
-        double totalMs = c.Commands.Sum(cmd => cmd.DurationMs);
-        double maxMs   = c.Commands.Max(cmd => cmd.DurationMs);
-        double avgMs   = totalMs / c.Commands.Count;
-        int    errors  = c.Commands.Count(cmd => cmd.IsError);
-        var    slow    = ApplyLimit(c.Commands.Where(cmd => cmd.DurationMs >= c.SlowMs)
+        double totalMs = commands.Sum(cmd => cmd.DurationMs);
+        double maxMs   = commands.Max(cmd => cmd.DurationMs);
+        double avgMs   = totalMs / commands.Count;
+        int    errors  = commands.Count(cmd => cmd.IsError);
+        var    slow    = ApplyLimit(commands.Where(cmd => cmd.DurationMs >= c.SlowMs)
                                  .OrderByDescending(cmd => cmd.DurationMs), top)
                                  .ToList();
 
         const int uniqueExtra = 20;
-        var byTotal  = c.QueryAcc.Values.OrderByDescending(q => q.TotalMs).Take(top).ToHashSet();
-        var byMax    = c.QueryAcc.Values.OrderByDescending(q => q.MaxMs).Take(Math.Max(1, top / 2)).ToHashSet();
+        var byTotal  = queryAcc.Values.OrderByDescending(q => q.TotalMs).Take(top).ToHashSet();
+        var byMax    = queryAcc.Values.OrderByDescending(q => q.MaxMs).Take(Math.Max(1, top / 2)).ToHashSet();
         var covered  = new HashSet<QueryAcc>(byTotal.Concat(byMax));
 
         // If many "(no SQL text)" entries dominated the top lists, widen the real-query
@@ -236,7 +250,7 @@ public sealed class SqlTraceAnalyzer
         foreach (var q in covered)
             if (q.Text.StartsWith("(no SQL text", StringComparison.Ordinal)) unknownInCovered++;
         int effectiveUniqueExtra = unknownInCovered >= 10 ? 100 : unknownInCovered >= 3 ? 50 : uniqueExtra;
-        var byUnique = c.QueryAcc.Values.Where(q => !covered.Contains(q)
+        var byUnique = queryAcc.Values.Where(q => !covered.Contains(q)
                                                && !q.Text.StartsWith("(no SQL text", StringComparison.Ordinal))
                                       .OrderByDescending(q => q.TotalMs)
                                       .Take(effectiveUniqueExtra);
@@ -249,17 +263,17 @@ public sealed class SqlTraceAnalyzer
                                              DetectOrm(q.Text)))
             .ToList();
 
-        var topDbs = ApplyLimit(c.DbAcc
+        var topDbs = ApplyLimit(dbAcc
             .OrderByDescending(kv => kv.Value.TotalMs), top)
             .Select(kv => new SqlDbSummary(kv.Key, kv.Value.Count, kv.Value.TotalMs,
                                            kv.Value.Count > 0 ? kv.Value.TotalMs / kv.Value.Count : 0))
             .ToList();
 
         IReadOnlyList<double>? timeline = null;
-        if (c.Commands.Count > 1)
+        if (commands.Count > 1)
         {
             var perSecond = new Dictionary<int, double>();
-            foreach (var cmd in c.Commands)
+            foreach (var cmd in commands)
             {
                 int bucket = (int)(cmd.StartTimeMs / 1000.0);
                 perSecond.TryGetValue(bucket, out double prev);
@@ -278,11 +292,11 @@ public sealed class SqlTraceAnalyzer
                         : $"{totalMs:F0} ms";
         string info = $"{traceFileName}" +
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
-                      $"  |  {c.Commands.Count:N0} commands  •  {totalFmt} total  •  {errors} errors";
+                      $"  |  {commands.Count:N0} commands  •  {totalFmt} total  •  {errors} errors";
 
         return new SqlTraceData(
             info, processFilter,
-            c.Commands.Count, errors, avgMs, maxMs, totalMs, c.SlowMs, slow.Count,
+            commands.Count, errors, avgMs, maxMs, totalMs, c.SlowMs, slow.Count,
             slow, topQueries, topDbs, timeline, HasData: true);
     }
 
@@ -484,56 +498,59 @@ public sealed class SqlTraceAnalyzer
 
     /// <summary>
     /// Builds a correlation key for an EF Core DiagnosticSource command event.
-    /// Tries CommandId (Guid) from the Arguments string first; falls back to thread ID.
+    /// Extracts CommandId from the Arguments StructValue[] via String indexer; falls back to thread.
     /// </summary>
     private static string GetEfCorrelationKey(TraceEvent ev, int threadId)
     {
-        string? args = GetStringPayloadRaw(ev, "Arguments");
-        if (args is not null)
-        {
-            string? cmdId = ExtractArgValue(args, "CommandId")
-                         ?? ExtractArgValue(args, "commandId");
-            if (cmdId is { Length: > 0 }) return "efcmd:" + cmdId;
-        }
+        // Arguments is StructValue[] — use the String indexer helper (not ExtractArgValue which
+        // expects the old [Key->"value"] string format that DiagnosticSource no longer emits).
+        string? cmdId = ExtractStructValueField(ev, "CommandId")
+                     ?? ExtractStructValueField(ev, "commandId");
+        if (cmdId is { Length: > 0 }) return "efcmd:" + cmdId;
         return $"t{threadId}";
     }
 
     /// <summary>
-    /// Tries to extract SQL command text from the EF Core DiagnosticSource Arguments field.
-    /// The DiagnosticSource ETW bridge serialises top-level event-data properties; when the
-    /// CommandText is not present (because Command is a DbCommand object whose ToString()
-    /// returns the type name), a descriptive fallback label is returned instead.
+    /// Tries to extract SQL command text from the EF Core DiagnosticSource Arguments StructValue[].
+    /// The DiagnosticSource ETW bridge serialises objects as their type name (not field values), so
+    /// CommandText is not directly available. A descriptive fallback label is returned instead,
+    /// using the DbContext class name and command source when available.
     /// </summary>
     private static string GetEfCommandText(TraceEvent ev)
     {
-        string? args = GetStringPayloadRaw(ev, "Arguments");
-        if (args is not null)
+        // Try CommandText via StructValue (would work if ever populated as a string).
+        string? text = ExtractStructValueField(ev, "CommandText")
+                    ?? ExtractStructValueField(ev, "commandText");
+        if (text is { Length: > 0 } &&
+            !text.Contains("SqlCommand",    StringComparison.OrdinalIgnoreCase) &&
+            !text.Contains("NpgsqlCommand", StringComparison.OrdinalIgnoreCase) &&
+            !text.EndsWith("Command",       StringComparison.OrdinalIgnoreCase))
+            return text.Length > 500 ? text[..500] + "\u2026" : text;
+
+        // SQL text not available via DiagnosticSource ETW bridge — use context metadata as label.
+        string? context = ExtractStructValueField(ev, "Context");
+        string? source  = ExtractStructValueField(ev, "CommandSource");
+        // context is the fully-qualified DbContext name, e.g. "Acme.Data.AppDbContext" → "AppDbContext"
+        string simpleName = context is { Length: > 0 }
+            ? context.Split('.')[^1]
+            : "";
+        if (simpleName.Length > 0)
         {
-            string? text = ExtractArgValue(args, "CommandText")
-                        ?? ExtractArgValue(args, "commandText");
-            if (text is { Length: > 0 } &&
-                !text.Contains("SqlCommand",  StringComparison.OrdinalIgnoreCase) &&
-                !text.Contains("NpgsqlCommand", StringComparison.OrdinalIgnoreCase) &&
-                !text.EndsWith("Command",     StringComparison.OrdinalIgnoreCase))
-                return text.Length > 500 ? text[..500] + "\u2026" : text;
+            return source is { Length: > 0 }
+                ? $"(EF Core: {simpleName}.{source})"
+                : $"(EF Core: {simpleName})";
         }
-        // SQL text not captured via DiagnosticSource bridge — this shows in the
-        // hasNoTextCommands alert and prompts the user to add Microsoft-EntityFrameworkCore.
         return "(no SQL text — EF Core via DiagnosticSource)";
     }
 
     /// <summary>Extracts the database name from EF Core DiagnosticSource Arguments.</summary>
     private static string GetEfDatabase(TraceEvent ev)
     {
-        string? args = GetStringPayloadRaw(ev, "Arguments");
-        if (args is not null)
-        {
-            string? db = ExtractArgValue(args, "Database")
-                      ?? ExtractArgValue(args, "database");
-            if (db is { Length: > 0 } &&
-                !db.Contains("Connection", StringComparison.OrdinalIgnoreCase))
-                return db;
-        }
+        string? db = ExtractStructValueField(ev, "Database")
+                  ?? ExtractStructValueField(ev, "database");
+        if (db is { Length: > 0 } &&
+            !db.Contains("Connection", StringComparison.OrdinalIgnoreCase))
+            return db;
         return "(EF Core)";
     }
 

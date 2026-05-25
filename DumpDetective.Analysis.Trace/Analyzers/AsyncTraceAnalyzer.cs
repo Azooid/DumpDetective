@@ -123,7 +123,7 @@ public sealed class AsyncTraceAnalyzer
                 EvKind[meta.EventName] = v = meta.Kind switch
                 {
                     _ when meta.Kind == TaskScheduled => 1,
-                    _ when meta.Kind == TaskCompleted => 2,
+                    _ when meta.Kind == TaskCompleted || meta.Kind == TaskExecuteStop => 2,
                     _ when meta.Kind == TaskWaitBegin => 3,
                     _ when meta.Kind == TaskWaitEnd => 4,
                     _ when meta.Kind == AwaiterContinuation => 5,
@@ -248,9 +248,10 @@ public sealed class AsyncTraceAnalyzer
         n.Contains("TaskScheduled",     StringComparison.OrdinalIgnoreCase);
 
     private static bool IsTaskCompleted(string n) =>
-        n.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase) ||
-        n.Contains("TaskCompleted",      StringComparison.OrdinalIgnoreCase) ||
-        n.Contains("Task/Completed",     StringComparison.OrdinalIgnoreCase);
+        n.Contains("Task/Execute/Stop",  StringComparison.OrdinalIgnoreCase) || // .NET Framework style
+        n.Contains("TaskExecute/Stop",   StringComparison.OrdinalIgnoreCase) || // .NET Core TplEventSource
+        n.Contains("TaskCompleted",       StringComparison.OrdinalIgnoreCase) ||
+        n.Contains("Task/Completed",      StringComparison.OrdinalIgnoreCase);
 
     private static bool IsTaskWaitBegin(string n) =>
         n.Contains("Task/Wait/Begin", StringComparison.OrdinalIgnoreCase) ||

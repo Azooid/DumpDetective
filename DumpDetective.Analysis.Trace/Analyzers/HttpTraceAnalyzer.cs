@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Analysis.Trace.TraceEventHelpers;
 using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
@@ -42,6 +43,9 @@ public sealed class HttpTraceAnalyzer
         internal readonly Dictionary<string, RequestStart> InFlightOther = new(StringComparer.OrdinalIgnoreCase);
         internal readonly List<HttpRequestEntry> CompletedIis = new();
         internal readonly List<HttpRequestEntry> CompletedOther = new();
+        // Native Microsoft.AspNetCore.Hosting events — real inbound paths, preferred over DiagnosticSource.
+        internal readonly Dictionary<string, RequestStart> InFlightHosting = new(StringComparer.OrdinalIgnoreCase);
+        internal readonly List<HttpRequestEntry> CompletedHosting = new();
 
         public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
@@ -54,6 +58,21 @@ public sealed class HttpTraceAnalyzer
             if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
             {
                 ConsumeHttpDiagnosticSource(ev, timestampMs, threadId);
+                return;
+            }
+
+            // Provider-specific routing for event names shared across providers.
+            // "RequestStart"/"RequestStop" exist in both System.Net.Http and Microsoft.AspNetCore.Hosting
+            // with different field schemas — route by provider before the event-name-only EvKind cache.
+            if (meta.ProviderName.Contains("AspNetCore.Hosting", StringComparison.OrdinalIgnoreCase) ||
+                meta.ProviderName.Equals("Microsoft-AspNetCore-Hosting", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsumeAspNetCoreHostingNative(ev, meta, timestampMs, threadId);
+                return;
+            }
+            if (meta.ProviderName.Equals("System.Net.Http", StringComparison.OrdinalIgnoreCase))
+            {
+                ConsumeSystemNetHttpNative(ev, meta, timestampMs, threadId);
                 return;
             }
 
@@ -99,6 +118,20 @@ public sealed class HttpTraceAnalyzer
                 if (path.Length == 0) path = SafeStr(ev, "RequestPath");
                 if (path.Length == 0) path = SafeStr(ev, "Url");
                 if (path.Length == 0) path = SafeStr(ev, "RequestUrl");
+                // System.Net.Http EventSource: scheme + host + port + pathAndQuery
+                if (path.Length == 0)
+                {
+                    string host = SafeStr(ev, "host");
+                    string pq   = SafeStr(ev, "pathAndQuery");
+                    if (host.Length > 0)
+                    {
+                        string scheme = SafeStr(ev, "scheme");
+                        int portNum   = SafeInt(ev, "port");
+                        string portStr = portNum > 0 && portNum != 443 && portNum != 80
+                            ? $":{portNum}" : "";
+                        path = $"{scheme}://{host}{portStr}{pq}";
+                    }
+                }
                 if (path.Length == 0) path = "/";
                 activeInFlight[correlationKey] = new RequestStart(method, path,
                     timestampMs, threadId);
@@ -107,6 +140,14 @@ public sealed class HttpTraceAnalyzer
 
             if (!activeInFlight.TryGetValue(correlationKey, out var req))
             {
+                // Stop without a matching Start — only record if there is an explicit elapsed
+                // duration available (e.g. IIS events carry an 'elapsed' ticks field).
+                // Without elapsed we cannot compute duration, and adding a 0 ms entry would
+                // skew percentile calculations (this is the common case for System.Net.Http
+                // EventSource Request/Stop when a DiagnosticSource event already claimed the key).
+                long ticks2 = SafeLong(ev, "elapsed");
+                if (ticks2 <= 0) return;
+
                 string path2 = useIis ? SafeStr(ev, "RequestPath") : SafeStr(ev, "requestPath");
                 if (path2.Length == 0) path2 = SafeStr(ev, "Path");
                 if (path2.Length == 0) path2 = SafeStr(ev, "RequestPath");
@@ -114,8 +155,7 @@ public sealed class HttpTraceAnalyzer
                 int sc2 = SafeInt(ev, "StatusCode");
                 if (sc2 == 0) sc2 = SafeInt(ev, "statusCode");
                 if (sc2 == 0) sc2 = 200;
-                long ticks2 = SafeLong(ev, "elapsed");
-                double dur2 = ticks2 > 0 ? ticks2 / (double)TimeSpan.TicksPerMillisecond : 0;
+                double dur2 = ticks2 / (double)TimeSpan.TicksPerMillisecond;
                 activeCompleted.Add(new HttpRequestEntry("?", path2, sc2, dur2,
                     timestampMs, threadId));
                 return;
@@ -140,6 +180,13 @@ public sealed class HttpTraceAnalyzer
             // HTTP events; the outer name is always "Event" — pass through to Consume for filtering.
             if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
                 return true;
+            // Native Microsoft.AspNetCore.Hosting and System.Net.Http both emit "RequestStart"/
+            // "RequestStop" events that ComputeHttpKind cannot classify without provider context.
+            // Accept them explicitly; Consume routes them by provider name.
+            if (meta.ProviderName.Contains("AspNetCore.Hosting", StringComparison.OrdinalIgnoreCase) ||
+                meta.ProviderName.Equals("Microsoft-AspNetCore-Hosting", StringComparison.OrdinalIgnoreCase) ||
+                meta.ProviderName.Equals("System.Net.Http", StringComparison.OrdinalIgnoreCase))
+                return meta.EventName.IndexOf("Request", StringComparison.OrdinalIgnoreCase) >= 0;
             if (!EvKind.TryGetValue(meta.EventName, out byte v))
                 EvKind[meta.EventName] = v = meta.Kind switch
                 {
@@ -155,11 +202,86 @@ public sealed class HttpTraceAnalyzer
 
         public void OnComplete() { }
 
+        /// <summary>
+        /// Handles native Microsoft.AspNetCore.Hosting EventSource inbound requests.
+        /// RequestStart carries real <c>method</c> and <c>path</c> fields (lowercase);
+        /// results go into <see cref="CompletedHosting"/> which BuildResult prefers over
+        /// the DiagnosticSource fallback that only produces <c>/(ASP.NET Core)</c> paths.
+        /// </summary>
+        private void ConsumeAspNetCoreHostingNative(TraceEvent ev, in TraceEventMeta meta,
+            double timestampMs, int threadId)
+        {
+            bool isStart = meta.EventName.IndexOf("Start", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool isStop  = !isStart && meta.EventName.IndexOf("Stop",  StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isStart && !isStop) return;
+
+            string correlationKey = ev.ActivityID != Guid.Empty
+                ? ev.ActivityID.ToString()
+                : $"thread-{threadId}";
+
+            if (isStart)
+            {
+                string method = SafeStr(ev, "method");   // lowercase field name in native event
+                if (method.Length == 0) method = "GET";
+                string path = SafeStr(ev, "path");       // lowercase field name in native event
+                if (path.Length == 0) path = "/";
+                InFlightHosting[correlationKey] = new RequestStart(method, path, timestampMs, threadId);
+            }
+            else if (InFlightHosting.TryGetValue(correlationKey, out var req))
+            {
+                InFlightHosting.Remove(correlationKey);
+                int statusCode = SafeInt(ev, "statusCode");
+                if (statusCode == 0) statusCode = 200;
+                double durationMs = Math.Max(0, timestampMs - req.StartMs);
+                CompletedHosting.Add(new HttpRequestEntry(req.Method, req.Path, statusCode,
+                    durationMs, req.StartMs, threadId));
+            }
+        }
+
+        /// <summary>
+        /// Handles native System.Net.Http EventSource outbound requests.
+        /// Skips if the ActivityID was already claimed by the DiagnosticSource handler
+        /// (same request, DiagnosticSource provides a richer URL string).
+        /// </summary>
+        private void ConsumeSystemNetHttpNative(TraceEvent ev, in TraceEventMeta meta,
+            double timestampMs, int threadId)
+        {
+            bool isStart = meta.EventName.IndexOf("Start", StringComparison.OrdinalIgnoreCase) >= 0;
+            bool isStop  = !isStart && meta.EventName.IndexOf("Stop",  StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!isStart && !isStop) return;
+
+            string correlationKey = ev.ActivityID != Guid.Empty
+                ? ev.ActivityID.ToString()
+                : $"thread-{threadId}";
+
+            if (isStart)
+            {
+                // Only add if DiagnosticSource hasn't already claimed this request ID.
+                if (!InFlightOther.ContainsKey(correlationKey))
+                {
+                    string host = SafeStr(ev, "host");
+                    if (host.Length == 0) return;
+                    string pq      = SafeStr(ev, "pathAndQuery");
+                    string scheme  = SafeStr(ev, "scheme");
+                    int    portNum = SafeInt(ev, "port");
+                    string portStr = portNum > 0 && portNum != 443 && portNum != 80 ? $":{portNum}" : "";
+                    string url     = $"{scheme}://{host}{portStr}{pq}";
+                    InFlightOther[correlationKey] = new RequestStart("GET", url, timestampMs, threadId);
+                }
+            }
+            else if (InFlightOther.TryGetValue(correlationKey, out var req))
+            {
+                InFlightOther.Remove(correlationKey);
+                double durationMs = Math.Max(0, timestampMs - req.StartMs);
+                CompletedOther.Add(new HttpRequestEntry(req.Method, req.Path, 200,
+                    durationMs, req.StartMs, threadId));
+            }
+        }
+
         private void ConsumeHttpDiagnosticSource(TraceEvent ev, double timestampMs, int threadId)
         {
             string sourceName  = SafeStr(ev, "SourceName");
             string innerEvName = SafeStr(ev, "EventName");
-            string arguments   = SafeStr(ev, "Arguments");
 
             // Outbound: HttpHandlerDiagnosticListener (System.Net.Http outbound client requests)
             if (sourceName.Contains("HttpHandlerDiagnosticListener", StringComparison.OrdinalIgnoreCase) ||
@@ -175,14 +297,23 @@ public sealed class HttpTraceAnalyzer
 
                 if (isStart)
                 {
-                    (string method, string url) = ParseHttpRequestFromArgs(arguments);
-                    InFlightOther[correlationKey] = new RequestStart(method, url, timestampMs, threadId);
+                    // Extract URL from the "Request" StructValue field.
+                    // Value format: "Method: POST, RequestUri: 'https://...', Version: ..."
+                    string requestVal = ExtractStructValueField(ev, "Request") ?? "";
+                    (string method, string url) = ParseHttpRequestFromRequestValue(requestVal);
+                    // Only record if we have a real URL; skip if this ActivityID was already
+                    // claimed by the System.Net.Http EventSource path (same ActivityID).
+                    if (!InFlightOther.ContainsKey(correlationKey))
+                        InFlightOther[correlationKey] = new RequestStart(method, url, timestampMs, threadId);
                 }
                 else if (InFlightOther.TryGetValue(correlationKey, out var req))
                 {
                     InFlightOther.Remove(correlationKey);
-                    int    statusCode = ParseStatusCodeFromArgs(arguments);
-                    double durationMs = Math.Max(0, timestampMs - req.StartMs);
+                    // Extract status from "Response" StructValue field.
+                    // Value format: "StatusCode: 200, ReasonPhrase: 'OK', ..."
+                    string responseVal = ExtractStructValueField(ev, "Response") ?? "";
+                    int    statusCode  = ParseStatusCodeFromResponseValue(responseVal);
+                    double durationMs  = Math.Max(0, timestampMs - req.StartMs);
                     CompletedOther.Add(new HttpRequestEntry(req.Method, req.Path, statusCode,
                         durationMs, req.StartMs, threadId));
                 }
@@ -198,12 +329,12 @@ public sealed class HttpTraceAnalyzer
                                innerEvName.EndsWith(".Stop",  StringComparison.OrdinalIgnoreCase);
                 if (!isStart && !isStop) return;
 
-                // TraceIdentifier is the reliable per-request correlation key.
-                string correlationKey = ExtractArgValue(arguments, "TraceIdentifier") ?? "";
-                if (correlationKey.Length == 0)
-                    correlationKey = ev.ActivityID != Guid.Empty
-                        ? ev.ActivityID.ToString()
-                        : $"thread-{threadId}";
+                // ASP.NET Core DiagnosticSource events have zero ActivityIDs in EventPipe traces.
+                // The request path is not serialized into Arguments (only type names are emitted).
+                // Use thread-based correlation as best effort.
+                string correlationKey = ev.ActivityID != Guid.Empty
+                    ? ev.ActivityID.ToString()
+                    : $"thread-{threadId}";
 
                 if (isStart)
                 {
@@ -219,46 +350,42 @@ public sealed class HttpTraceAnalyzer
             }
         }
 
-        private static (string Method, string Url) ParseHttpRequestFromArgs(string arguments)
+        private static (string Method, string Url) ParseHttpRequestFromRequestValue(string requestVal)
         {
-            // Format: [Request->"Method: POST, RequestUri: 'https://...', ...",...]
-            string? reqVal = ExtractArgValue(arguments, "Request");
-            if (reqVal is null) return ("GET", "/");
+            // Format: "Method: POST, RequestUri: 'https://...', Version: 1.1, ..."
+            if (requestVal.Length == 0) return ("GET", "/");
 
             string method = "GET";
-            int mIdx = reqVal.IndexOf("Method: ", StringComparison.Ordinal);
+            int mIdx = requestVal.IndexOf("Method: ", StringComparison.Ordinal);
             if (mIdx >= 0)
             {
-                int end = reqVal.IndexOf(',', mIdx + 8);
-                string m = end > 0 ? reqVal[(mIdx + 8)..end].Trim() : reqVal[(mIdx + 8)..].Trim();
+                int end = requestVal.IndexOf(',', mIdx + 8);
+                string m = end > 0 ? requestVal[(mIdx + 8)..end].Trim() : requestVal[(mIdx + 8)..].Trim();
                 if (m.Length > 0 && m.Length <= 10) method = m;
             }
 
             string url = "/";
-            int uIdx = reqVal.IndexOf("RequestUri: '", StringComparison.Ordinal);
+            int uIdx = requestVal.IndexOf("RequestUri: '", StringComparison.Ordinal);
             if (uIdx >= 0)
             {
                 int uStart = uIdx + 13;
-                int uEnd   = reqVal.IndexOf('\'', uStart);
-                if (uEnd > uStart) url = reqVal[uStart..uEnd];
+                int uEnd   = requestVal.IndexOf('\'', uStart);
+                if (uEnd > uStart) url = requestVal[uStart..uEnd];
             }
 
             return (method, url);
         }
 
-        private static int ParseStatusCodeFromArgs(string arguments)
+        private static int ParseStatusCodeFromResponseValue(string responseVal)
         {
-            // Format: [...,Response->"StatusCode: 200, ...",...]
-            string? respVal = ExtractArgValue(arguments, "Response");
-            if (respVal is null) return 200;
-
-            int scIdx = respVal.IndexOf("StatusCode: ", StringComparison.Ordinal);
+            // Format: "StatusCode: 200, ReasonPhrase: 'OK', ..."
+            if (responseVal.Length == 0) return 200;
+            int scIdx = responseVal.IndexOf("StatusCode: ", StringComparison.Ordinal);
             if (scIdx < 0) return 200;
-
             int scStart = scIdx + 12;
             int scEnd   = scStart;
-            while (scEnd < respVal.Length && char.IsAsciiDigit(respVal[scEnd])) scEnd++;
-            return int.TryParse(respVal[scStart..scEnd], out int code) ? code : 200;
+            while (scEnd < responseVal.Length && char.IsAsciiDigit(responseVal[scEnd])) scEnd++;
+            return int.TryParse(responseVal[scStart..scEnd], out int code) ? code : 200;
         }
     }
 
@@ -270,7 +397,11 @@ public sealed class HttpTraceAnalyzer
                                       string? processFilter = null)
     {
         var c = (Consumer)consumer;
-        var completed = c.CompletedIis.Count > 0 ? c.CompletedIis : c.CompletedOther;
+        // Prefer IIS events, then native ASP.NET Core Hosting events (real paths),
+        // then DiagnosticSource fallback (only has "/(ASP.NET Core)" placeholder paths).
+        var completed = c.CompletedIis.Count > 0     ? c.CompletedIis
+                      : c.CompletedHosting.Count > 0 ? c.CompletedHosting
+                      : c.CompletedOther;
 
         if (completed.Count == 0)
         {

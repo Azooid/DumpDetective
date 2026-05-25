@@ -99,9 +99,14 @@ public sealed class TraceEventKind : IEquatable<TraceEventKind>
     public static readonly TraceEventKind ContentionStop  = BuiltIn("ContentionStop");
 
     // ── Exceptions ───────────────────────────────────────────────────────────
-    public static readonly TraceEventKind ExceptionThrown    = BuiltIn("ExceptionThrown");
-    public static readonly TraceEventKind ExceptionCatchStart = BuiltIn("ExceptionCatchStart");
-    public static readonly TraceEventKind ExceptionCatchStop  = BuiltIn("ExceptionCatchStop");
+    public static readonly TraceEventKind ExceptionThrown      = BuiltIn("ExceptionThrown");
+    public static readonly TraceEventKind ExceptionCatchStart  = BuiltIn("ExceptionCatchStart");
+    public static readonly TraceEventKind ExceptionCatchStop   = BuiltIn("ExceptionCatchStop");
+    // ExceptionHandled = Exception/Stop (.NET Framework: exception handling complete)
+    public static readonly TraceEventKind ExceptionHandled     = BuiltIn("ExceptionHandled");
+    // ExceptionFinally = .NET Framework exception finally block events
+    public static readonly TraceEventKind ExceptionFinallyStart = BuiltIn("ExceptionFinallyStart");
+    public static readonly TraceEventKind ExceptionFinallyStop  = BuiltIn("ExceptionFinallyStop");
 
     // ── ThreadPool ───────────────────────────────────────────────────────────
     public static readonly TraceEventKind ThreadPoolEnqueue    = BuiltIn("ThreadPoolEnqueue");
@@ -215,6 +220,9 @@ public sealed class TraceEventKind : IEquatable<TraceEventKind>
     public static readonly TraceEventKind TaskWaitSend            = BuiltIn("TaskWaitSend");
     public static readonly TraceEventKind TraceSynchronousWorkStart = BuiltIn("TraceSynchronousWorkStart");
     public static readonly TraceEventKind TraceSynchronousWorkStop  = BuiltIn("TraceSynchronousWorkStop");
+    // TraceOperation = async operation lifecycle (TplEventSource, .NET Core)
+    public static readonly TraceEventKind TraceOperationStart     = BuiltIn("TraceOperationStart");
+    public static readonly TraceEventKind TraceOperationStop      = BuiltIn("TraceOperationStop");
 
     // ── Kestrel HTTP & TLS ────────────────────────────────────────────────────
     public static readonly TraceEventKind KestrelRequestStart      = BuiltIn("KestrelRequestStart");
