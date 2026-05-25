@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -41,17 +42,17 @@ public sealed class FileIoTraceAnalyzer
         internal int Reads, Writes, Other;
         internal long ReadBytes, WriteBytes;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind =
-                    evName.StartsWith("FileIO",   StringComparison.OrdinalIgnoreCase) ? (byte)1 :
-                    evName.StartsWith("File/",    StringComparison.OrdinalIgnoreCase) ? (byte)1 :
-                    evName.Contains("KernelFile", StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind =
+                    meta.EventName.StartsWith("FileIO",   StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    meta.EventName.StartsWith("File/",    StringComparison.OrdinalIgnoreCase) ? (byte)1 :
+                    meta.EventName.Contains("KernelFile", StringComparison.OrdinalIgnoreCase) ? (byte)1 :
                     (byte)0;
             if (kind == 0) return;
 
@@ -64,10 +65,10 @@ public sealed class FileIoTraceAnalyzer
 
             string key = $"{threadId}-{SafeStr(ev, "IrpPtr")}";
 
-            bool isRead   = evName.Contains("Read",   StringComparison.OrdinalIgnoreCase);
-            bool isWrite  = evName.Contains("Write",  StringComparison.OrdinalIgnoreCase);
-            bool isCreate = evName.Contains("Create", StringComparison.OrdinalIgnoreCase);
-            bool isClose  = evName.Contains("Close",  StringComparison.OrdinalIgnoreCase);
+            bool isRead   = meta.EventName.Contains("Read",   StringComparison.OrdinalIgnoreCase);
+            bool isWrite  = meta.EventName.Contains("Write",  StringComparison.OrdinalIgnoreCase);
+            bool isCreate = meta.EventName.Contains("Create", StringComparison.OrdinalIgnoreCase);
+            bool isClose  = meta.EventName.Contains("Close",  StringComparison.OrdinalIgnoreCase);
 
             if (!isRead && !isWrite) { if (isCreate || isClose) Other++; return; }
 
@@ -94,8 +95,8 @@ public sealed class FileIoTraceAnalyzer
             }
             else
             {
-                bool isEnd = evName.Contains("End",  StringComparison.OrdinalIgnoreCase) ||
-                             evName.Contains("Stop", StringComparison.OrdinalIgnoreCase);
+                bool isEnd = meta.EventName.Contains("End",  StringComparison.OrdinalIgnoreCase) ||
+                             meta.EventName.Contains("Stop", StringComparison.OrdinalIgnoreCase);
                 if (!isEnd)
                 {
                     Pending[key] = (timestampMs, opType, filePath);
@@ -125,7 +126,20 @@ public sealed class FileIoTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = eventName.StartsWith("FileIO", StringComparison.OrdinalIgnoreCase) || eventName.StartsWith("File/", StringComparison.OrdinalIgnoreCase) || eventName.Contains("KernelFile", StringComparison.OrdinalIgnoreCase) ? (byte)1 : (byte)0; return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == FileRead || meta.Kind == FileWrite || meta.Kind == FileCreate || meta.Kind == FileClose || meta.Kind == FileFlush => 1,
+                    _ when meta.IsKnown                                           => 0,
+                    _ => meta.EventName.StartsWith("FileIO",     StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.StartsWith("File/",      StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.Contains("KernelFile",   StringComparison.OrdinalIgnoreCase) ? (byte)1
+                       : (byte)0
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

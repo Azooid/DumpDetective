@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -34,14 +35,14 @@ public sealed class GcTraceAnalyzer
         internal readonly List<GcEvent> Complete = new();
         internal long LastHeapTotal;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind = ClassifyGcEvent(evName);
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind = ClassifyGcEvent(meta.EventName);
             if (kind == 0) return;
 
             if (kind == 1)
@@ -89,7 +90,19 @@ public sealed class GcTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ClassifyGcEvent(eventName); return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == GCStart => 1,
+                    _ when meta.Kind == GCHeapStats => 2,
+                    _ when meta.Kind == GCStop => 3,
+                    _ when meta.IsKnown => 0,
+                    _ => ClassifyGcEvent(meta.EventName)
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
 

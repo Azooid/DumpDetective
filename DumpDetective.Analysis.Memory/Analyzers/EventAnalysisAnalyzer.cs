@@ -141,7 +141,7 @@ public sealed class EventAnalysisAnalyzer : IHeapObjectConsumer
                     {
                         update(raw);
                     }
-                }));
+                }, sequentialOnly: ctx.IsCoreRuntime));
 
         var rawGroups      = consumer.RawGroups;
         var instanceCounts = consumer.InstanceCounts;

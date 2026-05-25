@@ -95,7 +95,7 @@ public sealed class TimerLeaksAnalyzer : IHeapObjectConsumer
 
         Reset(ctx.Runtime);
         CommandBase.RunStatus("Scanning timer objects...", update =>
-            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         ctx.SetAnalysis(_result!);
         return _result!;

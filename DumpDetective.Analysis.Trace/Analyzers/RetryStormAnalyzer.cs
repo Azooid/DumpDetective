@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -37,16 +38,16 @@ public sealed class RetryStormAnalyzer
         internal readonly List<(double TimeMs, string ExType)> RetryEvents = new();
         internal readonly Dictionary<string, int> ExTypeCounts = new(StringComparer.OrdinalIgnoreCase);
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
             bool isEx =
-                evName.EndsWith("Exception/Start",  StringComparison.OrdinalIgnoreCase) ||
-                evName.EndsWith("ExceptionThrown",   StringComparison.OrdinalIgnoreCase) ||
-                evName.EndsWith("Exception",         StringComparison.OrdinalIgnoreCase);
+                meta.EventName.EndsWith("Exception/Start",  StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.EndsWith("ExceptionThrown",   StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.EndsWith("Exception",         StringComparison.OrdinalIgnoreCase);
             if (!isEx) return;
 
             string exType = SafeStr(ev, "ExceptionType");
@@ -66,7 +67,14 @@ public sealed class RetryStormAnalyzer
             ExTypeCounts[exType] = prev + 1;
         }
 
-        public bool WantsEvent(string eventName) => eventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("Exception", StringComparison.OrdinalIgnoreCase);
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == ExceptionThrown => true,
+            _ when meta.IsKnown => false,
+            _ => meta.EventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.EndsWith("Exception",       StringComparison.OrdinalIgnoreCase)
+        };
 
         public void OnComplete() { }
     }

@@ -75,10 +75,14 @@ public sealed class SqlTraceReport
         if (hasNoTextCommands)
             sink.Alert(AlertLevel.Info,
                 "Some commands show '(no SQL text …)' — the SQL query string was not captured in this trace.",
-                "The Microsoft-AdoNet-SystemData provider only writes commandText at EventLevel.Verbose (level 5). " +
-                "To capture full SQL text, re-collect with a higher verbosity level.",
-                "dotnet-trace:  --providers 'Microsoft-AdoNet-SystemData:0xFF:5'\n" +
-                "PerfView:      /Providers:\"Microsoft-AdoNet-SystemData\" with /TraceLevel:Verbose\n\n" +
+                "Two common causes:\n" +
+                "  • EF Core events captured via Microsoft-Diagnostics-DiagnosticSource: the DiagnosticSource ETW bridge\n" +
+                "    serialises the DbCommand object reference, not its CommandText.  Add the dedicated EF Core EventSource:\n" +
+                "      dotnet-trace:  --providers 'Microsoft-EntityFrameworkCore:0xFFFF:5'\n" +
+                "      PerfView:      /Providers:\"Microsoft-EntityFrameworkCore\"\n" +
+                "  • Microsoft-AdoNet-SystemData captured at a low verbosity level: commandText is only written at level 5.\n" +
+                "      dotnet-trace:  --providers 'Microsoft-AdoNet-SystemData:0xFF:5'\n" +
+                "      PerfView:      /Providers:\"Microsoft-AdoNet-SystemData\" with /TraceLevel:Verbose\n\n" +
                 "The db= and id= values shown in the command column identify which database and SqlCommand " +
                 "object each entry came from, even without SQL text.");
 

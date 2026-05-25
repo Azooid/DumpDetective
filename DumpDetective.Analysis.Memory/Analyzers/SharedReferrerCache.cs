@@ -131,7 +131,7 @@ internal sealed class SharedReferrerCache : IDisposable
         }
 
         var consumer = new ReferrerConsumer(bfsCapacity, hotAddrs, parentMapPath);
-        HeapWalker.Walk(ctx.Heap, [consumer], progress);
+        HeapWalker.Walk(ctx.Heap, [consumer], progress, sequentialOnly: ctx.IsCoreRuntime);
 
         return new SharedReferrerCache(consumer.ParentMap!, consumer.HotTypes);
     }

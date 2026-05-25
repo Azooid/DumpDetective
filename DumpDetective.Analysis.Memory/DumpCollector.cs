@@ -4,6 +4,7 @@ using DumpDetective.Core.Utilities;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Interfaces;
 using System.Diagnostics;
+using System.IO;
 
 namespace DumpDetective.Analysis.Memory;
 
@@ -87,8 +88,105 @@ public static class DumpCollector
 
         if (runtime is null) return snapshot;
 
-        snapshot.ClrVersion = runtime.ClrInfo?.Version.ToString();
+        snapshot.ClrVersion = GetClrVersionString(runtime);
         return FinalizeSnapshot(runtime, snapshot, full, progress);
+    }
+
+    /// <summary>
+    /// Returns a human-readable CLR version string, using the same fallback logic as
+    /// <see cref="DumpContext.GetClrVersion"/>: when the parsed version is 0.0 (common
+    /// for .NET Core dumps), we try to extract the version from <c>ClrInfo.ModuleInfo.Version</c>
+    /// or the DAC filename in <c>ClrInfo.DebuggingLibraries</c>.
+    /// </summary>
+    private static string? GetClrVersionString(ClrRuntime runtime)
+    {
+        var clrInfo = runtime.ClrInfo;
+        if (clrInfo is null) return null;
+
+        bool isCoreRuntime = clrInfo.Flavor is ClrFlavor.Core or ClrFlavor.NativeAOT;
+
+        var v = clrInfo.Version;
+        if (v is not null && (v.Major != 0 || v.Minor != 0))
+        {
+            string prefix = isCoreRuntime ? ".NET " : "CLR ";
+            return $"{prefix}{v.Major}.{v.Minor}";
+        }
+
+        // Fallback 1: ModuleInfo.Version (file version of the CLR module)
+        try
+        {
+            var modVer = clrInfo.ModuleInfo.Version;
+            if (modVer is not null && modVer.Major != 0)
+            {
+                string prefix = isCoreRuntime ? ".NET " : "CLR ";
+                return $"{prefix}{modVer.Major}.{modVer.Minor}";
+            }
+        }
+        catch { /* non-critical */ }
+
+        // Fallback 2: extract from DAC filename in DebuggingLibraries
+        try
+        {
+            foreach (var lib in clrInfo.DebuggingLibraries)
+            {
+                if (lib.FileName is null) continue;
+                var name = Path.GetFileNameWithoutExtension(lib.FileName);
+                var lastUnderscore = name.LastIndexOf('_');
+                if (lastUnderscore < 0) continue;
+                var versionPart = name[(lastUnderscore + 1)..];
+                if (versionPart.Length == 0 || !char.IsDigit(versionPart[0])) continue;
+                var parts = versionPart.Split('.');
+                if (parts.Length < 2) continue;
+                string prefix = isCoreRuntime ? ".NET " : "CLR ";
+                return $"{prefix}{parts[0]}.{parts[1]}";
+            }
+        }
+        catch { /* non-critical */ }
+
+        // Fallback 3: scan module paths via EnumerateModules() for a versioned CLR path.
+        // Linux: /usr/share/dotnet/shared/Microsoft.NETCore.App/8.0.21/libcoreclr.so
+        // Windows: C:\Program Files\dotnet\shared\Microsoft.NETCore.App\8.0.21\coreclr.dll
+        // Avoids accessing ClrInfo.ModuleInfo.FileName which can corrupt the data reader on
+        // cross-platform (Linux-dump-on-Windows) scenarios.
+        try
+        {
+            foreach (var module in runtime.EnumerateModules())
+            {
+                var moduleName = module.Name;
+                if (string.IsNullOrEmpty(moduleName)) continue;
+                var ver = ExtractVersionFromModulePath(moduleName);
+                if (ver is not null)
+                {
+                    string prefix = isCoreRuntime ? ".NET " : "CLR ";
+                    return $"{prefix}{ver}";
+                }
+            }
+        }
+        catch { /* non-critical */ }
+
+        return v?.ToString();
+    }
+
+    /// <summary>
+    /// Extracts a Major.Minor version string from a .NET runtime module path.
+    /// Looks for numeric path segments (e.g. "8.0.21") with a non-zero major version.
+    /// Returns "8.0" for "/usr/share/dotnet/shared/Microsoft.NETCore.App/8.0.21/libcoreclr.so".
+    /// </summary>
+    private static string? ExtractVersionFromModulePath(string modulePath)
+    {
+        foreach (var segment in modulePath.Replace('\\', '/').Split('/'))
+        {
+            if (segment.Length == 0 || !char.IsDigit(segment[0])) continue;
+            var dotParts = segment.Split('.');
+            if (dotParts.Length >= 2 &&
+                int.TryParse(dotParts[0], out int maj) &&
+                int.TryParse(dotParts[1], out int min) &&
+                maj > 0)
+            {
+                return $"{maj}.{min}";
+            }
+        }
+        return null;
     }
 
     private static DumpSnapshot CreateSnapshot(string dumpPath, DateTime fileTime, bool full)
@@ -152,7 +250,13 @@ public static class DumpCollector
             if (ctx is not null && full)
                 HeapObjectCollector.CollectHeapObjectsCombined(ctx, snapshot, progress, extraConsumers, heapContributors);
             else
-                HeapObjectCollector.CollectHeapObjects(heap, snapshot, full, progress);
+            {
+                // Detect .NET Core / NativeAOT from runtime when ctx is unavailable:
+                // parallel segment walking is unsafe on those runtimes.
+                bool seqOnly = ctx?.IsCoreRuntime
+                    ?? (runtime.ClrInfo?.Flavor is ClrFlavor.Core or ClrFlavor.NativeAOT);
+                HeapObjectCollector.CollectHeapObjects(heap, snapshot, full, progress, seqOnly);
+            }
 
             if (sw is not null) sw.Restart();
             RuntimeSubCollectors.CollectFinalizerQueue(heap, snapshot, progress);

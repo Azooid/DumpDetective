@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -35,16 +36,16 @@ public sealed class ProcessLifecycleAnalyzer
         internal readonly Dictionary<string, double> LastStop = new(StringComparer.OrdinalIgnoreCase);
         internal int Restarts, Abnormal;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             bool isStart =
-                evName.EndsWith("Process/Start",  StringComparison.OrdinalIgnoreCase) ||
-                evName.EndsWith("ProcessStart",   StringComparison.OrdinalIgnoreCase) ||
-                evName.Contains("ProcessStart/Start", StringComparison.OrdinalIgnoreCase);
+                meta.EventName.EndsWith("Process/Start",  StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.EndsWith("ProcessStart",   StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.Contains("ProcessStart/Start", StringComparison.OrdinalIgnoreCase);
             bool isStop =
-                evName.EndsWith("Process/Stop",   StringComparison.OrdinalIgnoreCase) ||
-                evName.EndsWith("ProcessStop",    StringComparison.OrdinalIgnoreCase) ||
-                evName.Contains("ProcessStop/Stop",  StringComparison.OrdinalIgnoreCase);
+                meta.EventName.EndsWith("Process/Stop",   StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.EndsWith("ProcessStop",    StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.Contains("ProcessStop/Stop",  StringComparison.OrdinalIgnoreCase);
 
             if (!isStart && !isStop) return;
 
@@ -81,7 +82,12 @@ public sealed class ProcessLifecycleAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) => eventName.Contains("Process", StringComparison.OrdinalIgnoreCase);
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == ProcessStart || meta.Kind == ProcessStop => true,
+            _ when meta.IsKnown         => false,
+            _ => meta.EventName.Contains("Process", StringComparison.OrdinalIgnoreCase)
+        };
 
         public void OnComplete() { }
     }

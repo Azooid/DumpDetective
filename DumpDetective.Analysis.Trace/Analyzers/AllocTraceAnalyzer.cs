@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -35,17 +36,17 @@ public sealed class AllocTraceAnalyzer
         internal readonly Dictionary<string, CallSiteAcc> ByCallSite = new(StringComparer.Ordinal);
         internal int TotalTicks;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out bool isAlloc))
-                EvKind[evName] = isAlloc =
-                    evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
-                    evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
+            if (!EvKind.TryGetValue(meta.EventName, out bool isAlloc))
+                EvKind[meta.EventName] = isAlloc =
+                    meta.EventName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
             if (!isAlloc) return;
 
             TotalTicks++;
@@ -71,7 +72,19 @@ public sealed class AllocTraceAnalyzer
             csAcc.Bytes += allocBytes;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("GCAllocationTick", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) || eventName.IndexOf("AllocationTick", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == GCAllocationTick => true,
+                    _ when meta.IsKnown => false,
+                    _ => meta.EventName.EndsWith("GCAllocationTick",    StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("GC/AllocationTick",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.IndexOf("AllocationTick", StringComparison.OrdinalIgnoreCase) >= 0
+                };
+            return v;
+        }
 
         public void OnComplete() { }
     }

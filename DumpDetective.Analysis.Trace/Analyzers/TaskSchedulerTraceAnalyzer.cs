@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -41,14 +42,14 @@ public sealed class TaskSchedulerTraceAnalyzer
         internal double MaxDuration, TotalDuration, MaxWait;
         internal readonly Dictionary<int, int> PerSecond = new();
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind = ComputeTaskSchedulerKind(evName);
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind = ComputeTaskSchedulerKind(meta.EventName);
             if (kind == 0) return;
 
             if (kind == 1)
@@ -69,7 +70,7 @@ public sealed class TaskSchedulerTraceAnalyzer
             {
                 int taskId = SafeInt(ev, "TaskID");
                 bool isCancelled = SafeStr(ev, "IsExceptional") == "True" ||
-                                   evName.Contains("Cancel", StringComparison.OrdinalIgnoreCase);
+                                   meta.EventName.Contains("Cancel", StringComparison.OrdinalIgnoreCase);
                 if (isCancelled) Cancelled++;
                 else Completed++;
 
@@ -103,7 +104,20 @@ public sealed class TaskSchedulerTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeTaskSchedulerKind(eventName); return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == TaskScheduled => 1,
+                    _ when meta.Kind == TaskCompleted || meta.Kind == TaskExecuteStop => 2,
+                    _ when meta.Kind == TaskWaitBegin => 3,
+                    _ when meta.Kind == TaskWaitEnd => 4,
+                    _ when meta.IsKnown => 0,
+                    _ => ComputeTaskSchedulerKind(meta.EventName)
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }
@@ -163,7 +177,8 @@ public sealed class TaskSchedulerTraceAnalyzer
             n.Contains("TaskScheduled",     StringComparison.OrdinalIgnoreCase)) return 1;
         if (n.Contains("Task/Completed",   StringComparison.OrdinalIgnoreCase) ||
             n.Contains("TaskCompleted",     StringComparison.OrdinalIgnoreCase) ||
-            n.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase)) return 2;
+            n.Contains("Task/Execute/Stop", StringComparison.OrdinalIgnoreCase) ||
+            n.Contains("TaskExecute/Stop",  StringComparison.OrdinalIgnoreCase)) return 2;
         if (n.Contains("TaskWaitBegin",    StringComparison.OrdinalIgnoreCase) ||
             n.Contains("Task/Wait/Begin",   StringComparison.OrdinalIgnoreCase)) return 3;
         if (n.Contains("TaskWaitEnd",      StringComparison.OrdinalIgnoreCase) ||

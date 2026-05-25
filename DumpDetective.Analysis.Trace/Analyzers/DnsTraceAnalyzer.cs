@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -43,14 +44,14 @@ public sealed class DnsTraceAnalyzer
         internal double TotalMs;
         internal double MaxMs;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind = ComputeDnsKind(evName);
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind = ComputeDnsKind(meta.EventName);
             if (kind == 0) return;
 
             string host = SafeStr(ev, "HostName");
@@ -96,7 +97,19 @@ public sealed class DnsTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) EvKind[eventName] = v = ComputeDnsKind(eventName); return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == DnsResolutionStart => 1,
+                    _ when meta.Kind == DnsResolutionStop => 2,
+                    _ when meta.Kind == DnsResolutionFailed => 3,
+                    _ when meta.IsKnown => 0,
+                    _ => ComputeDnsKind(meta.EventName)
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

@@ -93,12 +93,31 @@ public static class BfsIndexBuilder
 
     private const int MaxParallel = 8;
 
+    // ── Sequential-mode detection (used for .NET Core / NativeAOT dumps) ───────
+    // .NET Core dump data readers are not thread-safe across segment accesses.
+    // Using Parallel.ForEach(heap.Segments) on those dumps causes
+    // "The handle is invalid" errors. Fall back to single-threaded iteration.
+
+    /// <summary>
+    /// Returns <see langword="true"/> when <paramref name="flavor"/> identifies a runtime
+    /// whose dump data reader is not thread-safe for concurrent segment access
+    /// (.NET Core, NativeAOT).  Extracted for unit-testability.
+    /// </summary>
+    internal static bool IsSequentialFlavor(ClrFlavor? flavor)
+        => flavor is ClrFlavor.Core or ClrFlavor.NativeAOT;
+
+    private static bool IsSequentialOnly(ClrHeap heap)
+        => IsSequentialFlavor(heap.Runtime?.ClrInfo?.Flavor);
+
     // ── Pass 1: assign stable integer indices, collect sizes ─────────────────
     // Phase 1a: each segment collects its own (addr, size) list in parallel.
     // Phase 1b: segments are merged in order → deterministic index assignment.
 
     public static BfsPass1State BuildPass1(ClrHeap heap, Action<string>? update = null)
     {
+        if (IsSequentialOnly(heap))
+            return BuildPass1Sequential(heap, update);
+
         var segments = heap.Segments.ToArray();
         var perSeg   = new (ulong[] Addrs, long[] Sizes)[segments.Length];
 
@@ -194,6 +213,9 @@ public static class BfsIndexBuilder
 
     public static BfsPass2State BuildPass2(ClrHeap heap, BfsPass1State p1, Action<string>? update = null)
     {
+        if (IsSequentialOnly(heap))
+            return BuildPass2Sequential(heap, p1, update);
+
         int  nodeCount     = p1.NodeCount;
         var  childCounts   = new int[nodeCount];
         long totalEdges    = 0;
@@ -256,6 +278,9 @@ public static class BfsIndexBuilder
 
     public static BfsIndexCache BuildPass3(ClrHeap heap, BfsPass2State p2, Action<string>? update = null)
     {
+        if (IsSequentialOnly(heap))
+            return BuildPass3Sequential(heap, p2, update);
+
         var p1        = p2.Pass1;
         int nodeCount = p1.NodeCount;
 
@@ -322,7 +347,148 @@ public static class BfsIndexBuilder
         return new BfsIndexCache(p1.IndexToAddr, p1.Sizes, offsets, children, p1.SortedIdxMap);
     }
 
-    /// <summary>
+    // ── Sequential fallbacks (used when IsSequentialOnly returns true) ────────
+    // These re-implement each pass using heap.EnumerateObjects() instead of
+    // Parallel.ForEach(heap.Segments) to avoid "The handle is invalid" on Core dumps.
+
+    private static BfsPass1State BuildPass1Sequential(ClrHeap heap, Action<string>? update)
+    {
+        var addrBuf   = new List<ulong>(65536);
+        var sizeBuf   = new List<long>(65536);
+        long totBytes = 0;
+        long count    = 0;
+        long nextTick = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 5;
+        long rateBase = 0;
+        long rateTick = Stopwatch.GetTimestamp();
+
+        foreach (var obj in heap.EnumerateObjects())
+        {
+            if (!obj.IsValid || obj.IsNull) continue;
+            addrBuf.Add(obj.Address);
+            long sz = (long)obj.Size;
+            sizeBuf.Add(sz);
+            totBytes += sz;
+            count++;
+
+            if (update is not null && (count & 0x3FFF) == 0)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now >= nextTick)
+                {
+                    long elapsed = now - rateTick;
+                    long rate    = elapsed > 0 ? (count - rateBase) * Stopwatch.Frequency / elapsed : 0;
+                    rateBase = count; rateTick = now;
+                    nextTick = now + Stopwatch.Frequency / 5;
+                    update($"pass 1/3 — enumerating: {count:N0} objects  •  {DumpHelpers.FormatSize(totBytes)}  •  {rate:N0}/s");
+                }
+            }
+        }
+
+        int totalNodes  = addrBuf.Count;
+        var indexToAddr = addrBuf.ToArray();
+        var sizes       = sizeBuf.ToArray();
+        var sortedAddrs = GC.AllocateUninitializedArray<ulong>(Math.Max(totalNodes, 1));
+        var sortedIdxMap= GC.AllocateUninitializedArray<int>(Math.Max(totalNodes, 1));
+        indexToAddr.AsSpan(0, totalNodes).CopyTo(sortedAddrs);
+        for (int i = 0; i < totalNodes; i++) sortedIdxMap[i] = i;
+        Array.Sort(sortedAddrs, sortedIdxMap, 0, totalNodes);
+        sortedAddrs = null!;
+        return new BfsPass1State(indexToAddr, sizes, sortedIdxMap, totBytes);
+    }
+
+    private static BfsPass2State BuildPass2Sequential(ClrHeap heap, BfsPass1State p1, Action<string>? update)
+    {
+        int  nodeCount  = p1.NodeCount;
+        var  childCounts= new int[nodeCount];
+        long totalEdges = 0;
+        long scanned    = 0;
+        long nextTick   = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 5;
+        long rateBase   = 0;
+        long rateTick   = Stopwatch.GetTimestamp();
+
+        foreach (var obj in heap.EnumerateObjects())
+        {
+            if (!obj.IsValid || obj.IsNull || !p1.TryGetIndex(obj.Address, out int pIdx)) continue;
+            scanned++;
+
+            foreach (var childAddr in obj.EnumerateReferenceAddresses(carefully: false))
+            {
+                if (childAddr == 0 || !p1.TryGetIndex(childAddr, out _)) continue;
+                childCounts[pIdx]++;
+                totalEdges++;
+            }
+
+            if (update is not null && (scanned & 0x3FFF) == 0)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now >= nextTick)
+                {
+                    long elapsed = now - rateTick;
+                    long rate    = elapsed > 0 ? (scanned - rateBase) * Stopwatch.Frequency / elapsed : 0;
+                    rateBase = scanned; rateTick = now;
+                    nextTick = now + Stopwatch.Frequency / 5;
+                    update($"pass 2/3 — counting edges: {scanned:N0}/{nodeCount:N0} objects  •  {totalEdges:N0} edges  •  {rate:N0}/s");
+                }
+            }
+        }
+
+        if (totalEdges > int.MaxValue)
+            throw new InvalidOperationException(
+                $"Edge count {totalEdges:N0} exceeds int.MaxValue — dump is too large for int-indexed CSR.");
+
+        return new BfsPass2State(p1, childCounts, totalEdges);
+    }
+
+    private static BfsIndexCache BuildPass3Sequential(ClrHeap heap, BfsPass2State p2, Action<string>? update)
+    {
+        var p1        = p2.Pass1;
+        int nodeCount = p1.NodeCount;
+
+        var offsets = GC.AllocateUninitializedArray<int>(nodeCount + 1);
+        offsets[0] = 0;
+        for (int i = 0; i < nodeCount; i++)
+            offsets[i + 1] = offsets[i] + p2.ChildCounts![i];
+
+        p2.ReleaseChildCounts();
+
+        var children    = GC.AllocateUninitializedArray<int>((int)p2.TotalEdges);
+        var writeCursor = GC.AllocateUninitializedArray<int>(nodeCount);
+        Array.Copy(offsets, writeCursor, nodeCount);
+
+        long scanned  = 0;
+        long nextTick = Stopwatch.GetTimestamp() + Stopwatch.Frequency / 5;
+        long rateBase = 0;
+        long rateTick = Stopwatch.GetTimestamp();
+
+        foreach (var obj in heap.EnumerateObjects())
+        {
+            if (!obj.IsValid || obj.IsNull || !p1.TryGetIndex(obj.Address, out int pIdx)) continue;
+            scanned++;
+
+            foreach (var childAddr in obj.EnumerateReferenceAddresses(carefully: false))
+            {
+                if (childAddr == 0 || !p1.TryGetIndex(childAddr, out int cIdx)) continue;
+                children[writeCursor[pIdx]++] = cIdx;
+            }
+
+            if (update is not null && (scanned & 0x3FFF) == 0)
+            {
+                long now = Stopwatch.GetTimestamp();
+                if (now >= nextTick)
+                {
+                    long elapsed = now - rateTick;
+                    long rate    = elapsed > 0 ? (scanned - rateBase) * Stopwatch.Frequency / elapsed : 0;
+                    rateBase = scanned; rateTick = now;
+                    nextTick = now + Stopwatch.Frequency / 5;
+                    update($"pass 3/3 — filling edges: {scanned:N0}/{nodeCount:N0} objects  •  {rate:N0}/s");
+                }
+            }
+        }
+
+        return new BfsIndexCache(p1.IndexToAddr, p1.Sizes, offsets, children, p1.SortedIdxMap);
+    }
+
+
     /// Computes exclusive retained sizes for each object-reference field of
     /// <paramref name="obj"/> using <paramref name="cache"/> (no ClrMD heap I/O after
     /// reading the field values).

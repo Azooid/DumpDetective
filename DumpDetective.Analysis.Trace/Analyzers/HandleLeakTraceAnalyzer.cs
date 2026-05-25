@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -38,20 +39,20 @@ public sealed class HandleLeakTraceAnalyzer
         internal int NetCurrent;
         internal int Created, Destroyed;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out byte kind))
-                EvKind[evName] = kind =
-                    evName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
-                    (evName.Contains("Created",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Create",   StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
-                    evName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
-                    (evName.Contains("Destroyed", StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Destroy",   StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
+            if (!EvKind.TryGetValue(meta.EventName, out byte kind))
+                EvKind[meta.EventName] = kind =
+                    meta.EventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
+                    (meta.EventName.Contains("Created",  StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("Create",   StringComparison.OrdinalIgnoreCase)) ? (byte)1 :
+                    meta.EventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
+                    (meta.EventName.Contains("Destroyed", StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("Destroy",   StringComparison.OrdinalIgnoreCase)) ? (byte)2 :
                     (byte)0;
             if (kind == 0) return;
             bool isCreated   = kind == 1;
@@ -81,7 +82,24 @@ public sealed class HandleLeakTraceAnalyzer
             PerSecond[bucket] = NetCurrent;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out byte v)) { v = eventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) && (eventName.Contains("Created", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Create", StringComparison.OrdinalIgnoreCase)) ? (byte)1 : eventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) && (eventName.Contains("Destroyed", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Destroy", StringComparison.OrdinalIgnoreCase)) ? (byte)2 : (byte)0; EvKind[eventName] = v; } return v != 0; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out byte v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == GCHandleCreated => 1,
+                    _ when meta.Kind == GCHandleDestroyed => 2,
+                    _ when meta.IsKnown => 0,
+                    _ => meta.EventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
+                         (meta.EventName.Contains("Created", StringComparison.OrdinalIgnoreCase) ||
+                          meta.EventName.Contains("Create",  StringComparison.OrdinalIgnoreCase)) ? (byte)1
+                       : meta.EventName.Contains("GCHandle", StringComparison.OrdinalIgnoreCase) &&
+                         (meta.EventName.Contains("Destroyed", StringComparison.OrdinalIgnoreCase) ||
+                          meta.EventName.Contains("Destroy",   StringComparison.OrdinalIgnoreCase)) ? (byte)2
+                       : (byte)0
+                };
+            return v != 0;
+        }
 
         public void OnComplete() { }
     }

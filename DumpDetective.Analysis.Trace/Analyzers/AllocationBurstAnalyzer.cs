@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -36,16 +37,16 @@ public sealed class AllocationBurstAnalyzer
         internal readonly Dictionary<int, BucketAcc> Buckets = new();
         internal int TickCount;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out bool isTick))
-                EvKind[evName] = isTick =
-                    evName.Contains("AllocationTick",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase);
+            if (!EvKind.TryGetValue(meta.EventName, out bool isTick))
+                EvKind[meta.EventName] = isTick =
+                    meta.EventName.Contains("AllocationTick",    StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase);
             if (!isTick) return;
 
             TickCount++;
@@ -66,7 +67,18 @@ public sealed class AllocationBurstAnalyzer
             acc.TypeCounts[typeName] = prev + bytes;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.Contains("AllocationTick", StringComparison.OrdinalIgnoreCase) || eventName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase); return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == GCAllocationTick => true,
+                    _ when meta.IsKnown => false,
+                    _ => meta.EventName.Contains("AllocationTick",    StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.Contains("GC/AllocationTick", StringComparison.OrdinalIgnoreCase)
+                };
+            return v;
+        }
 
         public void OnComplete() { }
     }

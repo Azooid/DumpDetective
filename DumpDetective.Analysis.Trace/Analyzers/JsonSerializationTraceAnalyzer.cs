@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -99,23 +100,26 @@ public sealed class JsonSerializationTraceAnalyzer
         internal readonly Dictionary<string, (bool IsAlloc, bool IsCpu)> EvTypeIndex
             = new(StringComparer.OrdinalIgnoreCase);
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvTypeIndex.TryGetValue(evName, out var evType))
+            if (!EvTypeIndex.TryGetValue(meta.EventName, out var evType))
             {
                 bool a =
-                    evName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
-                    evName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
+                    meta.EventName.EndsWith("GCAllocationTick",  StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.EndsWith("GC/AllocationTick", StringComparison.OrdinalIgnoreCase) ||
+                    meta.EventName.IndexOf("AllocationTick",     StringComparison.OrdinalIgnoreCase) >= 0;
                 bool c =
-                    evName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
-                    evName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
-                EvTypeIndex[evName] = evType = (a, c);
+                    meta.EventName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    // .NET Core EventPipe: Microsoft-DotNETCore-SampleProfiler/Thread/Sample
+                    meta.EventName.IndexOf("Thread/Sample",   StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    meta.EventName.IndexOf("ThreadSample",    StringComparison.OrdinalIgnoreCase) >= 0;
+                EvTypeIndex[meta.EventName] = evType = (a, c);
             }
 
             if (evType.IsAlloc)
@@ -198,7 +202,18 @@ public sealed class JsonSerializationTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) => eventName.IndexOf("AllocationTick", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("SampledProfile", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 || eventName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0;
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == CpuSample => true,
+            _ when meta.Kind == GCAllocationTick => true,
+            _ when meta.IsKnown => false,
+            _ => meta.EventName.IndexOf("AllocationTick",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 meta.EventName.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 meta.EventName.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 meta.EventName.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 meta.EventName.IndexOf("Thread/Sample",   StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 meta.EventName.IndexOf("ThreadSample",    StringComparison.OrdinalIgnoreCase) >= 0
+        };
 
         public void OnComplete() { }
     }

@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -38,7 +39,7 @@ public sealed class OpenTelemetryTraceAnalyzer
         internal readonly Dictionary<int, int> ErrTimeline = new();
         internal int Total, TotalErrors;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
@@ -46,21 +47,47 @@ public sealed class OpenTelemetryTraceAnalyzer
 
             bool isDiagSrc = ev.ProviderName.Contains("DiagnosticSource",    StringComparison.OrdinalIgnoreCase) ||
                              ev.ProviderName.Contains("System.Diagnostics",  StringComparison.OrdinalIgnoreCase) ||
-                             evName.Contains("Activity",                     StringComparison.OrdinalIgnoreCase);
+                             meta.EventName.Contains("Activity",             StringComparison.OrdinalIgnoreCase);
             if (!isDiagSrc) return;
 
-            bool isStart = evName.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
-                           evName.EndsWith("Begin", StringComparison.OrdinalIgnoreCase);
-            bool isStop  = evName.EndsWith("Stop",  StringComparison.OrdinalIgnoreCase) ||
-                           evName.EndsWith("End",   StringComparison.OrdinalIgnoreCase);
+            // Microsoft-Diagnostics-DiagnosticSource wraps real events in SourceName+EventName payload.
+            // The outer EventName is always "Event" which doesn't end in Start/Stop — unwrap it.
+            string eventNameToCheck = meta.EventName;
+            if (meta.EventName.Equals("Event", StringComparison.OrdinalIgnoreCase) ||
+                meta.EventName.EndsWith("/Event", StringComparison.OrdinalIgnoreCase))
+            {
+                string inner = SafeStr(ev, "EventName");
+                if (inner.Length > 0) eventNameToCheck = inner;
+            }
+
+            bool isStart = eventNameToCheck.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
+                           eventNameToCheck.EndsWith("Begin", StringComparison.OrdinalIgnoreCase);
+            bool isStop  = eventNameToCheck.EndsWith("Stop",  StringComparison.OrdinalIgnoreCase) ||
+                           eventNameToCheck.EndsWith("End",   StringComparison.OrdinalIgnoreCase);
 
             if (!isStart && !isStop) return;
 
             string opName = SafeStr(ev, "OperationName");
             if (opName.Length == 0) opName = SafeStr(ev, "Name");
-            if (opName.Length == 0) opName = evName;
+            if (opName.Length == 0)
+            {
+                // Derive a readable short name from inner event name, stripping the Start/Stop suffix.
+                // e.g. "Microsoft.AspNetCore.Hosting.HttpRequestIn.Start" → "HttpRequestIn"
+                int suffixLen = eventNameToCheck.EndsWith("Start", StringComparison.OrdinalIgnoreCase) ||
+                                eventNameToCheck.EndsWith("Begin", StringComparison.OrdinalIgnoreCase) ? 6
+                              : eventNameToCheck.EndsWith("Stop", StringComparison.OrdinalIgnoreCase) ? 5
+                              : 4; // ".End"
+                string baseName = eventNameToCheck.Length > suffixLen
+                    ? eventNameToCheck[..^suffixLen].TrimEnd('.')
+                    : eventNameToCheck;
+                int lastDot = baseName.LastIndexOf('.');
+                opName = lastDot >= 0 ? baseName[(lastDot + 1)..] : baseName;
+                if (opName.Length == 0) opName = eventNameToCheck;
+            }
 
             string actId = SafeStr(ev, "ActivityId");
+            if (actId.Length == 0 && ev.ActivityID != Guid.Empty)
+                actId = ev.ActivityID.ToString();
             if (actId.Length == 0) actId = $"{threadId}_{opName}";
 
             bool hasError = SafeStr(ev, "Error").Length > 0 ||
@@ -98,6 +125,15 @@ public sealed class OpenTelemetryTraceAnalyzer
                     SlowList.Add(new OtelSlowActivity(start.Op, ms, isError, start.StartMs));
             }
         }
+
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == ActivityStart || meta.Kind == ActivityStop => true,
+            _ when meta.ProviderName.Contains("DiagnosticSource",  StringComparison.OrdinalIgnoreCase) ||
+                   meta.ProviderName.Contains("System.Diagnostics",StringComparison.OrdinalIgnoreCase) => true,
+            _ when meta.IsKnown => false,
+            _ => meta.EventName.Contains("Activity", StringComparison.OrdinalIgnoreCase)
+        };
 
         public void OnComplete() { }
     }

@@ -4,6 +4,7 @@ using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Utilities;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -39,12 +40,12 @@ public sealed class CpuTraceAnalyzer
         internal readonly Dictionary<string, int>  ProcessNames   = new(StringComparer.OrdinalIgnoreCase);
         internal double                           SessionDurationMs;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (timestampMs > SessionDurationMs)
                 SessionDurationMs = timestampMs;
-            if (!EvKind.TryGetValue(evName, out bool isCpuSample))
-                EvKind[evName] = isCpuSample = IsCpuSampleEvent(evName);
+            if (!EvKind.TryGetValue(meta.EventName, out bool isCpuSample))
+                EvKind[meta.EventName] = isCpuSample = IsCpuSampleEvent(meta.EventName);
             if (!isCpuSample) return;
 
             if (_processFilter is not null &&
@@ -115,7 +116,17 @@ public sealed class CpuTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = IsCpuSampleEvent(eventName); return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == CpuSample => true,
+                    _ when meta.IsKnown => false,
+                    _ => IsCpuSampleEvent(meta.EventName)
+                };
+            return v;
+        }
 
         public void OnComplete() { }
 
@@ -275,7 +286,10 @@ public sealed class CpuTraceAnalyzer
         n.IndexOf("SampledProfile",  StringComparison.OrdinalIgnoreCase) >= 0 ||
         n.IndexOf("PerfInfo/Sample", StringComparison.OrdinalIgnoreCase) >= 0 ||
         n.IndexOf("Kernel/PerfInfo", StringComparison.OrdinalIgnoreCase) >= 0 ||
-        n.IndexOf("cpu-sampling",    StringComparison.OrdinalIgnoreCase) >= 0;
+        n.IndexOf("cpu-sampling",    StringComparison.OrdinalIgnoreCase) >= 0 ||
+        // .NET Core EventPipe: Microsoft-DotNETCore-SampleProfiler/Thread/Sample
+        n.IndexOf("Thread/Sample",   StringComparison.OrdinalIgnoreCase) >= 0 ||
+        n.IndexOf("ThreadSample",    StringComparison.OrdinalIgnoreCase) >= 0;
 
     private static CallTreeNode Freeze(MutableNode n, int total, int childrenDepth = 5,
                                        bool filterSystem = false, bool filterUnresolved = true)

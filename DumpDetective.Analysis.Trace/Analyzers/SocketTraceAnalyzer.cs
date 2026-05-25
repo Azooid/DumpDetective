@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -39,26 +40,26 @@ public sealed class SocketTraceAnalyzer
         internal int Connects, Failures;
         internal double TotalMs, MaxMs;
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
             bool isConnStart =
-                evName.Contains("Socket") &&
-                evName.Contains("Connect") &&
-                (evName.EndsWith("Start",  StringComparison.OrdinalIgnoreCase) ||
-                 evName.EndsWith("Begin",  StringComparison.OrdinalIgnoreCase));
+                meta.EventName.Contains("Socket") &&
+                meta.EventName.Contains("Connect") &&
+                (meta.EventName.EndsWith("Start",  StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.EndsWith("Begin",  StringComparison.OrdinalIgnoreCase));
             bool isConnStop =
-                evName.Contains("Socket") &&
-                evName.Contains("Connect") &&
-                (evName.EndsWith("Stop",   StringComparison.OrdinalIgnoreCase) ||
-                 evName.EndsWith("End",    StringComparison.OrdinalIgnoreCase));
+                meta.EventName.Contains("Socket") &&
+                meta.EventName.Contains("Connect") &&
+                (meta.EventName.EndsWith("Stop",   StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.EndsWith("End",    StringComparison.OrdinalIgnoreCase));
             bool isConnFail =
-                evName.Contains("Socket") &&
-                (evName.Contains("ConnectFailed", StringComparison.OrdinalIgnoreCase) ||
-                 evName.Contains("Error",         StringComparison.OrdinalIgnoreCase));
+                meta.EventName.Contains("Socket") &&
+                (meta.EventName.Contains("ConnectFailed", StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.Contains("Error",         StringComparison.OrdinalIgnoreCase));
 
             if (!isConnStart && !isConnStop && !isConnFail) return;
 
@@ -104,7 +105,15 @@ public sealed class SocketTraceAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) => eventName.Contains("Socket", StringComparison.OrdinalIgnoreCase);
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == SocketConnectStart || meta.Kind == SocketConnectStop || meta.Kind == SocketConnectFailed ||
+                 meta.Kind == SocketSendStart || meta.Kind == SocketSendStop ||
+                 meta.Kind == SocketReceiveStart || meta.Kind == SocketReceiveStop => true,
+            _ when meta.ProviderName.Contains("Socket", StringComparison.OrdinalIgnoreCase) => true,
+            _ when meta.IsKnown => false,
+            _ => meta.EventName.Contains("Socket", StringComparison.OrdinalIgnoreCase)
+        };
 
         public void OnComplete() { }
     }

@@ -92,7 +92,7 @@ public sealed partial class ConnectionPoolAnalyzer : IHeapObjectConsumer
 
         Reset();
         CommandBase.RunStatus("Scanning connection objects...", update =>
-            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         ctx.SetAnalysis(_result!);
         return _result!;

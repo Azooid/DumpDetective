@@ -117,7 +117,7 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
 
         Reset();
         CommandBase.RunStatus("Scanning exception objects...", update =>
-            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         ctx.SetAnalysis(_result!);
         return _result!;
@@ -153,7 +153,6 @@ public sealed class ExceptionAnalysisAnalyzer : IHeapObjectConsumer
             }
         }
         if (sb.Length == 0) return "";
-        Span<byte> hashBytes = stackalloc byte[4];
         var data = Encoding.UTF8.GetBytes(sb.ToString());
         // Use last 4 bytes of SHA256 as an 8-hex-char fingerprint.
         var full = SHA256.HashData(data);

@@ -124,7 +124,7 @@ public sealed class AsyncStacksAnalyzer : IHeapObjectConsumer
 
         Reset();
         CommandBase.RunStatus("Scanning async state machines...", update =>
-            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update)));
+            HeapWalker.Walk(ctx.Heap, [this], CommandBase.StatusProgress(update), sequentialOnly: ctx.IsCoreRuntime));
 
         var retained = ComputeRetained(ctx, _result!.Entries);
         var result = _result! with { RetainedByMethod = retained };

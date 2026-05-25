@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -25,7 +26,10 @@ public sealed class ExceptionsTraceAnalyzer
         }
     }
 
-    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, bool> EvKind  = new(StringComparer.OrdinalIgnoreCase);
+    // Separate cache for Consume: only true for actual throw events, never for CatchStart/CatchStop.
+    // Kept distinct from EvKind so WantsEvent (subscription routing) does not poison the throw-only check.
+    private static readonly Dictionary<string, bool> EvThrow = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
@@ -33,18 +37,27 @@ public sealed class ExceptionsTraceAnalyzer
         internal readonly Dictionary<string, TypeAcc> ByType = new(StringComparer.Ordinal);
         internal readonly List<ExceptionEvent> Events = new();
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(evName, out bool isEx))
-                EvKind[evName] = isEx =
-                    evName.EndsWith("Exception/Start",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("ExceptionThrown",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.EndsWith("Exception",          StringComparison.OrdinalIgnoreCase) ||
-                    evName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0;
+            // Use EvThrow (not EvKind) so WantsEvent's routing cache cannot make CatchStart/CatchStop
+            // appear as throw events.  ETL emits three events per exception (throw + CatchStart + CatchStop);
+            // we only want to count the actual throw.
+            if (!EvThrow.TryGetValue(meta.EventName, out bool isEx))
+                EvThrow[meta.EventName] = isEx = meta.Kind switch
+                {
+                    _ when meta.Kind == ExceptionThrown      => true,
+                    _ when meta.Kind == ExceptionCatchStart  => false,   // ETL: same exception, not a new throw
+                    _ when meta.Kind == ExceptionCatchStop   => false,   // ETL: no type payload
+                    _ when meta.IsKnown                      => false,
+                    _ => meta.EventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) ||
+                         (meta.EventName.EndsWith("Exception",      StringComparison.OrdinalIgnoreCase) &&
+                          meta.EventName.IndexOf("Catch",           StringComparison.OrdinalIgnoreCase) < 0)
+                };
             if (!isEx) return;
 
             string exType = SafeStr(ev, "ExceptionType");
@@ -62,7 +75,20 @@ public sealed class ExceptionsTraceAnalyzer
             acc.Count++;
         }
 
-        public bool WantsEvent(string eventName) { if (!EvKind.TryGetValue(eventName, out bool v)) EvKind[eventName] = v = eventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) || eventName.EndsWith("Exception", StringComparison.OrdinalIgnoreCase) || eventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0; return v; }
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            if (!EvKind.TryGetValue(meta.EventName, out bool v))
+                EvKind[meta.EventName] = v = meta.Kind switch
+                {
+                    _ when meta.Kind == ExceptionThrown || meta.Kind == ExceptionCatchStart || meta.Kind == ExceptionCatchStop => true,
+                    _ when meta.IsKnown                                          => false,
+                    _ => meta.EventName.EndsWith("Exception/Start",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("ExceptionThrown",   StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("Exception",         StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0
+                };
+            return v;
+        }
 
         public void OnComplete() { }
     }

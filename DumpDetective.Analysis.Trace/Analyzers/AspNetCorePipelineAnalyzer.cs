@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
@@ -34,21 +35,36 @@ public sealed class AspNetCorePipelineAnalyzer
         internal int TotalReq, TotalErr, AuthFail, Unmatched;
         internal readonly Dictionary<int, (double StartMs, string Route)> PendingAuth = new();
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            bool isAspNetCore = evName.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase) ||
-                                ev.ProviderName.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase) ||
-                                ev.ProviderName.Contains("Microsoft.AspNet", StringComparison.OrdinalIgnoreCase);
-            if (!isAspNetCore) return;
+            // For DiagnosticSource wrappers (SourceName="Microsoft.AspNetCore"), resolve inner EventName.
+            string eventName = meta.EventName;
+            if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
+            {
+                string srcName = SafeStr(ev, "SourceName");
+                if (!srcName.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase) &&
+                    !srcName.Contains("Microsoft.AspNet", StringComparison.OrdinalIgnoreCase))
+                    return;
+                string inner = SafeStr(ev, "EventName");
+                if (inner.Length > 0) eventName = inner;
+            }
+            else
+            {
+                bool isAspNetCore = meta.EventName.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase) ||
+                                    ev.ProviderName.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase) ||
+                                    ev.ProviderName.Contains("Microsoft.AspNet", StringComparison.OrdinalIgnoreCase);
+                if (!isAspNetCore) return;
+            }
 
             // Route matched
-            if (evName.Contains("RouteMatch",  StringComparison.OrdinalIgnoreCase) ||
-                evName.Contains("Routing",      StringComparison.OrdinalIgnoreCase) ||
-                evName.Contains("MatchSuccess", StringComparison.OrdinalIgnoreCase))
+            if (eventName.Contains("RouteMatch",     StringComparison.OrdinalIgnoreCase) ||
+                eventName.Contains("Routing",         StringComparison.OrdinalIgnoreCase) ||
+                eventName.Contains("MatchSuccess",    StringComparison.OrdinalIgnoreCase) ||
+                eventName.Contains("EndpointMatched", StringComparison.OrdinalIgnoreCase))
             {
                 TotalReq++;
                 string route = SafeStr(ev, "RoutePattern");
@@ -60,16 +76,16 @@ public sealed class AspNetCorePipelineAnalyzer
                     ByRoute[route] = acc = new RouteAcc();
                 acc.Count++;
             }
-            else if (evName.Contains("NoMatch",  StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("MatchFail", StringComparison.OrdinalIgnoreCase))
+            else if (eventName.Contains("NoMatch",  StringComparison.OrdinalIgnoreCase) ||
+                     eventName.Contains("MatchFail", StringComparison.OrdinalIgnoreCase))
             {
                 Unmatched++;
             }
-            else if (evName.Contains("Auth", StringComparison.OrdinalIgnoreCase))
+            else if (eventName.Contains("Auth", StringComparison.OrdinalIgnoreCase))
             {
-                if (evName.Contains("Fail",    StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Forbid",  StringComparison.OrdinalIgnoreCase) ||
-                    evName.Contains("Challenge",StringComparison.OrdinalIgnoreCase))
+                if (eventName.Contains("Fail",    StringComparison.OrdinalIgnoreCase) ||
+                    eventName.Contains("Forbid",  StringComparison.OrdinalIgnoreCase) ||
+                    eventName.Contains("Challenge",StringComparison.OrdinalIgnoreCase))
                 {
                     AuthFail++;
                     int bucket = (int)(timestampMs / 1000.0);
@@ -82,8 +98,8 @@ public sealed class AspNetCorePipelineAnalyzer
                         acc.AuthFailures++;
                 }
             }
-            else if (evName.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("Exception", StringComparison.OrdinalIgnoreCase))
+            else if (eventName.Contains("Error", StringComparison.OrdinalIgnoreCase) ||
+                     eventName.Contains("Exception", StringComparison.OrdinalIgnoreCase))
             {
                 TotalErr++;
                 string route = SafeStr(ev, "RoutePattern");
@@ -93,7 +109,26 @@ public sealed class AspNetCorePipelineAnalyzer
             }
         }
 
-        public bool WantsEvent(string eventName) => eventName.Contains("AspNetCore", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Routing", StringComparison.OrdinalIgnoreCase) || eventName.Contains("RouteMatch", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Auth", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Middleware", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Error", StringComparison.OrdinalIgnoreCase);
+        public bool WantsEvent(in TraceEventMeta meta)
+        {
+            // Microsoft-Diagnostics-DiagnosticSource wraps Microsoft.AspNetCore events;
+            // the outer provider name doesn't contain "AspNetCore" — pass through to Consume for filtering.
+            if (meta.ProviderName.Contains("DiagnosticSource", StringComparison.OrdinalIgnoreCase))
+                return true;
+            return meta.Kind switch
+            {
+                _ when meta.Kind == AspNetCoreRouteMatched || meta.Kind == AspNetCoreAuthStart || meta.Kind == AspNetCoreAuthStop || meta.Kind == AspNetCoreAuthFailed => true,
+                _ when meta.ProviderName.Contains("AspNetCore",      StringComparison.OrdinalIgnoreCase) ||
+                       meta.ProviderName.Contains("Microsoft.AspNet",StringComparison.OrdinalIgnoreCase)  => true,
+                _ when meta.IsKnown => false,
+                _ => meta.EventName.Contains("AspNetCore",  StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("Routing",     StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("RouteMatch",  StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("Auth",        StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("Middleware",  StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("Error",       StringComparison.OrdinalIgnoreCase)
+            };
+        }
 
         public void OnComplete() { }
     }

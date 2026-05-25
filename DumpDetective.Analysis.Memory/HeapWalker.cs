@@ -32,8 +32,12 @@ public static class HeapWalker
         ClrHeap                            heap,
         IReadOnlyList<IHeapObjectConsumer>  consumers,
         Action<string>?                    progress             = null,
-        IReadOnlyList<IFinalizableObjectConsumer>? finalizableConsumers = null)
+        IReadOnlyList<IFinalizableObjectConsumer>? finalizableConsumers = null,
+        bool                               sequentialOnly       = false)
     {
+        if (sequentialOnly)
+            return WalkSequential(heap, consumers, progress, finalizableConsumers);
+
         const int MaxParallelSegments = 8;
 
         long freeBytes      = 0;
@@ -231,6 +235,112 @@ public static class HeapWalker
     }
 
     /// <summary>
+    /// Sequential heap walk — used for .NET Core / NativeAOT dumps where the ELF
+    /// core-dump reader uses a single-seek-pointer <see cref="FileStream"/> that
+    /// is not safe for concurrent access from multiple threads.
+    /// Consumers receive objects directly without cloning; no merging step needed.
+    /// </summary>
+    private static long WalkSequential(
+        ClrHeap                                    heap,
+        IReadOnlyList<IHeapObjectConsumer>         consumers,
+        Action<string>?                            progress,
+        IReadOnlyList<IFinalizableObjectConsumer>? finalizableConsumers)
+    {
+        long freeBytes  = 0;
+        long count      = 0;
+        var  totalWatch = progress is not null ? Stopwatch.StartNew() : null;
+        var  rateWatch  = progress is not null ? Stopwatch.StartNew() : null;
+        long lastSnap   = 0;
+
+        var metaCache = new Dictionary<ulong, HeapTypeMeta>(8192);
+
+        // Precompute which consumers want free objects
+        var freeFlags = new bool[consumers.Count];
+        for (int i = 0; i < consumers.Count; i++)
+            freeFlags[i] = consumers[i].ConsumeFreeObjects;
+
+        try
+        {
+            // Walk segments individually so a data-reader failure on one segment
+            // (e.g. unmapped region in a Linux cross-platform dump) does not abort
+            // the entire walk — subsequent segments are still processed.
+            foreach (var seg in heap.Segments)
+            {
+                IEnumerable<ClrObject>? objects = null;
+                try { objects = seg.EnumerateObjects(); }
+                catch { continue; }
+
+                var enumerator = objects.GetEnumerator();
+                while (true)
+                {
+                    bool moved = false;
+                    try { moved = enumerator.MoveNext(); }
+                    catch { break; }   // data-reader error on this segment; move to next
+                    if (!moved) break;
+
+                    var obj = enumerator.Current;
+                    try
+                    {
+                        if (!obj.IsValid || obj.Type is null) continue;
+
+                        if (obj.Type.IsFree)
+                        {
+                            freeBytes += (long)obj.Size;
+                            for (int fi = 0; fi < consumers.Count; fi++)
+                            {
+                                if (!freeFlags[fi]) continue;
+                                try { consumers[fi].Consume(in obj, default, heap); }
+                                catch { }
+                            }
+                            continue;
+                        }
+
+                        ulong mt = obj.Type.MethodTable;
+                        if (!metaCache.TryGetValue(mt, out var meta))
+                        {
+                            meta = BuildMeta(obj.Type, includeDelegateFields: true);
+                            metaCache[mt] = meta;
+                        }
+
+                        for (int i = 0; i < consumers.Count; i++)
+                        {
+                            try { consumers[i].Consume(in obj, meta, heap); }
+                            catch { /* consumer failure must not abort the walk */ }
+                        }
+
+                        count++;
+                        if (progress is not null && (count & 0x3FF) == 0 && rateWatch!.ElapsedMilliseconds >= 200)
+                        {
+                            double elapsed  = totalWatch!.Elapsed.TotalSeconds;
+                            double interval = rateWatch.Elapsed.TotalSeconds;
+                            long   snap     = count;
+                            long   delta    = snap - lastSnap;
+                            lastSnap = snap;
+                            long   rate     = interval > 0 ? (long)(delta / interval) : 0;
+                            rateWatch.Restart();
+                            progress($"Walking heap objects — {count:N0} objs  •  elapsed {elapsed:F1}s  •  ~{rate:N0}/s");
+                        }
+                    }
+                    catch { /* skip objects that cause data reader errors */ }
+                }
+            }
+        }
+        finally
+        {
+            for (int i = 0; i < consumers.Count; i++)
+                consumers[i].OnWalkComplete();
+
+            if (progress is not null && totalWatch is not null)
+                progress($"[SCAN]Heap walk|{count}|{(long)totalWatch.Elapsed.TotalMilliseconds}");
+        }
+
+        if (finalizableConsumers is { Count: > 0 })
+            RunFinalizablePass(heap, finalizableConsumers, progress);
+
+        return freeBytes;
+    }
+
+    /// <summary>
     /// Runs <c>heap.EnumerateFinalizableObjects()</c> sequentially and dispatches
     /// each object to every registered <see cref="IFinalizableObjectConsumer"/>.
     /// Called after the main parallel heap walk and consumer merging are complete.
@@ -379,7 +489,8 @@ public static class HeapWalker
             IsException  = DumpHelpers.IsExceptionType(type),
             AsyncMethod  = asyncMethod,
             IsTimer      = TimerTypeSet.Contains(typeName),
-            IsWcf        = typeName.StartsWith("System.ServiceModel.", StringComparison.OrdinalIgnoreCase),
+            IsWcf        = typeName.StartsWith("System.ServiceModel.", StringComparison.OrdinalIgnoreCase)
+                        || typeName.StartsWith("CoreWCF.",              StringComparison.OrdinalIgnoreCase),
             IsConnection = isConnection,
             IsThread     = typeName == "System.Threading.Thread",
             IsTask       = typeName == "System.Threading.Tasks.Task" ||

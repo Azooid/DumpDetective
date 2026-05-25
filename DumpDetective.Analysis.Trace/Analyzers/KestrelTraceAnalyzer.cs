@@ -1,6 +1,7 @@
 using DumpDetective.Core.Models.CommandData;
 using Microsoft.Diagnostics.Tracing;
 using Microsoft.Diagnostics.Tracing.Etlx;
+using static DumpDetective.Core.Tracing.TraceEventKind;
 
 namespace DumpDetective.Analysis.Trace.Analyzers;
 
@@ -33,19 +34,19 @@ public sealed class KestrelTraceAnalyzer
         internal bool QueuePressure;
         internal readonly Dictionary<int, int> PerSecond = new();
 
-        public void Consume(TraceEvent ev, string evName, string processName, double timestampMs, int threadId)
+        public void Consume(TraceEvent ev, in TraceEventMeta meta, string processName, double timestampMs, int threadId)
         {
             if (_processFilter is not null &&
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            bool isKestrel = evName.Contains("Kestrel", StringComparison.OrdinalIgnoreCase) ||
+            bool isKestrel = meta.EventName.Contains("Kestrel", StringComparison.OrdinalIgnoreCase) ||
                              ev.ProviderName.Contains("Kestrel", StringComparison.OrdinalIgnoreCase);
             if (!isKestrel) return;
 
-            if (evName.Contains("ConnectionStart",    StringComparison.OrdinalIgnoreCase) ||
-                (evName.Contains("Connection",        StringComparison.OrdinalIgnoreCase) &&
-                 evName.EndsWith("Start",             StringComparison.OrdinalIgnoreCase)))
+            if (meta.EventName.Contains("ConnectionStart",    StringComparison.OrdinalIgnoreCase) ||
+                (meta.EventName.Contains("Connection",        StringComparison.OrdinalIgnoreCase) &&
+                 meta.EventName.EndsWith("Start",             StringComparison.OrdinalIgnoreCase)))
             {
                 Connections++;
                 CurrentConcurrent++;
@@ -55,30 +56,40 @@ public sealed class KestrelTraceAnalyzer
                 PerSecond.TryGetValue(bucket, out int pv);
                 PerSecond[bucket] = Math.Max(pv, CurrentConcurrent);
             }
-            else if (evName.Contains("ConnectionStop",  StringComparison.OrdinalIgnoreCase) ||
-                     (evName.Contains("Connection",     StringComparison.OrdinalIgnoreCase) &&
-                      evName.EndsWith("Stop",           StringComparison.OrdinalIgnoreCase)))
+            else if (meta.EventName.Contains("ConnectionStop",  StringComparison.OrdinalIgnoreCase) ||
+                     (meta.EventName.Contains("Connection",     StringComparison.OrdinalIgnoreCase) &&
+                      meta.EventName.EndsWith("Stop",           StringComparison.OrdinalIgnoreCase)))
             {
                 if (CurrentConcurrent > 0) CurrentConcurrent--;
             }
-            else if (evName.Contains("Reject",           StringComparison.OrdinalIgnoreCase) ||
-                     evName.Contains("ConnectionRejected",StringComparison.OrdinalIgnoreCase))
+            else if (meta.EventName.Contains("Reject",           StringComparison.OrdinalIgnoreCase) ||
+                     meta.EventName.Contains("ConnectionRejected",StringComparison.OrdinalIgnoreCase))
             {
                 Rejected++;
             }
-            else if (evName.Contains("RequestError",   StringComparison.OrdinalIgnoreCase) ||
-                     (evName.Contains("Request",       StringComparison.OrdinalIgnoreCase) &&
-                      evName.Contains("Error",         StringComparison.OrdinalIgnoreCase)))
+            else if (meta.EventName.Contains("RequestError",   StringComparison.OrdinalIgnoreCase) ||
+                     (meta.EventName.Contains("Request",       StringComparison.OrdinalIgnoreCase) &&
+                      meta.EventName.Contains("Error",         StringComparison.OrdinalIgnoreCase)))
             {
                 Errors++;
             }
-            else if (evName.Contains("Queue",          StringComparison.OrdinalIgnoreCase))
+            else if (meta.EventName.Contains("Queue",          StringComparison.OrdinalIgnoreCase))
             {
                 QueuePressure = true;
             }
         }
 
-        public bool WantsEvent(string eventName) => eventName.Contains("Kestrel", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Connection", StringComparison.OrdinalIgnoreCase) || eventName.Contains("Request", StringComparison.OrdinalIgnoreCase);
+        public bool WantsEvent(in TraceEventMeta meta) => meta.Kind switch
+        {
+            _ when meta.Kind == KestrelConnectionStart || meta.Kind == KestrelConnectionStop ||
+                 meta.Kind == KestrelConnectionRejected || meta.Kind == KestrelRequestError ||
+                 meta.Kind == KestrelConnectionQueueStart || meta.Kind == KestrelConnectionQueueStop => true,
+            _ when meta.ProviderName.Contains("Kestrel", StringComparison.OrdinalIgnoreCase) => true,
+            _ when meta.IsKnown => false,
+            _ => meta.EventName.Contains("Kestrel",    StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.Contains("Connection", StringComparison.OrdinalIgnoreCase) ||
+                 meta.EventName.Contains("Request",    StringComparison.OrdinalIgnoreCase)
+        };
 
         public void OnComplete() { }
     }
