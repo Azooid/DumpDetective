@@ -67,6 +67,7 @@ public sealed class JitTraceAnalyzer
             if (kind == 2)
             {
                 long key = BuildKey(ev);
+
                 int  nativeSize = SafeInt(ev, "MethodSize");
                 string method = FullName(ev);
                 string module = ModuleName(ev);
@@ -98,19 +99,12 @@ public sealed class JitTraceAnalyzer
                 return;
             }
 
-            // kind == 3: MethodLoad (non-verbose)
-            {
-                string method = FullName(ev);
-                string module = ModuleName(ev);
-                if (method.Length == 0) return;
-                if (!ByMethod.TryGetValue(method, out var macc))
-                    ByMethod[method] = macc = new MethodAcc(module, 0, 0);
-                macc.Count++;
-
-                if (!ByModule.TryGetValue(module, out var modacc))
-                    ByModule[module] = modacc = new ModuleAcc();
-                modacc.MethodCount++;
-            }
+            // kind == 3: MethodLoad (non-verbose) — skip entirely.
+            // ETL emits both MethodLoad and MethodLoadVerbose for the same compilation.
+            // The verbose variant (kind 2) is the sole count source and carries all required fields.
+            // TraceEvent ≤3.0 returned empty FullName for non-verbose ETL events (natural no-op);
+            // TraceEvent 3.1+ resolves symbols and populates names, causing double-counting
+            // if we fall through to counting logic — guard unconditionally here.
         }
 
         public bool WantsEvent(in TraceEventMeta meta)
@@ -119,7 +113,13 @@ public sealed class JitTraceAnalyzer
                 EvKind[meta.EventName] = v = meta.Kind switch
                 {
                     _ when meta.Kind == JitMethodStart => 1,
-                    _ when meta.Kind == JitMethodLoad => 2,
+                    // MethodLoadVerbose and MethodLoad (non-verbose) both report meta.Kind == JitMethodLoad.
+                    // Distinguish them by name so the cache carries the correct kind:
+                    //   verbose → 2 (has method name fields; counted in Consume)
+                    //   non-verbose → 3 (no name fields; silently skipped in Consume via FullName=="")
+                    _ when meta.Kind == JitMethodLoad &&
+                           meta.EventName.IndexOf("Verbose", StringComparison.OrdinalIgnoreCase) >= 0 => 2,
+                    _ when meta.Kind == JitMethodLoad => 3,
                     _ when meta.IsKnown => 0,
                     _ => meta.EventName.IndexOf("JittingStarted",    StringComparison.OrdinalIgnoreCase) >= 0 ||
                          meta.EventName.IndexOf("MethodJitStart",    StringComparison.OrdinalIgnoreCase) >= 0 ? (byte)1
@@ -151,7 +151,7 @@ public sealed class JitTraceAnalyzer
 
         double totalJitMs = c.ByMethod.Values.Sum(a => a.TotalJitMs);
         double maxJitMs   = c.ByMethod.Values.Max(a => a.MaxJitMs);
-        int    total      = c.ByMethod.Values.Sum(a => a.Count);
+        int    total      = c.ByMethod.Values.Sum(a => a.Count);  // total compilation events (not unique methods)
 
         var topByTime = c.ByMethod
             .Where(kv => kv.Value.TotalJitMs > 0)
@@ -180,7 +180,7 @@ public sealed class JitTraceAnalyzer
                       (processFilter is not null ? $"  |  process: {processFilter}" : "") +
                       $"  |  {total:N0} methods JIT-compiled  •  {c.ByMethod.Count:N0} unique";
 
-        double avgJitMs = total > 0 ? totalJitMs / c.ByMethod.Count : 0;
+        double avgJitMs = total > 0 ? totalJitMs / total : 0;
 
         return new JitTraceData(info, processFilter,
             total, totalJitMs, maxJitMs, avgJitMs,

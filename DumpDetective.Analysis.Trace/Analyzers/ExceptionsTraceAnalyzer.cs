@@ -26,7 +26,10 @@ public sealed class ExceptionsTraceAnalyzer
         }
     }
 
-    private static readonly Dictionary<string, bool> EvKind = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly Dictionary<string, bool> EvKind  = new(StringComparer.OrdinalIgnoreCase);
+    // Separate cache for Consume: only true for actual throw events, never for CatchStart/CatchStop.
+    // Kept distinct from EvKind so WantsEvent (subscription routing) does not poison the throw-only check.
+    private static readonly Dictionary<string, bool> EvThrow = new(StringComparer.OrdinalIgnoreCase);
 
     private sealed class Consumer(string? processFilter) : ITraceEventConsumer
     {
@@ -40,12 +43,21 @@ public sealed class ExceptionsTraceAnalyzer
                 !processName.Contains(_processFilter, StringComparison.OrdinalIgnoreCase))
                 return;
 
-            if (!EvKind.TryGetValue(meta.EventName, out bool isEx))
-                EvKind[meta.EventName] = isEx =
-                    meta.EventName.EndsWith("Exception/Start",    StringComparison.OrdinalIgnoreCase) ||
-                    meta.EventName.EndsWith("ExceptionThrown",    StringComparison.OrdinalIgnoreCase) ||
-                    meta.EventName.EndsWith("Exception",          StringComparison.OrdinalIgnoreCase) ||
-                    meta.EventName.IndexOf("ExceptionCatchStart", StringComparison.OrdinalIgnoreCase) >= 0;
+            // Use EvThrow (not EvKind) so WantsEvent's routing cache cannot make CatchStart/CatchStop
+            // appear as throw events.  ETL emits three events per exception (throw + CatchStart + CatchStop);
+            // we only want to count the actual throw.
+            if (!EvThrow.TryGetValue(meta.EventName, out bool isEx))
+                EvThrow[meta.EventName] = isEx = meta.Kind switch
+                {
+                    _ when meta.Kind == ExceptionThrown      => true,
+                    _ when meta.Kind == ExceptionCatchStart  => false,   // ETL: same exception, not a new throw
+                    _ when meta.Kind == ExceptionCatchStop   => false,   // ETL: no type payload
+                    _ when meta.IsKnown                      => false,
+                    _ => meta.EventName.EndsWith("Exception/Start", StringComparison.OrdinalIgnoreCase) ||
+                         meta.EventName.EndsWith("ExceptionThrown", StringComparison.OrdinalIgnoreCase) ||
+                         (meta.EventName.EndsWith("Exception",      StringComparison.OrdinalIgnoreCase) &&
+                          meta.EventName.IndexOf("Catch",           StringComparison.OrdinalIgnoreCase) < 0)
+                };
             if (!isEx) return;
 
             string exType = SafeStr(ev, "ExceptionType");
