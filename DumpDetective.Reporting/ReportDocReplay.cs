@@ -77,6 +77,17 @@ public static class ReportDocReplay
                 case ReportSparkline sp:
                     sink.Sparkline([.. sp.Values], sp.Caption, sp.Unit, sp.ValueMode);
                     break;
+                case ReportMultiSparkline ms:
+                    sink.MultiSparkline(
+                        ms.Series.Select(s =>
+                            (s.Label, (IReadOnlyList<double>)[.. s.Values], s.Unit)).ToArray(),
+                        ms.Caption, ms.ValueMode);
+                    break;
+                case ReportCompareBar cb:
+                    sink.CompareBar(
+                        cb.Items.Select(i => (i.Label, i.ValueA, i.ValueB)).ToArray(),
+                        cb.LabelA, cb.LabelB, cb.Unit, cb.Caption, cb.ValueMode);
+                    break;
                 case ReportCallTree ct:
                     static CallTreeNode ToNode(ReportCallTreeNode n) =>
                         new(n.Method, n.Module, n.InclusiveSamples, n.ExclusiveSamples,

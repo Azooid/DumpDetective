@@ -84,18 +84,28 @@ public sealed class GcTraceReport
             p.HeapSizeBefore > 0 ? DumpHelpers.FormatSize(p.HeapSizeBefore) : "—",
             p.HeapSizeAfter  > 0 ? DumpHelpers.FormatSize(p.HeapSizeAfter)  : "—",
         }).ToList();
-        // GC pause timeline — sparkline over all events in chronological order
-        if (data.Events.Count > 1)
+        // GC timelines — pause duration + heap size on the same axis so growth→pause correlation is visible
         {
-            var pauseTimeline = data.Events.Select(e => e.PauseMs).ToList();
-            sink.Sparkline(pauseTimeline, "GC pause timeline (ms per collection)", " ms");
-        }
+            var pauseTimeline = data.Events.Count > 1
+                ? data.Events.Select(e => e.PauseMs).ToList()
+                : null;
+            var heapSizes = data.Events.Where(e => e.HeapSizeAfter > 0)
+                                        .Select(e => e.HeapSizeAfter / (1024.0 * 1024.0)).ToList();
 
-        // GC heap size timeline — heap size after each collection (in MB)
-        var heapSizes = data.Events.Where(e => e.HeapSizeAfter > 0)
-                                    .Select(e => e.HeapSizeAfter / (1024.0 * 1024.0)).ToList();
-        if (heapSizes.Count > 1)
-            sink.Sparkline(heapSizes, "Heap size after each GC (MB)", " MB");
+            var series = new List<(string Label, IReadOnlyList<double> Values, string? Unit)>();
+            if (pauseTimeline is { Count: > 1 })
+                series.Add(("Pause (ms/collection)", pauseTimeline, " ms"));
+            if (heapSizes.Count > 1)
+                series.Add(("Heap after GC (MB)", heapSizes, " MB"));
+
+            if (series.Count == 2)
+                sink.MultiSparkline(series,
+                    caption: "Aligned per-collection timeline — rising heap sizes typically precede longer Gen2 pauses");
+            else if (pauseTimeline is { Count: > 1 })
+                sink.Sparkline(pauseTimeline, "GC pause timeline (ms per collection)", " ms");
+            else if (heapSizes.Count > 1)
+                sink.Sparkline(heapSizes, "Heap size after each GC (MB)", " MB");
+        }
 
         sink.Table(
             ["GC #", "Gen", "Reason", "Type", "Pause", "Heap before", "Heap after"],

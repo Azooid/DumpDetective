@@ -63,6 +63,24 @@ public sealed class AsyncTraceReport
                 "Tasks running for seconds block their ThreadPool thread for the entire duration.",
                 "Break long-running synchronous work into smaller async segments.");
 
+        // ── Async health gauges ────────────────────────────────────────────────
+        {
+            var asyncGauges = new List<(string, double, string)>();
+            if (data.TotalTasksScheduled > 0 && data.TotalTasksCompleted > 0)
+                asyncGauges.Add(("Completion rate",
+                    data.TotalTasksCompleted * 100.0 / data.TotalTasksScheduled, "%"));
+            if (data.SyncBlockingOccurrences > 0 && data.TotalTasksScheduled > 0)
+                asyncGauges.Add(("Sync-blocking rate",
+                    data.SyncBlockingOccurrences * 100.0 / data.TotalTasksScheduled, "%"));
+            if (data.AvgExecutionMs > 0)
+                asyncGauges.Add(("Avg task execution", data.AvgExecutionMs, " ms"));
+            if (data.MaxExecutionMs > 0)
+                asyncGauges.Add(("Max task execution", data.MaxExecutionMs, " ms"));
+            if (asyncGauges.Count > 0)
+                sink.Gauges(asyncGauges,
+                    barMax: asyncGauges.Any(g => g.Item3 == "%") ? 100.0 : asyncGauges.Max(g => g.Item2));
+        }
+
         // ── Schedule rate timeline ─────────────────────────────────────────────
         if (data.ScheduleRateTimeline is { Count: > 2 } tl)
             sink.Sparkline(tl, "Task scheduling rate over time (tasks/second)", "/s");

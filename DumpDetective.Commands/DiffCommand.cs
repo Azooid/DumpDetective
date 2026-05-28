@@ -87,7 +87,7 @@ public sealed class DiffCommand : ICommand
     public int Run(string[] args)
     {
         var a = CliArgs.Parse(args);
-        if (a.Help || args.Length == 0) { AnsiConsole.Write(new Markup(Help + "\n")); return 0; }
+        if (a.Help || args.Length == 0) { AnsiConsole.Write(new Markup(Markup.Escape(Help) + "\n")); return 0; }
 
         var positionals = a.Positionals;
         if (positionals.Count < 2)

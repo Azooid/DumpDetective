@@ -673,3 +673,126 @@ window.exportCsv = function (tid) {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+/* ── Sparkline hover tooltips ──────────────────────────────────────── */
+(function () {
+  var tip = null;
+
+  function getTip() {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'spark-tip';
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+
+  function fmtSize(v) {
+    if (v >= 1073741824) return (v / 1073741824).toFixed(2) + ' GB';
+    if (v >= 1048576) return (v / 1048576).toFixed(2) + ' MB';
+    if (v >= 1024) return (v / 1024).toFixed(1) + ' KB';
+    return v.toFixed(0) + ' B';
+  }
+
+  function fmtVal(v, unit, sizeMode) {
+    return sizeMode ? fmtSize(v) : (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + (unit || '');
+  }
+
+  function initSvg(svg) {
+    if (svg.dataset.hoverInit) return;
+    svg.dataset.hoverInit = '1';
+
+    var vals;
+    try { vals = JSON.parse(svg.dataset.vals || '[]'); } catch (e) { return; }
+    if (vals.length < 2) return;
+
+    var unit = svg.dataset.unit || '';
+    var sizeMode = svg.dataset.sizemode === '1';
+    var color = svg.dataset.color || '#6366f1';
+    var W = 400, Ht = 36;
+
+    var min = vals[0], max = vals[0];
+    for (var i = 1; i < vals.length; i++) {
+      if (vals[i] < min) min = vals[i];
+      if (vals[i] > max) max = vals[i];
+    }
+    var range = max - min || 1;
+
+    var ns = 'http://www.w3.org/2000/svg';
+
+    var xhair = svg.querySelector('.spark-xhair');
+    var dot = svg.querySelector('.spark-dot');
+    var overlay = svg.querySelector('.spark-overlay');
+    if (!xhair || !dot || !overlay) return;
+
+    // Apply per-series color
+    xhair.style.stroke = color;
+    dot.style.fill = color;
+
+    function onMove(e) {
+      var bbox = svg.getBoundingClientRect();
+      var relX = Math.max(0, Math.min(1, (e.clientX - bbox.left) / bbox.width));
+      var idx = Math.round(relX * (vals.length - 1));
+      var v = vals[idx];
+      var svgX = idx / (vals.length - 1) * W;
+      var svgY = Ht - (v - min) / range * (Ht - 6) - 3;
+      // Correct for non-uniform scaling: rx must cancel out the x-stretch
+      var bbox2 = svg.getBoundingClientRect();
+      var rx = bbox2.width > 0 ? (3.5 * W / bbox2.width) : 3.5;
+
+      xhair.setAttribute('x1', svgX); xhair.setAttribute('x2', svgX);
+      xhair.style.display = '';
+      dot.setAttribute('cx', svgX); dot.setAttribute('cy', svgY);
+      dot.setAttribute('rx', rx); dot.setAttribute('ry', 3.5);
+      dot.style.display = '';
+
+      var t = getTip();
+      t.textContent = fmtVal(v, unit, sizeMode);
+      t.style.display = 'block';
+      t.style.left = (e.clientX + 14) + 'px';
+      t.style.top = (e.clientY - 28) + 'px';
+    }
+
+    function onLeave() {
+      xhair.style.display = 'none';
+      dot.style.display = 'none';
+      getTip().style.display = 'none';
+    }
+
+    overlay.addEventListener('mousemove', onMove);
+    overlay.addEventListener('mouseleave', onLeave);
+  }
+
+  function initTooltips() {
+    document.querySelectorAll('[data-tip]').forEach(function (el) {
+      if (el.dataset.tipInit) return;
+      el.dataset.tipInit = '1';
+      el.addEventListener('mouseenter', function (e) {
+        var t = getTip();
+        t.textContent = el.dataset.tip;
+        t.style.display = 'block';
+        t.style.left = (e.clientX + 14) + 'px';
+        t.style.top = (e.clientY - 28) + 'px';
+      });
+      el.addEventListener('mousemove', function (e) {
+        var t = getTip();
+        t.style.left = (e.clientX + 14) + 'px';
+        t.style.top = (e.clientY - 28) + 'px';
+      });
+      el.addEventListener('mouseleave', function () {
+        getTip().style.display = 'none';
+      });
+    });
+  }
+
+  function initAll() {
+    document.querySelectorAll('.mspark-svg[data-vals]').forEach(initSvg);
+    initTooltips();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();

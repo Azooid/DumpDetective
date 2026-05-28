@@ -102,6 +102,41 @@ public sealed class MarkdownSink : IRenderSink
         _w.WriteLine();
     }
 
+    public void MultiSparkline(
+        IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
+        string? caption = null, string? valueMode = null)
+    {
+        if (caption is not null) { _w.WriteLine($"*{caption}*"); _w.WriteLine(); }
+        _w.WriteLine("| Series | Min | Avg | Max |");
+        _w.WriteLine("|--------|----:|----:|----:|");
+        foreach (var (label, values, unit) in series)
+        {
+            if (values.Count == 0) continue;
+            string u = unit ?? "";
+            _w.WriteLine($"| {E(label)} | {values.Min():F1}{u} | {values.Average():F1}{u} | {values.Max():F1}{u} |");
+        }
+        _w.WriteLine();
+    }
+
+    public void CompareBar(
+        IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
+        string? labelA = null, string? labelB = null,
+        string? unit = null, string? caption = null, string? valueMode = null)
+    {
+        if (caption is not null) { _w.WriteLine($"*{caption}*"); _w.WriteLine(); }
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string Fmt(double v) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{unit ?? ""}";
+        string colA = labelA ?? "A";
+        string colB = labelB ?? "B";
+        _w.WriteLine($"| Label | {E(colA)} | {E(colB)} |");
+        _w.WriteLine("|-------|------:|------:|");
+        foreach (var (lbl, va, vb) in items)
+            _w.WriteLine($"| {E(lbl)} | {Fmt(va)} | {Fmt(vb)} |");
+        _w.WriteLine();
+    }
+
     public void Dispose() => _w.Dispose();
 
     private static string E(string s) => s.Replace("|", "\\|").Replace("`", "'");

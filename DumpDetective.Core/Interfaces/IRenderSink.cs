@@ -98,6 +98,39 @@ public interface IRenderSink : IDisposable
     }
 
     /// <summary>
+    /// Renders multiple named time-series as stacked synchronized sparklines.
+    /// All series share the same horizontal width so temporal correlations are visible.
+    /// HTML renders each series as a colored SVG line with a filled area; other sinks
+    /// fall back to one <see cref="Sparkline"/> call per series.
+    /// </summary>
+    void MultiSparkline(
+        IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
+        string? caption = null, string? valueMode = null)
+    {
+        foreach (var (label, values, unit) in series)
+            Sparkline(values, label, unit, valueMode);
+    }
+
+    /// <summary>
+    /// Renders a dual horizontal bar chart comparing two named values per category.
+    /// Bars are normalized against the global maximum across both series.
+    /// HTML renders two stacked coloured bars per row; other sinks fall back to KeyValues.
+    /// </summary>
+    void CompareBar(
+        IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
+        string? labelA = null, string? labelB = null,
+        string? unit = null, string? caption = null, string? valueMode = null)
+    {
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string Fmt(double v) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{unit ?? ""}";
+        var kvs = items.Select(i =>
+            (i.Label, $"{Fmt(i.ValueA)}  vs  {Fmt(i.ValueB)}")).ToList();
+        KeyValues(kvs, caption);
+    }
+
+    /// <summary>
     /// Emits a structured "explain" block that answers What / Why / Impact / Action.
     /// HTML renders as a styled card; other sinks render as plain text paragraphs.
     /// All parameters are optional — pass only the ones relevant to the section.

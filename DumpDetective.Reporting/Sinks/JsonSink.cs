@@ -53,6 +53,15 @@ public sealed class JsonSink : IRenderSink
     public void Sparkline(IReadOnlyList<double> values, string? caption = null, string? unit = null,
         string? valueMode = null)
         => _capture.Sparkline(values, caption, unit, valueMode);
+    public void MultiSparkline(
+        IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
+        string? caption = null, string? valueMode = null)
+        => _capture.MultiSparkline(series, caption, valueMode);
+    public void CompareBar(
+        IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
+        string? labelA = null, string? labelB = null,
+        string? unit = null, string? caption = null, string? valueMode = null)
+        => _capture.CompareBar(items, labelA, labelB, unit, caption, valueMode);
 
     public void Dispose()
     {

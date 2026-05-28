@@ -94,6 +94,17 @@ public sealed class SqlTraceReport
         if (data.TopDatabases.Count > 1)
         {
             sink.Section("Command Activity by Database", "sql-databases");
+
+            // Donut — total command time by database: immediately shows the hot database
+            var dbSegs = data.TopDatabases
+                .Select(db => (db.Database, db.TotalMs))
+                .ToList();
+            double dbTotal = dbSegs.Sum(s => s.TotalMs);
+            sink.DonutChart(
+                dbSegs,
+                caption: "Total command time by database",
+                centerText: $"{dbTotal:F0} ms");
+
             var rows = new List<string[]>(data.TopDatabases.Count);
             foreach (var db in data.TopDatabases)
                 rows.Add([db.Database, db.CommandCount.ToString("N0"), $"{db.TotalMs:F0} ms", $"{db.AvgMs:F1} ms"]);

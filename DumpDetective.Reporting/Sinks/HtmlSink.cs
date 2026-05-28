@@ -321,7 +321,7 @@ public sealed class HtmlSink : IRenderSink
             double x3 = cx + ri * Math.Cos(endAngle), y3 = cy + ri * Math.Sin(endAngle);
             double x4 = cx + ri * Math.Cos(angle),  y4 = cy + ri * Math.Sin(angle);
 
-            paths.Append($"""<path d="M{x1:F2},{y1:F2} A{ro},{ro} 0 {large},1 {x2:F2},{y2:F2} L{x3:F2},{y3:F2} A{ri},{ri} 0 {large},0 {x4:F2},{y4:F2} Z" fill="{color}" class="donut-seg"><title>{H(lbl)}: {pct}</title></path>""");
+            paths.Append($"""<path data-tip="{H(lbl)}: {pct}" d="M{x1:F2},{y1:F2} A{ro},{ro} 0 {large},1 {x2:F2},{y2:F2} L{x3:F2},{y3:F2} A{ri},{ri} 0 {large},0 {x4:F2},{y4:F2} Z" fill="{color}" class="donut-seg" style="cursor:pointer"/>""");
             legend.Append($"<li class=\"donut-li\"><span class=\"donut-dot\" style=\"background:{color}\"></span><span class=\"donut-lbl\">{H(lbl)}</span><span class=\"donut-pct\">{pct}</span></li>");
             angle = endAngle;
         }
@@ -363,7 +363,7 @@ public sealed class HtmlSink : IRenderSink
                 ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)val)
                 : $"{val:F1}{H(unit ?? "")}";
             string tip = $"{H(lbl)}: {displayVal} ({pct:F1}%)";
-            track.Append($"<div class=\"sbar-seg\" style=\"width:{pct:F2}%;background:{color}\" title=\"{tip}\"></div>");
+            track.Append($"<div class=\"sbar-seg\" style=\"width:{pct:F2}%;background:{color}\" data-tip=\"{tip}\"></div>");
             legend.Append($"<li class=\"sbar-li\"><span class=\"sbar-dot\" style=\"background:{color}\"></span><span class=\"sbar-lbl\">{H(lbl)}</span><span class=\"sbar-val\">{displayVal}</span><span class=\"sbar-pct\">({pct:F1}%)</span></li>");
         }
 
@@ -388,36 +388,152 @@ public sealed class HtmlSink : IRenderSink
         double range = max - min;
         if (range == 0) range = 1;
 
-        const int W = 220, H2 = 52;
-        var pts = new System.Text.StringBuilder();
-        for (int i = 0; i < values.Count; i++)
-        {
-            double x = (double)i / Math.Max(values.Count - 1, 1) * W;
-            double y = H2 - (values[i] - min) / range * (H2 - 8) - 4;
-            pts.Append($"{x:F1},{y:F1} ");
-        }
-
-        // Filled area under the line
-        double x0 = 0, xN = W;
+        const int W = 400, Ht = 36;
+        var pts  = new System.Text.StringBuilder();
         var area = new System.Text.StringBuilder();
-        area.Append($"M{x0:F1},{H2} ");
+        area.Append($"M0,{Ht} ");
         for (int i = 0; i < values.Count; i++)
         {
             double x = (double)i / Math.Max(values.Count - 1, 1) * W;
-            double y = H2 - (values[i] - min) / range * (H2 - 8) - 4;
+            double y = Ht - (values[i] - min) / range * (Ht - 6) - 3;
+            pts.Append($"{x:F1},{y:F1} ");
             area.Append($"L{x:F1},{y:F1} ");
         }
-        area.Append($"L{xN:F1},{H2} Z");
+        area.Append($"L{W:F1},{Ht} Z");
 
         int id = ++_chartSeq;
-        _w.WriteLine($"<div class=\"chart-card spark-wrap\">");
-        if (caption is not null) _w.WriteLine($"<span class=\"spark-label\">{H(caption)}</span>");
-        _w.WriteLine($"<svg class=\"spark-svg\" viewBox=\"0 0 {W} {H2}\">");
-        _w.WriteLine($"<defs><linearGradient id=\"sg{id}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0%\" stop-color=\"#6366f1\" stop-opacity=\".18\"/><stop offset=\"100%\" stop-color=\"#6366f1\" stop-opacity=\"0\"/></linearGradient></defs>");
-        _w.WriteLine($"<path d=\"{area}\" fill=\"url(#sg{id})\"/>");
-        _w.WriteLine($"<polyline points=\"{pts}\" class=\"spark-line\"/>");
-        _w.WriteLine("</svg>");
-        _w.WriteLine($"<span class=\"spark-stats\">min <b>{FormatVal(min)}</b> &nbsp; avg <b>{FormatVal(values.Average())}</b> &nbsp; max <b>{FormatVal(max)}</b></span>");
+        const string color = "#6366f1";
+
+        _w.WriteLine("<div class=\"mspark-card\">");
+        _w.Write("<div class=\"mspark-series\">");
+        if (caption is not null)
+            _w.Write($"<span class=\"mspark-lbl\" title=\"{H(caption)}\">{H(caption)}</span>");
+        _w.Write("<div class=\"mspark-col\">");
+        string dataVals = "[" + string.Join(",", values.Select(v => v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture))) + "]";
+        string dataUnit = unit is not null ? $" data-unit=\"{H(unit)}\"" : "";
+        string dataSz   = sizeMode ? " data-sizemode=\"1\"" : "";
+        _w.Write($"<svg class=\"mspark-svg\" viewBox=\"0 0 {W} {Ht}\" preserveAspectRatio=\"none\" data-vals=\"{dataVals}\"{dataUnit}{dataSz}>");
+        _w.Write($"<defs><linearGradient id=\"sg{id}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0%\" stop-color=\"{color}\" stop-opacity=\".22\"/><stop offset=\"100%\" stop-color=\"{color}\" stop-opacity=\"0\"/></linearGradient></defs>");
+        _w.Write($"<path d=\"{area}\" fill=\"url(#sg{id})\"/>");
+        _w.Write($"<polyline points=\"{pts}\" class=\"mspark-line\" style=\"stroke:{color}\"/>");
+        _w.Write("<line class=\"spark-xhair\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"36\" style=\"display:none\"/>");
+        _w.Write("<ellipse class=\"spark-dot\" rx=\"3\" ry=\"3\" cx=\"0\" cy=\"0\" style=\"display:none\"/>");
+        _w.Write($"<rect class=\"spark-overlay\" x=\"0\" y=\"0\" width=\"{W}\" height=\"{Ht}\" fill=\"transparent\" style=\"cursor:crosshair\"/>");
+        _w.Write("</svg>");
+        _w.Write($"<span class=\"mspark-stats\">min <b>{FormatVal(min)}</b>&ensp;avg <b>{FormatVal(values.Average())}</b>&ensp;max <b>{FormatVal(max)}</b>&ensp;<span style=\"color:{color};font-weight:700\">&#9632;</span></span>");
+        _w.Write("</div>");
+        _w.WriteLine("</div>");
+        _w.WriteLine("</div>");
+    }
+
+    public void MultiSparkline(
+        IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
+        string? caption = null, string? valueMode = null)
+    {
+        if (series.Count == 0 || series.All(s => s.Values.Count == 0)) return;
+
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string FormatVal(double v, string? u) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{H(u ?? "")}";
+
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"mspark-card\">");
+
+        const int W = 400, Ht = 36;
+        int baseId = ++_chartSeq;
+
+        for (int si = 0; si < series.Count; si++)
+        {
+            var (label, values, unit) = series[si];
+            if (values.Count == 0) continue;
+
+            string color = ChartPalette[si % ChartPalette.Length];
+            double min   = values.Min();
+            double max   = values.Max();
+            double range = max - min;
+            if (range == 0) range = 1;
+
+            var pts  = new System.Text.StringBuilder();
+            var area = new System.Text.StringBuilder();
+            area.Append($"M0,{Ht} ");
+            for (int i = 0; i < values.Count; i++)
+            {
+                double x = (double)i / Math.Max(values.Count - 1, 1) * W;
+                double y = Ht - (values[i] - min) / range * (Ht - 6) - 3;
+                pts.Append($"{x:F1},{y:F1} ");
+                area.Append($"L{x:F1},{y:F1} ");
+            }
+            area.Append($"L{W:F1},{Ht} Z");
+
+            int sid = baseId * 100 + si;
+            _w.Write("<div class=\"mspark-series\">");
+            _w.Write($"<span class=\"mspark-lbl\" title=\"{H(label)}\">{H(label)}</span>");
+            _w.Write("<div class=\"mspark-col\">");
+            string dvVals = "[" + string.Join(",", values.Select(v => v.ToString("F2", System.Globalization.CultureInfo.InvariantCulture))) + "]";
+            string dvUnit = unit is not null ? $" data-unit=\"{H(unit)}\"" : "";
+            string dvSz   = sizeMode ? " data-sizemode=\"1\"" : "";
+            string dvCol  = $" data-color=\"{color}\"";
+            _w.Write($"<svg class=\"mspark-svg\" viewBox=\"0 0 {W} {Ht}\" preserveAspectRatio=\"none\" data-vals=\"{dvVals}\"{dvUnit}{dvSz}{dvCol}>");
+            _w.Write($"<defs><linearGradient id=\"msg{sid}\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"1\"><stop offset=\"0%\" stop-color=\"{color}\" stop-opacity=\".22\"/><stop offset=\"100%\" stop-color=\"{color}\" stop-opacity=\"0\"/></linearGradient></defs>");
+            _w.Write($"<path d=\"{area}\" fill=\"url(#msg{sid})\"/>");
+            _w.Write($"<polyline points=\"{pts}\" class=\"mspark-line\" style=\"stroke:{color}\"/>");
+            _w.Write("<line class=\"spark-xhair\" x1=\"0\" y1=\"0\" x2=\"0\" y2=\"36\" style=\"display:none\"/>");
+            _w.Write("<ellipse class=\"spark-dot\" rx=\"3\" ry=\"3\" cx=\"0\" cy=\"0\" style=\"display:none\"/>");
+            _w.Write($"<rect class=\"spark-overlay\" x=\"0\" y=\"0\" width=\"{W}\" height=\"{Ht}\" fill=\"transparent\" style=\"cursor:crosshair\"/>");
+            _w.Write("</svg>");
+            _w.Write($"<span class=\"mspark-stats\">min <b>{FormatVal(min, unit)}</b>&ensp;avg <b>{FormatVal(values.Average(), unit)}</b>&ensp;max <b>{FormatVal(max, unit)}</b>&ensp;<span style=\"color:{color};font-weight:700\">&#9632;</span></span>");
+            _w.Write("</div>");
+            _w.WriteLine("</div>");
+        }
+        _w.WriteLine("</div>");
+    }
+
+    public void CompareBar(
+        IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
+        string? labelA = null, string? labelB = null,
+        string? unit = null, string? caption = null, string? valueMode = null)
+    {
+        if (items.Count == 0) return;
+
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string FormatVal(double v) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{H(unit ?? "")}";
+
+        double globalMax = items.Max(i => Math.Max(i.ValueA, i.ValueB));
+        if (globalMax <= 0) return;
+
+        const string ColorA = "#6366f1";
+        const string ColorB = "#22c55e";
+        string lblA = labelA ?? "A";
+        string lblB = labelB ?? "B";
+
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+        _w.WriteLine("<div class=\"chart-card cbar-card\">");
+
+        _w.Write("<div class=\"cbar-header\">");
+        _w.Write("<span></span>");
+        _w.Write("<div class=\"cbar-legend\">");
+        _w.Write($"<span class=\"cbar-legend-item\"><span class=\"cbar-legend-dot\" style=\"background:{ColorA}\"></span>{H(lblA)}</span>");
+        _w.Write($"<span class=\"cbar-legend-item\"><span class=\"cbar-legend-dot\" style=\"background:{ColorB}\"></span>{H(lblB)}</span>");
+        _w.Write("</div>");
+        _w.WriteLine("</div>");
+
+        foreach (var (label, valA, valB) in items)
+        {
+            double pctA = Math.Min(valA / globalMax * 100.0, 100.0);
+            double pctB = Math.Min(valB / globalMax * 100.0, 100.0);
+            bool   both = valA > 0 && valB > 0;
+
+            _w.Write($"<div class=\"cbar-row{(both ? " cbar-row-match" : "")}\">");
+            _w.Write($"<span class=\"cbar-lbl\" title=\"{H(label)}\">{H(label)}</span>");
+            _w.Write("<div class=\"cbar-bars\">");
+            _w.Write($"<div class=\"cbar-bar-row\" data-tip=\"{H(label)} — {H(lblA)}: {H(FormatVal(valA))}\"><div class=\"cbar-bar-track\"><div class=\"cbar-a\" style=\"width:{pctA:F1}%\"></div></div><span class=\"cbar-bar-val\">{H(FormatVal(valA))}</span></div>");
+            _w.Write($"<div class=\"cbar-bar-row\" data-tip=\"{H(label)} — {H(lblB)}: {H(FormatVal(valB))}\"><div class=\"cbar-bar-track\"><div class=\"cbar-b\" style=\"width:{pctB:F1}%\"></div></div><span class=\"cbar-bar-val\">{H(FormatVal(valB))}</span></div>");
+            _w.Write("</div>");
+            _w.WriteLine("</div>");
+        }
         _w.WriteLine("</div>");
     }
 

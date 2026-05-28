@@ -47,18 +47,20 @@ public sealed class ReportSection
 }
 
 [JsonPolymorphic(TypeDiscriminatorPropertyName = "type")]
-[JsonDerivedType(typeof(ReportKeyValues),  "keyValues")]
-[JsonDerivedType(typeof(ReportTable),      "table")]
-[JsonDerivedType(typeof(ReportAlert),      "alert")]
-[JsonDerivedType(typeof(ReportText),       "text")]
-[JsonDerivedType(typeof(ReportDetails),    "details")]
-[JsonDerivedType(typeof(ReportExplain),    "explain")]
-[JsonDerivedType(typeof(ReportGauges),     "gauges")]
-[JsonDerivedType(typeof(ReportDonutChart), "donutChart")]
-[JsonDerivedType(typeof(ReportStackedBar), "stackedBar")]
-[JsonDerivedType(typeof(ReportSparkline),  "sparkline")]
-[JsonDerivedType(typeof(ReportCallTree),   "callTree")]
-[JsonDerivedType(typeof(ReportReference),  "reference")]
+[JsonDerivedType(typeof(ReportKeyValues),       "keyValues")]
+[JsonDerivedType(typeof(ReportTable),           "table")]
+[JsonDerivedType(typeof(ReportAlert),           "alert")]
+[JsonDerivedType(typeof(ReportText),            "text")]
+[JsonDerivedType(typeof(ReportDetails),         "details")]
+[JsonDerivedType(typeof(ReportExplain),         "explain")]
+[JsonDerivedType(typeof(ReportGauges),          "gauges")]
+[JsonDerivedType(typeof(ReportDonutChart),      "donutChart")]
+[JsonDerivedType(typeof(ReportStackedBar),      "stackedBar")]
+[JsonDerivedType(typeof(ReportSparkline),       "sparkline")]
+[JsonDerivedType(typeof(ReportMultiSparkline),  "multiSparkline")]
+[JsonDerivedType(typeof(ReportCompareBar),      "compareBar")]
+[JsonDerivedType(typeof(ReportCallTree),        "callTree")]
+[JsonDerivedType(typeof(ReportReference),       "reference")]
 public abstract class ReportElement { }
 
 public sealed class ReportKeyValues : ReportElement
@@ -164,6 +166,47 @@ public sealed class ReportSparkline : ReportElement
     public string?      Caption   { get; set; }
     public string?      Unit      { get; set; }
     public string?      ValueMode { get; set; }
+}
+
+/// <summary>
+/// Stacked synchronized sparklines — one per series, all sharing the same horizontal width
+/// so temporal patterns can be correlated visually across signals.
+/// </summary>
+public sealed class ReportMultiSparklineSeries
+{
+    public string       Label  { get; set; } = string.Empty;
+    public string?      Unit   { get; set; }
+    public List<double> Values { get; set; } = [];
+}
+
+public sealed class ReportMultiSparkline : ReportElement
+{
+    public List<ReportMultiSparklineSeries> Series    { get; set; } = [];
+    public string?                          Caption   { get; set; }
+    public string?                          ValueMode { get; set; }
+}
+
+/// <summary>
+/// Dual horizontal bar chart — two bars per row (A vs B) normalized against the same
+/// global maximum. Used for side-by-side comparisons such as "allocated vs live" bytes.
+/// </summary>
+public sealed class ReportCompareBarItem
+{
+    public string Label  { get; set; } = string.Empty;
+    public double ValueA { get; set; }
+    public double ValueB { get; set; }
+    public ReportCompareBarItem() { }
+    public ReportCompareBarItem(string label, double a, double b) { Label = label; ValueA = a; ValueB = b; }
+}
+
+public sealed class ReportCompareBar : ReportElement
+{
+    public List<ReportCompareBarItem> Items     { get; set; } = [];
+    public string?                    LabelA    { get; set; }
+    public string?                    LabelB    { get; set; }
+    public string?                    Unit      { get; set; }
+    public string?                    Caption   { get; set; }
+    public string?                    ValueMode { get; set; }
 }
 
 // ── Call Tree element ─────────────────────────────────────────────────────────
