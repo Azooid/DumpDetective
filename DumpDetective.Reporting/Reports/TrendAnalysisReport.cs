@@ -68,6 +68,7 @@ public static class TrendAnalysisReport
                 "Large time gaps → conditions may have changed significantly between captures",
                 "Consistent health score across all dumps → the issue was present throughout the entire window",
             ]);
+
         sink.Table(
             ["Dump", "File", "File Size", "Time", "Threads (Total / Alive)", "Health"],
             snaps.Select((s, i) => new[]
@@ -80,7 +81,10 @@ public static class TrendAnalysisReport
                 $"{s.HealthScore}/100  {ScoreLabel(s.HealthScore)}",
             }).ToList());
 
-        // Health score trend sparkline
+        // Health score — gauges then sparkline
+        sink.Gauges(
+            snaps.Select((s, i) => (labels[i], (double)s.HealthScore, "/100")).ToList(),
+            barMax: 100.0);
         if (snaps.Count > 1)
             sink.Sparkline(
                 snaps.Select(s => (double)s.HealthScore).ToList(),
@@ -278,10 +282,37 @@ public static class TrendAnalysisReport
             sink.KeyValues(
             [
                 ("Dumps Analyzed", snaps.Count.ToString()),
-                ("Time Span",      $"{spanStr}  ({snaps[0].FileTime:yyyy-MM-dd HH:mm} → {sN.FileTime:yyyy-MM-dd HH:mm})"),
+                ("Time Span",      $"{spanStr}  ({snaps[0].FileTime:yyyy-MM-dd HH:mm} \u2192 {sN.FileTime:yyyy-MM-dd HH:mm})"),
                 ("Comparison",     $"{labels[^1]} vs baseline {baselineLabel}"),
-                ("Health Score",   $"{s0.HealthScore}/100 {ScoreLabel(s0.HealthScore)}  →  {sN.HealthScore}/100 {ScoreLabel(sN.HealthScore)}  ({scoreArrow} {scoreDelta})"),
+                ("Health Score",   $"{s0.HealthScore}/100 {ScoreLabel(s0.HealthScore)}  \u2192  {sN.HealthScore}/100 {ScoreLabel(sN.HealthScore)}  ({scoreArrow} {scoreDelta})"),
             ]);
+
+            // Key signal trends across all dumps
+            if (snaps.Count > 1)
+                sink.MultiSparkline(
+                [
+                    ("Health Score",     (IReadOnlyList<double>)snaps.Select(s => (double)s.HealthScore).ToList(),          "/100"),
+                    ("Blocked Threads",  (IReadOnlyList<double>)snaps.Select(s => (double)s.BlockedThreadCount).ToList(),   " threads"),
+                    ("Async Backlog",    (IReadOnlyList<double>)snaps.Select(s => (double)s.AsyncBacklogTotal).ToList(),    " continuations"),
+                    ("Finalizer Queue",  (IReadOnlyList<double>)snaps.Select(s => (double)s.FinalizerQueueDepth).ToList(),  " objects"),
+                    ("Event Subscribers",(IReadOnlyList<double>)snaps.Select(s => (double)s.EventSubscriberTotal).ToList(), " instances"),
+                ], "Key health signals across dumps");
+
+            //// Baseline vs latest — side-by-side bar comparison
+            //sink.CompareBar(
+            //[
+            //    ("Health Score",      (double)s0.HealthScore,           (double)sN.HealthScore),
+            //    ("Heap Total",        s0.TotalHeapBytes / 1048576.0,    sN.TotalHeapBytes / 1048576.0),
+            //    ("LOH Size",          s0.LohBytes       / 1048576.0,    sN.LohBytes       / 1048576.0),
+            //    ("Blocked Threads",   (double)s0.BlockedThreadCount,    (double)sN.BlockedThreadCount),
+            //    ("Async Backlog",     (double)s0.AsyncBacklogTotal,     (double)sN.AsyncBacklogTotal),
+            //    ("Finalizer Queue",   (double)s0.FinalizerQueueDepth,   (double)sN.FinalizerQueueDepth),
+            //    ("Pinned Handles",    (double)s0.PinnedHandleCount,     (double)sN.PinnedHandleCount),
+            //    ("Event Subscribers", (double)s0.EventSubscriberTotal,  (double)sN.EventSubscriberTotal),
+            //    ("Timer Objects",     (double)s0.TimerCount,            (double)sN.TimerCount),
+            //],
+            //labelA: baselineLabel, labelB: labels[^1],
+            //caption: $"Baseline ({baselineLabel}) vs latest ({labels[^1]}) — key metric comparison");
 
             if (criticals.Count > 0)
                 sink.Alert(AlertLevel.Critical,
@@ -392,10 +423,13 @@ public static class TrendAnalysisReport
         // Key growth sparklines — before the table so trends are visible immediately
         if (snaps.Count > 1)
         {
-            sink.Sparkline(snaps.Select(s => (double)s.TotalHeapBytes).ToList(),
-                "Total heap bytes", null, valueMode: "size");
-            sink.Sparkline(snaps.Select(s => (double)s.LohBytes).ToList(),
-                "LOH bytes", null, valueMode: "size");
+            sink.MultiSparkline(
+            [
+                ("Total Heap",       (IReadOnlyList<double>)snaps.Select(s => (double)s.TotalHeapBytes).ToList(),      null),
+                ("LOH",             (IReadOnlyList<double>)snaps.Select(s => (double)s.LohBytes).ToList(),            null),
+                ("POH",             (IReadOnlyList<double>)snaps.Select(s => (double)s.PohBytes).ToList(),            null),
+                ("Fragmentation",   (IReadOnlyList<double>)snaps.Select(s => (double)s.HeapFreeBytes).ToList(),       null),
+            ], "Heap memory across dumps", valueMode: "size");
             sink.Sparkline(snaps.Select(s => (double)s.FinalizerQueueDepth).ToList(),
                 "Finalizer queue depth", " objects");
         }
@@ -506,13 +540,16 @@ public static class TrendAnalysisReport
                 sink.Table(aCols, aRows, "Top async state machine methods across dumps");
             }
 
-            // Thread pressure sparklines — before the tables
+            // Thread pressure sparklines
             if (snaps.Count > 1)
             {
-                sink.Sparkline(snaps.Select(s => (double)s.AsyncBacklogTotal).ToList(),
-                    "Async backlog across dumps", " continuations");
-                sink.Sparkline(snaps.Select(s => (double)s.BlockedThreadCount).ToList(),
-                    "Blocked threads across dumps", " threads");
+                sink.MultiSparkline(
+                [
+                    ("Async Backlog",     (IReadOnlyList<double>)snaps.Select(s => (double)s.AsyncBacklogTotal).ToList(),    " continuations"),
+                    ("Blocked Threads",  (IReadOnlyList<double>)snaps.Select(s => (double)s.BlockedThreadCount).ToList(),    " threads"),
+                    ("TP Active Workers",(IReadOnlyList<double>)snaps.Select(s => (double)s.TpActiveWorkers).ToList(),       " workers"),
+                    ("Timer Objects",    (IReadOnlyList<double>)snaps.Select(s => (double)s.TimerCount).ToList(),            " timers"),
+                ], "Thread & application pressure across dumps");
             }
         }
 
@@ -936,9 +973,9 @@ public static class TrendAnalysisReport
     {
         static string SevLabel(FindingSeverity s) => s switch
         {
-            FindingSeverity.Critical => "CRITICAL",
-            FindingSeverity.Warning  => "WARNING",
-            _                        => "INFO",
+            FindingSeverity.Critical => "Critical",
+            FindingSeverity.Warning  => "Warning",
+            _                        => "Info",
         };
 
         static string Fs(long b)  => DumpHelpers.FormatSize(b);
