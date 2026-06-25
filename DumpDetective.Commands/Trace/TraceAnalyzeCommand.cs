@@ -114,7 +114,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         if (tracePath is null)
         {
             AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace or .etl).");
-            AnsiConsole.MarkupLine(Markup.Escape(Help));
+            AnsiConsole.Write(new Text(Help + "\n"));
             return 1;
         }
         if (!File.Exists(tracePath))

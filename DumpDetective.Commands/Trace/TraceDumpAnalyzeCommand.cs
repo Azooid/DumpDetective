@@ -145,7 +145,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
         {
             AnsiConsole.MarkupLine("[bold red]✗[/] Both a trace file and a dump file are required.");
             AnsiConsole.MarkupLine("[dim]Example: DumpDetective trace-dump-analyze app.nettrace app.dmp[/]");
-            AnsiConsole.MarkupLine(Markup.Escape(Help));
+            AnsiConsole.Write(new Text(Help + "\n"));
             return 1;
         }
 
