@@ -51,32 +51,16 @@ public sealed class RootCauseChainReport
 
         sink.Section("Causal Chains (ranked by score)", "rootcause-chains");
 
-        foreach (var chain in data.CausalChains.Take(top))
-        {
-            string severityLabel = chain.Severity switch
-            {
-                FindingSeverity.Critical => "[CRITICAL]",
-                FindingSeverity.Warning  => "[WARNING]",
-                _                        => "[INFO]"
-            };
-
-            // Root cause headline
-            sink.Alert(
-                chain.Severity == FindingSeverity.Critical ? AlertLevel.Critical :
-                chain.Severity == FindingSeverity.Warning  ? AlertLevel.Warning  : AlertLevel.Info,
-                $"{severityLabel} Score {chain.Score} — {chain.RootCause}",
-                string.Join(" → ", chain.Effects),
-                chain.Advice);
-        }
-
-        // Summary table
         var rows = new List<string[]>(Math.Min(top, data.CausalChains.Count));
         foreach (var c in data.CausalChains.Take(top))
+        {
+            string effects    = string.Join(" → ", c.Effects);
+            string areas      = string.Join(", ", c.ContributingAreas);
             rows.Add([c.Severity.ToString(), c.Score.ToString("N0"),
-                       c.RootCause.Length > 60 ? c.RootCause[..57] + "…" : c.RootCause,
-                       string.Join(", ", c.ContributingAreas)]);
+                      c.RootCause, effects, areas, c.Advice ?? ""]);
+        }
         sink.Table(
-            ["Severity", "Score", "Root Cause", "Contributing Areas"],
-            rows, "All chains ordered by score descending");
+            ["Severity", "Score", "Root Cause", "Effects", "Contributing Areas", "Advice"],
+            rows, $"Top {Math.Min(top, data.CausalChains.Count)} chains ordered by score descending");
     }
 }

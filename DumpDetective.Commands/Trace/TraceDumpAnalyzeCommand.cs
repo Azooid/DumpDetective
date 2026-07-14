@@ -145,7 +145,7 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
         {
             AnsiConsole.MarkupLine("[bold red]✗[/] Both a trace file and a dump file are required.");
             AnsiConsole.MarkupLine("[dim]Example: DumpDetective trace-dump-analyze app.nettrace app.dmp[/]");
-            AnsiConsole.MarkupLine(Markup.Escape(Help));
+            AnsiConsole.Write(new Text(Help + "\n"));
             return 1;
         }
 
@@ -312,6 +312,20 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
             });
             AnsiConsole.MarkupLine($"  [green]✓[/] {crossFindings.Count} cross-source finding(s)");
 
+            // ── Combined Summary Dashboard ────────────────────────────────────
+            RenderCombinedSummary(
+                sink, traceFileName, dumpFileName, snap!,
+                results.GetValueOrDefault("cpu-trace")              as CpuTraceData,
+                results.GetValueOrDefault("alloc-trace")            as AllocTraceData,
+                results.GetValueOrDefault("gc-trace")               as GcTraceData,
+                results.GetValueOrDefault("contention-trace")       as ContentionTraceData,
+                results.GetValueOrDefault("exceptions-trace")       as ExceptionsTraceData,
+                results.GetValueOrDefault("thread-pool-starvation") as ThreadPoolStarvationData,
+                results.GetValueOrDefault("http-trace")             as HttpTraceData,
+                results.GetValueOrDefault("async-trace")            as AsyncTraceData,
+                results.GetValueOrDefault("sql-trace")              as SqlTraceData,
+                crossFindings, processFilter);
+
             // ── Write report: cross-source section first ──────────────────────
             sink.Header("Cross-Source Findings", "", navLevel: 2);
             _correlationReport.Render(crossFindings, snap!, sink);
@@ -448,6 +462,436 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
         if (info is null) return "";
         int idx = info.LastIndexOf("  |  ", StringComparison.Ordinal);
         return idx >= 0 ? info[(idx + 5)..] : info;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Combined Summary Dashboard — emitted as the FIRST chapter of the report
+    // so readers get a visual overview before wading into detailed sub-sections.
+    // ─────────────────────────────────────────────────────────────────────────
+    private static void RenderCombinedSummary(
+        IRenderSink                       sink,
+        string                            traceFileName,
+        string                            dumpFileName,
+        DumpSnapshot                      snap,
+        CpuTraceData?                     cpu,
+        AllocTraceData?                   alloc,
+        GcTraceData?                      gc,
+        ContentionTraceData?              contention,
+        ExceptionsTraceData?              exceptions,
+        ThreadPoolStarvationData?         starvation,
+        HttpTraceData?                    http,
+        AsyncTraceData?                   async_,
+        SqlTraceData?                     sql,
+        IReadOnlyList<CorrelationFinding> crossFindings,
+        string?                           processFilter)
+    {
+        sink.Header("Combined Summary", "", navLevel: 2);
+
+        // ── Section A: Session Identity ──────────────────────────────────────
+        sink.Section("Session Overview", "combined-session");
+
+        string traceDuration = "—";
+        string avgCpu        = "—";
+        string peakCpu       = "—";
+        string process       = processFilter ?? "(all processes)";
+
+        if (cpu?.Stats is { } cpuStats)
+        {
+            traceDuration = cpuStats.TraceDurationMs >= 60_000
+                ? $"{cpuStats.TraceDurationMs / 60_000.0:F1} min"
+                : $"{cpuStats.TraceDurationMs / 1000.0:F1} s";
+            avgCpu  = $"{cpuStats.AvgCpuPct:F1} %";
+            peakCpu = $"{cpuStats.MaxCpuPct:F1} %";
+            if (!string.IsNullOrWhiteSpace(cpuStats.TopProcessName))
+                process = cpuStats.TopProcessName;
+        }
+
+        string scoreLabel = snap.HealthScore >= 70 ? "Healthy"
+                          : snap.HealthScore >= 40 ? "Degraded"
+                          : "Critical";
+
+        int critCount = crossFindings.Count(f => f.Severity == FindingSeverity.Critical);
+
+        var kvItems = new List<(string, string)>
+        {
+            ("Trace file",          traceFileName),
+            ("Dump file",           dumpFileName),
+            ("Process",             process),
+            ("Trace duration",      traceDuration),
+            ("Avg CPU (trace)",     avgCpu),
+            ("Peak CPU (trace)",    peakCpu),
+            ("Dump CLR",            snap.ClrVersion ?? "—"),
+            ("Heap at capture",     DumpHelpers.FormatSize(snap.TotalHeapBytes)),
+            ("Total objects",       snap.TotalObjectCount.ToString("N0")),
+            ("Threads",             $"{snap.AliveThreadCount} alive, {snap.BlockedThreadCount} blocked"),
+            ("Thread-pool workers", snap.TpMaxWorkers > 0 ? $"{snap.TpActiveWorkers}/{snap.TpMaxWorkers} active" : "—"),
+            ("Async backlog",       snap.AsyncBacklogTotal > 0 ? snap.AsyncBacklogTotal.ToString("N0") : "—"),
+            ("Finalizer queue",     snap.FinalizerQueueDepth > 0 ? snap.FinalizerQueueDepth.ToString("N0") : "—"),
+            ("Pinned handles",      snap.PinnedHandleCount > 0 ? snap.PinnedHandleCount.ToString("N0") : "—"),
+            ("GC events (trace)",   gc?.TotalGcs > 0 ? gc.TotalGcs.ToString("N0") : "—"),
+            ("Max GC pause",        gc?.MaxPauseMs > 0 ? $"{gc.MaxPauseMs:F1} ms" : "—"),
+            ("Exceptions thrown",   exceptions?.TotalThrown > 0 ? exceptions.TotalThrown.ToString("N0") : "—"),
+            ("Lock contentions",    contention?.TotalContentions > 0 ? contention.TotalContentions.ToString("N0") : "—"),
+            ("HTTP requests",       http?.HasData == true && http.TotalRequests > 0 ? http.TotalRequests.ToString("N0") : "—"),
+            ("HTTP P99 latency",    http?.HasData == true && http.P99RequestMs > 0 ? $"{http.P99RequestMs:F0} ms" : "—"),
+            ("SQL commands",        sql?.HasData == true && sql.TotalCommands > 0 ? sql.TotalCommands.ToString("N0") : "—"),
+            ("DB connections",      snap.ConnectionCount > 0 ? snap.ConnectionCount.ToString("N0") : "—"),
+            ("Cross-src findings",  crossFindings.Count > 0
+                ? $"{crossFindings.Count}  ({critCount} critical)"
+                : "0"),
+            ("Dump health score",   $"{snap.HealthScore}/100  [{scoreLabel}]"),
+        };
+        // Strip "—" rows to keep the card tight
+        sink.KeyValues(kvItems.Where(kv => kv.Item2 != "—").ToList());
+
+        // ── Section B: Cross-Source Signal Matrix ─────────────────────────────
+        sink.Section("Cross-Source Signal Matrix", "combined-matrix");
+        sink.Explain(
+            what:   "Side-by-side comparison of each area from two angles: the trace shows WHEN things happened; the dump shows WHAT existed on the heap at capture time.",
+            why:    "A signal observed independently in both sources carries far higher confidence than any single-source observation.",
+            impact: "Rows marked 🔴 are corroborated root causes. Rows marked ⚠ are worth investigating further. Scroll to 'Cross-Source Findings' for ranked detail and remediation guidance.",
+            action: "Start with 🔴 rows, then ⚠ rows. Use the 'Recommended Next Steps' table to choose follow-up dump commands.");
+
+        var matrixRows = new List<string[]>();
+
+        // CPU
+        if (cpu?.Stats is { AvgCpuPct: > 0 } cs)
+        {
+            string trSig = cs.AvgCpuPct >= 85
+                ? $"🔴 Saturated  ({cs.AvgCpuPct:F1}% avg, {cs.MaxCpuPct:F1}% peak)"
+                : cs.AvgCpuPct >= 70
+                    ? $"⚠ High  ({cs.AvgCpuPct:F1}% avg, {cs.MaxCpuPct:F1}% peak)"
+                    : $"✓ Normal  ({cs.AvgCpuPct:F1}% avg)";
+            string dumpSig = snap.TpMaxWorkers > 0
+                ? $"{snap.TpActiveWorkers}/{snap.TpMaxWorkers} thread-pool workers active"
+                : $"{snap.AliveThreadCount} live threads";
+            string combined = cs.AvgCpuPct >= 85
+                    && snap.TpMaxWorkers > 0
+                    && snap.TpActiveWorkers >= snap.TpMaxWorkers * 0.9
+                ? "🔴 CPU + pool saturated"
+                : cs.AvgCpuPct >= 70 ? "⚠ CPU high" : "✓ OK";
+            matrixRows.Add(["CPU", trSig, dumpSig, combined]);
+        }
+
+        // Memory / GC
+        if (gc?.TotalGcs > 0 || snap.TotalHeapBytes > 0)
+        {
+            string trSig = gc?.MaxPauseMs >= 200
+                ? $"🔴 Max GC pause {gc.MaxPauseMs:F0} ms  ({gc.TotalGcs:N0} GCs, {gc.TotalPauseMs:F0} ms total)"
+                : gc?.MaxPauseMs > 0
+                    ? $"⚠ Max pause {gc.MaxPauseMs:F1} ms  ({gc.TotalGcs:N0} GCs)"
+                    : gc?.TotalGcs > 0
+                        ? $"✓ {gc.TotalGcs:N0} GCs, no long pauses"
+                        : "—";
+            double gen2Pct = snap.TotalHeapBytes > 0 ? snap.Gen2Bytes * 100.0 / snap.TotalHeapBytes : 0;
+            string dumpSig = $"{DumpHelpers.FormatSize(snap.TotalHeapBytes)} heap  •  Gen2={gen2Pct:F0}%  •  frag={snap.FragmentationPct:F0}%";
+            string combined = gc?.MaxPauseMs >= 200 && gen2Pct >= 60
+                ? "🔴 GC pressure confirmed"
+                : gc?.MaxPauseMs >= 200 || gen2Pct >= 70 || snap.FragmentationPct >= 30
+                    ? "⚠ GC pressure"
+                    : "✓ OK";
+            matrixRows.Add(["Memory / GC", trSig, dumpSig, combined]);
+        }
+
+        // Allocations
+        if (alloc?.EstimatedTotalBytes > 0 || snap.TotalHeapBytes > 0)
+        {
+            string topAllocType = alloc?.TopTypes?.Count > 0 ? TrimTypeName(alloc.TopTypes[0].TypeName, 36) : "";
+            string trSig = alloc?.EstimatedTotalBytes > 0
+                ? $"~{DumpHelpers.FormatSize(alloc.EstimatedTotalBytes)} allocated"
+                  + (topAllocType.Length > 0 ? $"  •  top: {topAllocType}" : "")
+                : "—";
+            string topLiveType = snap.TopTypes.Count > 0 ? TrimTypeName(snap.TopTypes[0].Name, 36) : "—";
+            string dumpSig = $"Top live: {topLiveType}  ({DumpHelpers.FormatSize(snap.TopTypes.Count > 0 ? snap.TopTypes[0].TotalBytes : 0)})";
+            bool converges = alloc?.TopTypes?.Count > 0 && snap.TopTypes.Count > 0
+                && snap.TopTypes.Take(5).Any(t => t.Name.Contains(
+                    alloc.TopTypes[0].TypeName.Split('.').Last(),
+                    StringComparison.OrdinalIgnoreCase));
+            string combined = converges ? "⚠ Alloc+live type convergence" : "ℹ No direct type overlap";
+            matrixRows.Add(["Allocations", trSig, dumpSig, combined]);
+        }
+
+        // Async / Thread Pool
+        {
+            string trSig = starvation?.StarvationAdjustmentCount >= 5
+                ? $"🔴 {starvation.StarvationAdjustmentCount} starvation adj  ({starvation.TotalEvents} TP events)"
+                : starvation?.StarvationAdjustmentCount >= 1
+                    ? $"⚠ {starvation.StarvationAdjustmentCount} starvation adj"
+                    : async_?.HasData == true && async_.SyncBlockingOccurrences > 0
+                        ? $"⚠ {async_.SyncBlockingOccurrences} sync-over-async sites"
+                        : async_?.HasData == true && async_.TotalTasksScheduled > 0
+                            ? $"ℹ {async_.TotalTasksScheduled:N0} tasks scheduled"
+                            : "—";
+            string dumpSig = snap.AsyncBacklogTotal >= 100
+                ? $"🔴 {snap.AsyncBacklogTotal:N0} pending continuations"
+                : snap.AsyncBacklogTotal >= 10
+                    ? $"⚠ {snap.AsyncBacklogTotal:N0} pending continuations"
+                    : snap.AsyncBacklogTotal > 0
+                        ? $"ℹ {snap.AsyncBacklogTotal:N0} pending continuations"
+                        : "—";
+            string combined = starvation?.StarvationAdjustmentCount >= 5 && snap.AsyncBacklogTotal >= 10
+                ? "🔴 Starvation confirmed"
+                : snap.AsyncBacklogTotal >= 100 || starvation?.StarvationAdjustmentCount >= 3
+                    ? "⚠ Async pressure"
+                    : trSig != "—" || dumpSig != "—" ? "ℹ Monitor"
+                    : "✓ OK";
+            if (trSig != "—" || dumpSig != "—" || snap.AsyncBacklogTotal > 0 || starvation?.TotalEvents > 0)
+                matrixRows.Add(["Async / Thread Pool", trSig, dumpSig, combined]);
+        }
+
+        // Exceptions
+        if (exceptions?.TotalThrown > 0 || snap.ExceptionThreadCount > 0)
+        {
+            string trSig = exceptions?.TotalThrown >= 10_000
+                ? $"🔴 Storm — {exceptions.TotalThrown:N0} thrown  ({exceptions.UniqueTypes} types)"
+                : exceptions?.TotalThrown >= 1_000
+                    ? $"⚠ High — {exceptions.TotalThrown:N0} thrown"
+                    : exceptions?.TotalThrown > 0
+                        ? $"ℹ {exceptions.TotalThrown:N0} thrown"
+                        : "—";
+            string topEx = snap.ExceptionCounts.Count > 0
+                ? snap.ExceptionCounts[0].Name.Split('.').Last() : "";
+            string dumpSig = snap.ExceptionThreadCount > 0
+                ? $"{snap.ExceptionThreadCount} thread(s) holding live exceptions"
+                  + (topEx.Length > 0 ? $"  •  top: {topEx}" : "")
+                : "—";
+            string combined = exceptions?.TotalThrown >= 10_000 && snap.ExceptionThreadCount > 0
+                ? "🔴 Exception accumulation"
+                : exceptions?.TotalThrown >= 1_000 ? "⚠ High exception rate"
+                : "✓ OK";
+            matrixRows.Add(["Exceptions", trSig, dumpSig, combined]);
+        }
+
+        // Contention / Threads
+        if (contention?.TotalContentions > 0 || snap.BlockedThreadCount > 0)
+        {
+            string trSig = contention?.TotalContentions >= 500
+                ? $"🔴 {contention.TotalContentions:N0} contentions  ({contention.TotalWaitMs:F0} ms total wait)"
+                : contention?.TotalContentions > 0
+                    ? $"⚠ {contention.TotalContentions:N0} contentions  ({contention.TotalWaitMs:F0} ms)"
+                    : "—";
+            string dumpSig = snap.BlockedThreadCount > 0
+                ? $"{snap.BlockedThreadCount}/{snap.AliveThreadCount} threads blocked"
+                : $"{snap.AliveThreadCount} threads — none blocked";
+            string combined = contention?.TotalContentions >= 500 && snap.BlockedThreadCount >= 5
+                ? "🔴 Contention confirmed"
+                : snap.BlockedThreadCount >= 10 || contention?.TotalContentions >= 500
+                    ? "⚠ Thread blocking"
+                    : "✓ OK";
+            matrixRows.Add(["Contention / Threads", trSig, dumpSig, combined]);
+        }
+
+        // HTTP
+        if (http?.HasData == true)
+        {
+            string trSig = http.P99RequestMs >= 2000
+                ? $"🔴 P99={http.P99RequestMs:F0} ms  ({http.TotalRequests:N0} requests)"
+                : http.P99RequestMs >= 500
+                    ? $"⚠ P99={http.P99RequestMs:F0} ms  ({http.TotalRequests:N0} requests)"
+                    : http.TotalRequests > 0
+                        ? $"✓ P99={http.P99RequestMs:F0} ms"
+                        : "—";
+            if (http.ErrorCount > 0)
+                trSig += $"  •  {http.ErrorCount * 100.0 / Math.Max(1, http.TotalRequests):F1}% errors";
+            string dumpSig = snap.AsyncBacklogTotal > 0
+                ? $"Dump: {snap.AsyncBacklogTotal:N0} pending async continuations"
+                : "—";
+            string combined = http.P99RequestMs >= 2000 && snap.AsyncBacklogTotal >= 10
+                ? "🔴 HTTP + async backlog"
+                : http.P99RequestMs >= 2000 ? "⚠ Slow HTTP"
+                : "✓ OK";
+            matrixRows.Add(["HTTP", trSig, dumpSig, combined]);
+        }
+
+        // SQL / Connections
+        if (sql?.HasData == true || snap.ConnectionCount > 0)
+        {
+            string trSig = sql?.HasData == true && sql.MaxCommandMs >= 1000
+                ? $"⚠ Slowest {sql.MaxCommandMs:F0} ms  ({sql.SlowCommandCount} slow / {sql.TotalCommands:N0} total,  avg {sql.AvgCommandMs:F1} ms)"
+                : sql?.HasData == true && sql.TotalCommands > 0
+                    ? $"ℹ {sql.TotalCommands:N0} queries  (avg {sql.AvgCommandMs:F1} ms)"
+                    : "—";
+            string dumpSig = snap.ConnectionCount > 0
+                ? $"{snap.ConnectionCount:N0} live DB connections on heap"
+                : "—";
+            string combined = sql?.HasData == true && sql.MaxCommandMs >= 1000 && snap.ConnectionCount > 10
+                ? "⚠ Slow SQL + high connections"
+                : sql?.HasData == true && sql.TotalCommands > 0 ? "ℹ Present"
+                : dumpSig != "—" ? "ℹ Connections found" : "—";
+            if (trSig != "—" || dumpSig != "—")
+                matrixRows.Add(["SQL / Connections", trSig, dumpSig, combined]);
+        }
+
+        if (matrixRows.Count > 0)
+            sink.Table(
+                ["Area", "Trace Signal  (when)", "Dump Signal  (what)", "Combined Assessment"],
+                matrixRows,
+                caption: "🔴 = both sources corroborate the same problem  •  ⚠ = single-source signal  •  ✓ = no issue detected");
+
+        // ── Section C: Heap Composition at Capture ────────────────────────────
+        long heapTotal = snap.Gen0Bytes + snap.Gen1Bytes + snap.Gen2Bytes + snap.LohBytes + snap.PohBytes;
+        if (heapTotal > 0)
+        {
+            sink.Section("Heap Composition at Capture", "combined-heap");
+
+            var heapSegs = new List<(string, double)>();
+            if (snap.Gen0Bytes > 0) heapSegs.Add(("Gen 0",  snap.Gen0Bytes));
+            if (snap.Gen1Bytes > 0) heapSegs.Add(("Gen 1",  snap.Gen1Bytes));
+            if (snap.Gen2Bytes > 0) heapSegs.Add(("Gen 2",  snap.Gen2Bytes));
+            if (snap.LohBytes  > 0) heapSegs.Add(("LOH",    snap.LohBytes));
+            if (snap.PohBytes  > 0) heapSegs.Add(("POH",    snap.PohBytes));
+            long remainder = snap.TotalHeapBytes - heapTotal;
+            if (remainder > 0)      heapSegs.Add(("Other",  remainder));
+
+            sink.DonutChart(heapSegs,
+                caption: "Managed heap distribution at dump capture time — a Gen2-dominant chart (>60%) typically indicates long-lived or leaked objects",
+                centerText: $"{DumpHelpers.FormatSize(snap.TotalHeapBytes)}\nheap");
+
+            var heapGauges = new List<(string, double, string)>();
+            if (snap.FragmentationPct > 0)
+                heapGauges.Add(("Heap fragmentation",    snap.FragmentationPct, "%"));
+            if (snap.TotalHeapBytes > 0 && snap.Gen2Bytes > 0)
+                heapGauges.Add(("Gen2 share of heap",    snap.Gen2Bytes * 100.0 / snap.TotalHeapBytes, "%"));
+            if (snap.LohBytes > 0 && snap.LohFragmentationPct > 0)
+                heapGauges.Add(("LOH fragmentation",     snap.LohFragmentationPct, "%"));
+            if (heapGauges.Count > 0)
+                sink.Gauges(heapGauges, barMax: 100.0);
+        }
+
+        // ── Section D: Performance Gauges ─────────────────────────────────────
+        bool hasCpuStats = cpu?.Stats is { AvgCpuPct: > 0 };
+        bool hasTpData   = snap.TpMaxWorkers > 0;
+        bool hasGcRatio  = gc?.TotalPauseMs > 0 && cpu?.Stats?.TraceDurationMs > 0;
+
+        if (hasCpuStats || hasTpData || hasGcRatio || snap.BlockedThreadCount > 0)
+        {
+            sink.Section("Performance Indicators", "combined-perf");
+
+            var perfGauges = new List<(string, double, string)>();
+            if (hasCpuStats)
+            {
+                perfGauges.Add(("Avg CPU (trace)",  cpu!.Stats!.AvgCpuPct,  "%"));
+                perfGauges.Add(("Peak CPU (trace)", cpu!.Stats!.MaxCpuPct,   "%"));
+            }
+            if (hasTpData)
+                perfGauges.Add(("Thread-pool saturation",
+                    snap.TpActiveWorkers * 100.0 / snap.TpMaxWorkers, "%"));
+            if (snap.AliveThreadCount > 0)
+                perfGauges.Add(("Blocked thread ratio",
+                    snap.BlockedThreadCount * 100.0 / snap.AliveThreadCount, "%"));
+            if (hasGcRatio)
+                perfGauges.Add(("GC pause / trace time",
+                    gc!.TotalPauseMs / cpu!.Stats!.TraceDurationMs * 100.0, "%"));
+
+            if (perfGauges.Count > 0)
+                sink.Gauges(perfGauges, barMax: 100.0);
+        }
+
+        // ── Section E-extra: Timeline Signals (MultiSparkline) ────────────────
+        {
+            var timelineSeries = new List<(string Label, IReadOnlyList<double> Values, string? Unit)>();
+
+            if (cpu?.SamplesTimeline?.Count > 1)
+                timelineSeries.Add(("CPU samples/sec", cpu.SamplesTimeline, null));
+            if (exceptions?.RateTimeline?.Count > 1)
+                timelineSeries.Add(("Exceptions/sec", exceptions.RateTimeline, null));
+            if (contention?.WaitTimeline?.Count > 1)
+                timelineSeries.Add(("Lock wait ms/sec", contention.WaitTimeline, "ms"));
+            if (async_?.ScheduleRateTimeline?.Count > 1)
+                timelineSeries.Add(("Tasks scheduled/sec", async_.ScheduleRateTimeline, null));
+            if (sql?.DurationTimeline?.Count > 1)
+                timelineSeries.Add(("SQL duration ms/sec", sql.DurationTimeline, "ms"));
+
+            if (timelineSeries.Count > 0)
+            {
+                sink.Section("Timeline Signals", "combined-timeline");
+                sink.MultiSparkline(
+                    timelineSeries,
+                    caption: "Each row shows activity over the trace window — aligned to the same time axis for easy correlation");
+            }
+        }
+
+        // ── Section E: Allocation Breakdown during Trace ──────────────────────
+        if (alloc?.TopTypes?.Count > 0)
+        {
+            sink.Section("Allocation Breakdown  (Trace Window)", "combined-alloc");
+
+            int takeN      = Math.Min(8, alloc.TopTypes.Count);
+            var donutSegs  = alloc.TopTypes
+                .Take(takeN)
+                .Select(t => (TrimTypeName(t.TypeName, 42), (double)t.EstimatedBytes))
+                .ToList();
+            long shownBytes = donutSegs.Sum(s => (long)s.Item2);
+            if (alloc.EstimatedTotalBytes > shownBytes)
+                donutSegs.Add(("Others", alloc.EstimatedTotalBytes - shownBytes));
+
+            sink.DonutChart(donutSegs,
+                caption: $"Estimated allocation bytes by type during trace window — ~{DumpHelpers.FormatSize(alloc.EstimatedTotalBytes)} total (sampled every ~100 KB)",
+                centerText: $"{DumpHelpers.FormatSize(alloc.EstimatedTotalBytes)}\nallocated");
+
+            // Cross-match: allocated vs live — CompareBar gives an immediate visual diagnosis
+            var dumpTypeLookup = snap.TopTypes
+                .Take(30)
+                .ToDictionary(
+                    t => t.Name.Split('.').Last(),
+                    t => t.TotalBytes,
+                    StringComparer.OrdinalIgnoreCase);
+
+            var cbarItems = alloc.TopTypes
+                .Take(12)
+                .Select(t =>
+                {
+                    string shortName = t.TypeName.Split('.').Last();
+                    long liveBytes   = dumpTypeLookup.GetValueOrDefault(shortName, 0L);
+                    return (TrimTypeName(t.TypeName, 44), (double)t.EstimatedBytes, (double)liveBytes);
+                })
+                .ToList();
+
+            sink.CompareBar(
+                cbarItems,
+                labelA:    "Allocated  (trace)",
+                labelB:    "Live bytes  (dump)",
+                caption:   "Purple = estimated allocations during trace window  •  Green = live bytes in the dump  •  Both bars present = retention signal",
+                valueMode: "size");
+        }
+
+        // ── Section F: Cross-Source Finding Scores ────────────────────────────
+        if (crossFindings.Count > 0)
+        {
+            sink.Section("Cross-Source Finding Scores", "combined-scores");
+
+            int warnCount = crossFindings.Count(f => f.Severity == FindingSeverity.Warning);
+            int infoCount = crossFindings.Count - critCount - warnCount;
+
+            sink.KeyValues([
+                ("🔴 Critical", critCount > 0 ? critCount.ToString() : "—"),
+                ("⚠ Warning",  warnCount > 0 ? warnCount.ToString() : "—"),
+                ("ℹ Info",     infoCount > 0 ? infoCount.ToString() : "—"),
+                ("Top finding", TrimTypeName(crossFindings[0].Category + "  —  " + crossFindings[0].Headline, 80)),
+                ("Confidence",  crossFindings[0].ConfidenceLabel),
+            ]);
+
+            // Gauge bar per finding (top 8 by score) — gives an instant visual ranking
+            sink.Gauges(
+                crossFindings
+                    .Take(8)
+                    .Select(f => (
+                        TrimTypeName(f.Category + ": " + f.Headline, 60),
+                        (double)f.Score,
+                        "/100"))
+                    .ToList(),
+                barMax: 100.0);
+        }
+    }
+
+    private static string TrimTypeName(string name, int maxLen)
+    {
+        if (name.Length <= maxLen) return name;
+        // Prefer the short unqualified name (after the last dot)
+        int dot       = name.LastIndexOf('.');
+        string simple = dot >= 0 ? name[(dot + 1)..] : name;
+        if (simple.Length <= maxLen) return simple;
+        return simple[..(maxLen - 1)] + "…";
     }
 
     /// <summary>

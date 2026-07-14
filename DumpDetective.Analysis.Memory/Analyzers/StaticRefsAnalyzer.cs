@@ -221,7 +221,12 @@ public sealed class StaticRefsAnalyzer
         });
 
         var finalFields = _fields ?? [];
-        return new StaticRefsData(finalFields, finalFields.Count, _totalSz, _isEstimated, _skippedModules);
+
+        IReadOnlyList<NonRefStaticFieldEntry>? nonRefFields = null;
+        CommandBase.RunStatus("Scanning value-type static fields...", _ =>
+            nonRefFields = CollectNonRefStaticFields(ctx, filter, excludes));
+
+        return new StaticRefsData(finalFields, finalFields.Count, _totalSz, _isEstimated, _skippedModules, nonRefFields);
     }
 
     private List<StaticFieldEntry>? _fields;
@@ -326,4 +331,98 @@ public sealed class StaticRefsAnalyzer
 
     private static bool IsCollectionType(string typeName) =>
         CollectionMarkers.Any(m => typeName.Contains(m, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Enumerate all non-reference (value-type) static fields across non-system types.
+    /// Reads primitive/enum values; leaves structs/pointers with a null value.
+    /// </summary>
+    private static List<NonRefStaticFieldEntry> CollectNonRefStaticFields(
+        DumpContext ctx, string? filter, HashSet<string>? excludes)
+    {
+        var result = new List<NonRefStaticFieldEntry>(256);
+        // Deduplicate across multiple AppDomains (same field may appear more than once).
+        var seen   = new HashSet<(string DeclType, string FieldName)>();
+
+        try
+        {
+            foreach (var appDomain in ctx.Runtime.AppDomains)
+            {
+                foreach (var module in appDomain.Modules)
+                {
+                    IReadOnlyList<(ulong, int)> typeDefs;
+                    try   { typeDefs = module.EnumerateTypeDefToMethodTableMap().ToList(); }
+                    catch { continue; }
+
+                    foreach (var (mt, _) in typeDefs)
+                    {
+                        if (mt == 0) continue;
+                        var clrType = ctx.Heap.GetTypeByMethodTable(mt);
+                        if (clrType is null) continue;
+
+                        string declType = clrType.Name ?? "<unknown>";
+                        if (DumpHelpers.IsSystemType(declType)) continue;
+                        if (excludes is not null && excludes.Any(e =>
+                            declType.Contains(e, StringComparison.OrdinalIgnoreCase))) continue;
+                        if (filter is not null &&
+                            !declType.Contains(filter, StringComparison.OrdinalIgnoreCase))
+                            continue;
+
+                        foreach (var sf in clrType.StaticFields)
+                        {
+                            if (sf.IsObjectReference) continue;
+                            string fieldName = sf.Name ?? "<unknown>";
+                            if (!seen.Add((declType, fieldName))) continue;
+
+                            string fieldType   = sf.Type?.Name ?? sf.ElementType.ToString();
+                            bool   isEnum      = sf.Type?.IsEnum == true;
+                            string elementKind = isEnum ? "Enum"
+                                : sf.ElementType switch
+                                {
+                                    ClrElementType.Boolean or ClrElementType.Char    or
+                                    ClrElementType.Int8    or ClrElementType.UInt8   or
+                                    ClrElementType.Int16   or ClrElementType.UInt16  or
+                                    ClrElementType.Int32   or ClrElementType.UInt32  or
+                                    ClrElementType.Int64   or ClrElementType.UInt64  or
+                                    ClrElementType.Float   or ClrElementType.Double  => "Primitive",
+                                    ClrElementType.NativeInt or ClrElementType.NativeUInt
+                                        or ClrElementType.Pointer => "Pointer",
+                                    _ => "Struct"
+                                };
+
+                            string? value = null;
+                            if (elementKind is "Primitive" or "Enum")
+                            {
+                                try
+                                {
+                                    value = sf.ElementType switch
+                                    {
+                                        ClrElementType.Boolean => sf.Read<bool>(appDomain).ToString(),
+                                        ClrElementType.Char    => $"'{sf.Read<char>(appDomain)}'",
+                                        ClrElementType.Int8    => sf.Read<sbyte>(appDomain).ToString("N0"),
+                                        ClrElementType.UInt8   => sf.Read<byte>(appDomain).ToString("N0"),
+                                        ClrElementType.Int16   => sf.Read<short>(appDomain).ToString("N0"),
+                                        ClrElementType.UInt16  => sf.Read<ushort>(appDomain).ToString("N0"),
+                                        ClrElementType.Int32   => sf.Read<int>(appDomain).ToString("N0"),
+                                        ClrElementType.UInt32  => sf.Read<uint>(appDomain).ToString("N0"),
+                                        ClrElementType.Int64   => sf.Read<long>(appDomain).ToString("N0"),
+                                        ClrElementType.UInt64  => sf.Read<ulong>(appDomain).ToString("N0"),
+                                        ClrElementType.Float   => sf.Read<float>(appDomain).ToString("G"),
+                                        ClrElementType.Double  => sf.Read<double>(appDomain).ToString("G"),
+                                        _ => null
+                                    };
+                                }
+                                catch { }
+                            }
+
+                            result.Add(new NonRefStaticFieldEntry(declType, fieldName, fieldType, elementKind, value));
+                        }
+                    }
+                }
+            }
+        }
+        catch { }
+
+        result.Sort((a, b) => StringComparer.Ordinal.Compare(a.DeclType, b.DeclType));
+        return result;
+    }
 }

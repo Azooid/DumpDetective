@@ -212,7 +212,12 @@ window.collapseAll = function () {
   var lastIdx = -1;
 
   function getCrits() {
-    return Array.from(document.querySelectorAll('#report-root .alert-crit'));
+    var alerts = Array.from(document.querySelectorAll('#report-root .alert-crit'));
+    var sevRows = Array.from(document.querySelectorAll('#report-root tr:has(td.sev-crit)'));
+    // merge and sort by DOM order
+    return alerts.concat(sevRows).sort(function (a, b) {
+      return a.compareDocumentPosition(b) & 4 ? -1 : 1;
+    });
   }
 
   function syncBtn() {
@@ -248,6 +253,137 @@ window.collapseAll = function () {
 
   syncBtn();
   window.addEventListener('load', syncBtn);
+})();
+
+/* ── Warning jump ────────────────────────────────────────────────────── */
+(function () {
+  var btn = document.getElementById('jump-warn');
+  var lastIdx = -1;
+
+  function getWarns() {
+    var alerts = Array.from(document.querySelectorAll('#report-root .alert-warn'));
+    var sevRows = Array.from(document.querySelectorAll('#report-root tr:has(td.sev-warn)'));
+    return alerts.concat(sevRows).sort(function (a, b) {
+      return a.compareDocumentPosition(b) & 4 ? -1 : 1;
+    });
+  }
+
+  function syncBtn() {
+    if (!btn) return;
+    btn.classList.toggle('vis', getWarns().length > 0);
+  }
+
+  window.jumpWarn = function () {
+    var items = getWarns();
+    if (!items.length) return;
+    var nextIdx;
+    if (lastIdx >= 0 && lastIdx < items.length - 1) {
+      nextIdx = lastIdx + 1;
+    } else if (lastIdx >= items.length - 1) {
+      nextIdx = 0;
+    } else {
+      nextIdx = items.findIndex(function (el) {
+        return el.getBoundingClientRect().top > 80;
+      });
+      if (nextIdx < 0) nextIdx = 0;
+    }
+    var target = items[nextIdx];
+    if (!target) return;
+    var collapsedCard = target.closest('.card.collapsed');
+    if (collapsedCard) collapsedCard.classList.remove('collapsed');
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    lastIdx = nextIdx;
+  };
+
+  syncBtn();
+  window.addEventListener('load', syncBtn);
+})();
+
+/* ── Info jump ───────────────────────────────────────────────────────── */
+(function () {
+  var btn = document.getElementById('jump-info');
+  var lastIdx = -1;
+
+  function getInfos() {
+    var alerts = Array.from(document.querySelectorAll('#report-root .alert-info'));
+    var sevRows = Array.from(document.querySelectorAll('#report-root tr:has(td.sev-info)'));
+    return alerts.concat(sevRows).sort(function (a, b) {
+      return a.compareDocumentPosition(b) & 4 ? -1 : 1;
+    });
+  }
+
+  function syncBtn() {
+    if (!btn) return;
+    btn.classList.toggle('vis', getInfos().length > 0);
+  }
+
+  window.jumpInfo = function () {
+    var items = getInfos();
+    if (!items.length) return;
+    var nextIdx;
+    if (lastIdx >= 0 && lastIdx < items.length - 1) {
+      nextIdx = lastIdx + 1;
+    } else if (lastIdx >= items.length - 1) {
+      nextIdx = 0;
+    } else {
+      nextIdx = items.findIndex(function (el) {
+        return el.getBoundingClientRect().top > 80;
+      });
+      if (nextIdx < 0) nextIdx = 0;
+    }
+    var target = items[nextIdx];
+    if (!target) return;
+    var collapsedCard = target.closest('.card.collapsed');
+    if (collapsedCard) collapsedCard.classList.remove('collapsed');
+    target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    lastIdx = nextIdx;
+  };
+
+  syncBtn();
+  window.addEventListener('load', syncBtn);
+})();
+
+/* ── Severity summary bar (sidebar) ─────────────────────────────────── */
+(function () {
+  function countSev(alertCls, rowCls) {
+    var a = document.querySelectorAll('#report-root .' + alertCls).length;
+    var r = document.querySelectorAll('#report-root tr:has(td.' + rowCls + ')').length;
+    return a + r;
+  }
+
+  function buildBar() {
+    var bar = document.getElementById('sev-bar');
+    if (!bar) return;
+    bar.innerHTML = '';
+
+    var specs = [
+      { cls: 'sev-pill-crit', alertCls: 'alert-crit', rowCls: 'sev-crit', icon: '\u2717', jump: 'jumpCrit', label: 'Critical' },
+      { cls: 'sev-pill-warn', alertCls: 'alert-warn', rowCls: 'sev-warn', icon: '\u26a0', jump: 'jumpWarn', label: 'Warning' },
+      { cls: 'sev-pill-info', alertCls: 'alert-info', rowCls: 'sev-info', icon: '\u2139', jump: 'jumpInfo', label: 'Info' },
+    ];
+
+    var any = false;
+    specs.forEach(function (s) {
+      var n = countSev(s.alertCls, s.rowCls);
+      if (n === 0) return;
+      any = true;
+      var pill = document.createElement('button');
+      pill.className = 'sev-pill ' + s.cls;
+      pill.title = s.label + ' — click to jump';
+      pill.innerHTML = s.icon + ' ' + n;
+      pill.onclick = function () { window[s.jump] && window[s.jump](); };
+      bar.appendChild(pill);
+    });
+
+    bar.style.display = any ? '' : 'none';
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', buildBar);
+  } else {
+    buildBar();
+  }
+  window.addEventListener('load', buildBar);
 })();
 
 /* ── Call tree controls ──────────────────────────────────────────────── */
@@ -673,3 +809,127 @@ window.exportCsv = function (tid) {
   a.click();
   URL.revokeObjectURL(a.href);
 };
+
+/* ── Sparkline hover tooltips ──────────────────────────────────────── */
+(function () {
+  var tip = null;
+
+  function getTip() {
+    if (!tip) {
+      tip = document.createElement('div');
+      tip.id = 'spark-tip';
+      document.body.appendChild(tip);
+    }
+    return tip;
+  }
+
+  function fmtSize(v) {
+    if (v >= 1073741824) return (v / 1073741824).toFixed(2) + ' GB';
+    if (v >= 1048576) return (v / 1048576).toFixed(2) + ' MB';
+    if (v >= 1024) return (v / 1024).toFixed(1) + ' KB';
+    return v.toFixed(0) + ' B';
+  }
+
+  function fmtVal(v, unit, sizeMode) {
+    return sizeMode ? fmtSize(v) : (v % 1 === 0 ? v.toFixed(0) : v.toFixed(1)) + (unit || '');
+  }
+
+  function initSvg(svg) {
+    if (svg.dataset.hoverInit) return;
+    svg.dataset.hoverInit = '1';
+
+    var vals;
+    try { vals = JSON.parse(svg.dataset.vals || '[]'); } catch (e) { return; }
+    if (vals.length < 2) return;
+
+    var unit = svg.dataset.unit || '';
+    var sizeMode = svg.dataset.sizemode === '1';
+    var color = svg.dataset.color || '#6366f1';
+    var W = 400, Ht = 36;
+
+    var min = vals[0], max = vals[0];
+    for (var i = 1; i < vals.length; i++) {
+      if (vals[i] < min) min = vals[i];
+      if (vals[i] > max) max = vals[i];
+    }
+    var range = max - min || 1;
+
+    var ns = 'http://www.w3.org/2000/svg';
+
+    var xhair = svg.querySelector('.spark-xhair');
+    var dot = svg.querySelector('.spark-dot');
+    var overlay = svg.querySelector('.spark-overlay');
+    if (!xhair || !dot || !overlay) return;
+
+    // Apply per-series color
+    xhair.style.stroke = color;
+    dot.style.fill = color;
+
+    function onMove(e) {
+      var bbox = svg.getBoundingClientRect();
+      var relX = Math.max(0, Math.min(1, (e.clientX - bbox.left) / bbox.width));
+      var idx = Math.round(relX * (vals.length - 1));
+      var v = vals[idx];
+      var svgX = idx / (vals.length - 1) * W;
+      var svgY = Ht - (v - min) / range * (Ht - 6) - 3;
+      // Correct for non-uniform scaling: rx must cancel out the x-stretch
+      var bbox2 = svg.getBoundingClientRect();
+      var rx = bbox2.width > 0 ? (3.5 * W / bbox2.width) : 3.5;
+
+      xhair.setAttribute('x1', svgX); xhair.setAttribute('x2', svgX);
+      xhair.style.display = '';
+      dot.setAttribute('cx', svgX); dot.setAttribute('cy', svgY);
+      dot.setAttribute('rx', rx); dot.setAttribute('ry', 3.5);
+      dot.style.display = '';
+
+      var t = getTip();
+      t.textContent = fmtVal(v, unit, sizeMode);
+      t.style.display = 'block';
+      t.style.left = (e.clientX + 14) + 'px';
+      t.style.top = (e.clientY - 28) + 'px';
+    }
+
+    function onLeave() {
+      xhair.style.display = 'none';
+      dot.style.display = 'none';
+      getTip().style.display = 'none';
+    }
+
+    overlay.addEventListener('mousemove', onMove);
+    overlay.addEventListener('mouseleave', onLeave);
+  }
+
+  function initTooltips() {
+    document.querySelectorAll('[data-tip]').forEach(function (el) {
+      if (el.dataset.tipInit) return;
+      if (el.classList.contains('tip-wrap')) return; // already wired to showTip/hideTip
+      el.dataset.tipInit = '1';
+      el.addEventListener('mouseenter', function (e) {
+        var t = getTip();
+        t.innerHTML = el.dataset.tip; // innerHTML so intentional <br> tags render
+        t.style.display = 'block';
+        t.style.left = (e.clientX + 14) + 'px';
+        t.style.top = (e.clientY - 28) + 'px';
+      });
+      el.addEventListener('mousemove', function (e) {
+        var t = getTip();
+        t.style.left = (e.clientX + 14) + 'px';
+        t.style.top = (e.clientY - 28) + 'px';
+      });
+      el.addEventListener('mouseleave', function () {
+        getTip().style.display = 'none';
+      });
+    });
+  }
+
+  function initAll() {
+    document.querySelectorAll('.mspark-svg[data-vals]').forEach(initSvg);
+    initTooltips();
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initAll);
+  } else {
+    initAll();
+  }
+})();

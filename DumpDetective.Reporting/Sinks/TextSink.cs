@@ -102,5 +102,38 @@ public sealed class TextSink : IRenderSink
         _w.WriteLine();
     }
 
+    public void MultiSparkline(
+        IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
+        string? caption = null, string? valueMode = null)
+    {
+        if (caption is not null) _w.WriteLine($"  {caption}");
+        foreach (var (label, values, unit) in series)
+        {
+            if (values.Count == 0) continue;
+            string u = unit ?? "";
+            _w.WriteLine($"  {label,-36}  min {values.Min():F1}{u}  avg {values.Average():F1}{u}  max {values.Max():F1}{u}");
+        }
+        _w.WriteLine();
+    }
+
+    public void CompareBar(
+        IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
+        string? labelA = null, string? labelB = null,
+        string? unit = null, string? caption = null, string? valueMode = null)
+    {
+        if (caption is not null) _w.WriteLine($"  {caption}");
+        bool sizeMode = string.Equals(valueMode, "size", StringComparison.Ordinal);
+        string Fmt(double v) => sizeMode
+            ? DumpDetective.Core.Utilities.DumpHelpers.FormatSize((long)v)
+            : $"{v:F1}{unit ?? ""}";
+        string colA = (labelA ?? "A").PadLeft(12);
+        string colB = (labelB ?? "B").PadLeft(12);
+        _w.WriteLine($"  {"":44}  {colA}  {colB}");
+        _w.WriteLine($"  {new string('-', 70)}");
+        foreach (var (lbl, va, vb) in items)
+            _w.WriteLine($"  {lbl,-44}  {Fmt(va),12}  {Fmt(vb),12}");
+        _w.WriteLine();
+    }
+
     public void Dispose() => _w.Dispose();
 }

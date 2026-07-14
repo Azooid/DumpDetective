@@ -38,27 +38,36 @@ public sealed class HighRefsReport
             return;
         }
 
+        // Analysis findings table
+        var findingRows = new List<string[]>();
+
         if (maxRefs >= 10_000)
-            sink.Alert(AlertLevel.Critical, $"Peak inbound reference count is {maxRefs:N0} — extreme shared-state detected.",
+            findingRows.Add(["Critical",
+                $"Peak inbound reference count is {maxRefs:N0} — extreme shared-state detected.",
                 $"A single object is referenced by {maxRefs:N0} other objects. One live root keeps ALL of them in memory.",
-                "Review whether this object (or its owning container) should be scoped, pooled, or split.");
+                "Review whether this object (or its owning container) should be scoped, pooled, or split."]);
         else if (maxRefs >= 1_000)
-            sink.Alert(AlertLevel.Warning, $"Peak inbound reference count is {maxRefs:N0}.",
+            findingRows.Add(["Warning",
+                $"Peak inbound reference count is {maxRefs:N0}.",
                 "Widely-shared objects extend the lifetime of every holder.",
-                "Consider weak references or demand-loading for non-critical shared state.");
+                "Consider weak references or demand-loading for non-critical shared state."]);
 
         if (widelyShared > 0)
-            sink.Alert(AlertLevel.Warning,
-                $"{widelyShared} object(s) are referenced from ≥ 10 distinct types — implicit global dependencies.",
-                "Objects with many distinct referencing types are effectively ambient singletons. " +
-                "They are difficult to mock, test, and scope independently.",
-                "Prefer explicit dependency injection with scoped or transient lifetimes.");
+            findingRows.Add(["Warning",
+                $"{widelyShared} object(s) referenced from \u2265 10 distinct types \u2014 implicit global dependencies.",
+                "Objects with many distinct referencing types act as ambient singletons, coupling unrelated components.",
+                "Prefer explicit DI with scoped or transient lifetimes."]);
 
         if (cacheLike > 0)
-            sink.Alert(AlertLevel.Info,
+            findingRows.Add(["Info",
                 $"{cacheLike} hot object(s) appear to be caches or collections (Dictionary / List / ConcurrentDictionary).",
                 "Shared mutable collections can grow without bound if no eviction policy is enforced.",
-                "Verify that size limits, expiry policies, or bounded queues are in place.");
+                "Verify that size limits, expiry policies, or bounded queues are in place."]);
+
+        if (findingRows.Count > 0)
+            sink.Table(["Severity", "Finding", "Detail", "Recommendation"], findingRows);
+        else
+            sink.Alert(AlertLevel.Info, "No significant shared-state anomalies detected.");
 
         RenderMainTable(data.Candidates, sink, showAddr, minRefs, data.RetainedIsExact);
         RenderDetailAccordions(data.Candidates, sink, data.RetainedIsExact);

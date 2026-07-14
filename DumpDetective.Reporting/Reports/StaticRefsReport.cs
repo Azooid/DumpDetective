@@ -50,7 +50,75 @@ public sealed class StaticRefsReport
                 "These modules could not be enumerated for static fields. Results may be incomplete. " +
                 "This typically affects dynamic modules, mixed-mode assemblies, or partially-loaded modules in the dump.");
 
+        sink.BeginDetails(
+            $"Object Reference Fields \u2014 {data.Fields.Count:N0} field(s) across {declTypeCount} type(s)" +
+            $"  \u00b7  {DumpHelpers.FormatSize(data.TotalSize)} retained" +
+            (data.IsEstimated ? "  (estimated)" : ""),
+            open: true);
         RenderFieldAccordions(sink, data, showAddr);
+        sink.EndDetails();
+
+        if (data.NonRefFields is { Count: > 0 } nonRef)
+            RenderNonRefAccordion(sink, nonRef);
+    }
+
+    private static void RenderNonRefAccordion(IRenderSink sink, IReadOnlyList<NonRefStaticFieldEntry> fields)
+    {
+        var byType = fields
+            .GroupBy(f => f.DeclType)
+            .OrderByDescending(g => g.Count())
+            .ToList();
+
+        int enumCount      = fields.Count(f => f.ElementKind == "Enum");
+        int primitiveCount = fields.Count(f => f.ElementKind == "Primitive");
+        int structCount    = fields.Count(f => f.ElementKind == "Struct");
+        int pointerCount   = fields.Count(f => f.ElementKind == "Pointer");
+
+        var parts = new List<string>();
+        if (primitiveCount > 0) parts.Add($"{primitiveCount:N0} primitive(s)");
+        if (enumCount      > 0) parts.Add($"{enumCount:N0} enum(s)");
+        if (structCount    > 0) parts.Add($"{structCount:N0} struct(s)");
+        if (pointerCount   > 0) parts.Add($"{pointerCount:N0} pointer(s)");
+
+        sink.BeginDetails(
+            $"Value Type Fields \u2014 {fields.Count:N0} field(s) across {byType.Count} type(s)" +
+            (parts.Count > 0 ? $"  [{string.Join(" \u00b7 ", parts)}]" : ""),
+            open: false);
+
+        foreach (var group in byType)
+        {
+            int eCount = group.Count(f => f.ElementKind == "Enum");
+            int pCount = group.Count(f => f.ElementKind == "Primitive");
+            int sCount = group.Count(f => f.ElementKind == "Struct");
+
+            var subParts = new List<string>();
+            if (pCount > 0) subParts.Add($"{pCount} primitive(s)");
+            if (eCount > 0) subParts.Add($"{eCount} enum(s)");
+            if (sCount > 0) subParts.Add($"{sCount} struct(s)");
+
+            sink.BeginDetails(
+                $"{group.Key}  \u2014  {group.Count()} field(s)" +
+                (subParts.Count > 0 ? $"  [{string.Join(" \u00b7 ", subParts)}]" : ""),
+                open: false);
+
+            bool hasValues = group.Any(f => f.Value is not null);
+            var headers = hasValues
+                ? new[] { "Field", "Type", "Kind", "Value" }
+                : new[] { "Field", "Type", "Kind" };
+
+            var rows = group
+                .OrderBy(f => f.ElementKind)
+                .ThenBy(f => f.FieldName)
+                .Select(f => hasValues
+                    ? new[] { f.FieldName, f.FieldType, f.ElementKind, f.Value ?? "\u2014" }
+                    : new[] { f.FieldName, f.FieldType, f.ElementKind })
+                .ToList();
+
+            sink.Table(headers, rows);
+            sink.EndDetails();
+        }
+
+        sink.EndDetails();
     }
 
     private static void RenderFieldAccordions(IRenderSink sink, StaticRefsData data, bool showAddr)

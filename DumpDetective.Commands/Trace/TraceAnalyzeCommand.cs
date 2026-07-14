@@ -114,7 +114,7 @@ public sealed class TraceAnalyzeCommand : ICommand
         if (tracePath is null)
         {
             AnsiConsole.MarkupLine("[bold red]✗[/] Trace file path required (.nettrace or .etl).");
-            AnsiConsole.MarkupLine(Markup.Escape(Help));
+            AnsiConsole.Write(new Text(Help + "\n"));
             return 1;
         }
         if (!File.Exists(tracePath))
@@ -214,7 +214,7 @@ public sealed class TraceAnalyzeCommand : ICommand
             // Rendered FIRST so the reader gets a cross-cutting health overview
             // before diving into per-analyzer chapters.
             RenderTraceSummary(sink, traceFileName, cpuData, allocData, gcData,
-                contentionData, exceptionsData, starvationData, jitData, httpData);
+                contentionData, exceptionsData, starvationData, jitData, httpData, asyncData, sqlData);
 
             // ── Unified Timeline ──────────────────────────────────────────────
             // Cross-analyzer chronological event map — surfaces correlated events
@@ -372,7 +372,9 @@ public sealed class TraceAnalyzeCommand : ICommand
         CmdData.ExceptionsTraceData?       exceptions,
         CmdData.ThreadPoolStarvationData?  starvation,
         CmdData.JitTraceData?              jit,
-        CmdData.HttpTraceData?             http)
+        CmdData.HttpTraceData?             http,
+        CmdData.AsyncTraceData?            async_ = null,
+        CmdData.SqlTraceData?              sql    = null)
     {
         sink.Header("Trace Summary", "", navLevel: 2);
         sink.Section("Overview", "summary-overview");
@@ -422,13 +424,66 @@ public sealed class TraceAnalyzeCommand : ICommand
                 ? $"{http.ErrorCount:N0} ({http.ErrorCount * 100.0 / Math.Max(1, http.TotalRequests):F1}%)" : "—"),
         ]);
 
-        // ── Gauges: CPU utilisation at a glance ───────────────────────────────
-        if (cpu?.Stats is { } stats && stats.AvgCpuPct > 0)
+        // ── Gauges: performance indicators ───────────────────────────────────
         {
-            sink.Gauges([
-                ("Avg CPU",   stats.AvgCpuPct,  "%"),
-                ("Peak CPU",  stats.MaxCpuPct,   "%"),
-            ], barMax: 100.0);
+            var pctGauges = new List<(string, double, string)>();
+            if (cpu?.Stats is { } gs)
+            {
+                pctGauges.Add(("Avg CPU",  gs.AvgCpuPct, "%"));
+                pctGauges.Add(("Peak CPU", gs.MaxCpuPct, "%"));
+            }
+            if (http?.HasData == true && http.TotalRequests > 0 && http.ErrorCount > 0)
+                pctGauges.Add(("HTTP error rate", http.ErrorCount * 100.0 / http.TotalRequests, "%"));
+            if (pctGauges.Count > 0)
+                sink.Gauges(pctGauges, barMax: 100.0);
+
+            var msGauges = new List<(string, double, string)>();
+            if (gc?.MaxPauseMs > 0)    msGauges.Add(("Max GC pause",    gc.MaxPauseMs,             " ms"));
+            if (gc?.TotalPauseMs > 0)  msGauges.Add(("Total GC pause",  gc.TotalPauseMs,            " ms"));
+            if (http?.HasData == true && http.P99RequestMs > 0)
+                                       msGauges.Add(("HTTP P99",         http.P99RequestMs,          " ms"));
+            if (contention?.TotalWaitMs > 0)
+                                       msGauges.Add(("Lock wait total",  contention.TotalWaitMs,     " ms"));
+            if (msGauges.Count > 0)
+                sink.Gauges(msGauges, barMax: msGauges.Max(g => g.Item2));
+        }
+
+        // ── Timeline Signals (MultiSparkline) ────────────────────────────────
+        {
+            var timelineSeries = new List<(string Label, IReadOnlyList<double> Values, string? Unit)>();
+            if (cpu?.SamplesTimeline?.Count > 1)
+                timelineSeries.Add(("CPU samples/sec",       cpu.SamplesTimeline,       null));
+            if (exceptions?.RateTimeline?.Count > 1)
+                timelineSeries.Add(("Exceptions/sec",        exceptions.RateTimeline,   null));
+            if (contention?.WaitTimeline?.Count > 1)
+                timelineSeries.Add(("Lock wait ms/sec",      contention.WaitTimeline,   "ms"));
+            if (async_?.ScheduleRateTimeline?.Count > 1)
+                timelineSeries.Add(("Tasks scheduled/sec",   async_.ScheduleRateTimeline, null));
+            if (sql?.DurationTimeline?.Count > 1)
+                timelineSeries.Add(("SQL duration ms/sec",   sql.DurationTimeline,      "ms"));
+            if (timelineSeries.Count > 0)
+            {
+                sink.Section("Timeline Signals", "summary-timeline");
+                sink.MultiSparkline(timelineSeries,
+                    caption: "Each row shows activity over the trace window — aligned to the same time axis for easy correlation");
+            }
+        }
+
+        // ── Allocation Breakdown ──────────────────────────────────────────────
+        if (alloc?.TopTypes?.Count > 0)
+        {
+            sink.Section("Allocation Breakdown", "summary-alloc");
+            int takeN     = Math.Min(8, alloc.TopTypes.Count);
+            var donutSegs = alloc.TopTypes
+                .Take(takeN)
+                .Select(t => (TrimTypeName(t.TypeName, 42), (double)t.EstimatedBytes))
+                .ToList();
+            long shownBytes = donutSegs.Sum(s => (long)s.Item2);
+            if (alloc.EstimatedTotalBytes > shownBytes)
+                donutSegs.Add(("Others", alloc.EstimatedTotalBytes - shownBytes));
+            sink.DonutChart(donutSegs,
+                caption: $"Estimated allocation bytes by type — ~{FormatBytes(alloc.EstimatedTotalBytes)} total",
+                centerText: $"{FormatBytes(alloc.EstimatedTotalBytes)}\nallocated");
         }
 
         // ── Cross-cutting signal table ─────────────────────────────────────────
@@ -524,9 +579,21 @@ public sealed class TraceAnalyzeCommand : ICommand
         if (recs.Count > 0)
         {
             sink.Section("Top Recommendations", "summary-recommendations");
-            sink.Alert(AlertLevel.Info,
-                string.Join("\n", recs),
-                detail: "These recommendations are ordered by likely performance impact. Each links to the relevant chapter in this report.");
+            var recRows = recs
+                .Select(r => new[] { r[(r.IndexOf('.') + 1)..].TrimStart() })
+                .ToList();
+            // Rebuild with numbered rows
+            var recTable = new List<string[]>(recs.Count);
+            for (int ri = 0; ri < recs.Count; ri++)
+            {
+                string text = recs[ri];
+                int dot = text.IndexOf('.', StringComparison.Ordinal);
+                string body = dot >= 0 ? text[(dot + 1)..].TrimStart() : text;
+                // Split "Area. Detail" — the body starts with the area description
+                recTable.Add([(ri + 1).ToString(), body]);
+            }
+            sink.Table(["#", "Recommendation"], recTable,
+                "Ordered by likely performance impact — address from top to bottom");
         }
     }
 
@@ -575,21 +642,6 @@ public sealed class TraceAnalyzeCommand : ICommand
             ["Severity", "Confidence", "Category", "Score", "Headline", "Contributing Analyzers"],
             rows,
             "Cross-analyzer causal findings — ranked by score");
-
-        // Detailed finding blocks
-        foreach (var f in findings)
-        {
-            var level = f.Severity switch
-            {
-                FindingSeverity.Critical => AlertLevel.Critical,
-                FindingSeverity.Warning  => AlertLevel.Warning,
-                _                       => AlertLevel.Info
-            };
-            sink.Alert(level,
-                $"[{f.Category}] {f.Headline}  (score: {f.Score}/100, confidence: {f.ConfidenceLabel})",
-                f.Detail,
-                f.Advice);
-        }
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -634,20 +686,14 @@ public sealed class TraceAnalyzeCommand : ICommand
         if (cpuData?.SemanticFindings is { Count: > 0 } findings)
         {
             sink.Section("Ranked Findings", "interp-findings");
-            for (int i = 0; i < findings.Count; i++)
-            {
-                var f = findings[i];
-                var level = f.Severity switch
-                {
-                    FindingSeverity.Critical => AlertLevel.Critical,
-                    FindingSeverity.Warning  => AlertLevel.Warning,
-                    _                       => AlertLevel.Info
-                };
-                sink.Alert(level,
-                    $"[{f.Category}] {f.Headline}  (score: {f.Score}/100)",
-                    f.Detail,
-                    f.Advice);
-            }
+            var rows = new List<string[]>(findings.Count);
+            foreach (var f in findings)
+                rows.Add([f.Severity.ToString(), $"{f.Score}/100",
+                          f.Category, f.Headline, f.Detail ?? "", f.Advice ?? ""]);
+            sink.Table(
+                ["Severity", "Score", "Category", "Headline", "Detail", "Advice"],
+                rows,
+                "Ranked by score — focus on Critical findings first");
         }
 
         // ── Hot Chains ─────────────────────────────────────────────────────────

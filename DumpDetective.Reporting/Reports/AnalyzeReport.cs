@@ -326,6 +326,24 @@ public static class AnalyzeReport
             ("Mode",         s.IsFullMode ? "Full" : "Lightweight"),
         ]);
 
+        // Visual health score + key diagnostic gauges ─────────────────────────
+        {
+            var allGauges = new List<(string, double, string)>
+            {
+                ("Health Score", (double)s.HealthScore, "/100"),
+            };
+            if (s.TotalHeapBytes > 0)
+            {
+                allGauges.Add(("Gen2 % of heap", s.Gen2Bytes * 100.0 / s.TotalHeapBytes, "%"));
+                allGauges.Add(("Fragmentation",  s.FragmentationPct, "%"));
+            }
+            if (s.TpMaxWorkers > 0)
+                allGauges.Add(("TP workers active", s.TpActiveWorkers * 100.0 / s.TpMaxWorkers, "%"));
+            if (s.ThreadCount > 0)
+                allGauges.Add(("Blocked threads", s.BlockedThreadCount * 100.0 / s.ThreadCount, "%"));
+            sink.Gauges(allGauges, barMax: 100.0);
+        }
+
         if (s.Findings.Count > 0)
         {
             // Build evidence string from snapshot data for each finding
@@ -378,9 +396,9 @@ public static class AnalyzeReport
                 .ThenBy(f => f.Category)
                 .Select(f =>
                 {
-                    string sev = f.Severity == FindingSeverity.Critical ? "✗ Critical"
-                               : f.Severity == FindingSeverity.Warning  ? "⚠ Warning"
-                               :                                          "ℹ Info";
+                    string sev = f.Severity == FindingSeverity.Critical ? "Critical"
+                               : f.Severity == FindingSeverity.Warning  ? "Warning"
+                               :                                          "Info";
                     string evidence = Evidence(f, s);
                     if (evidence.Length > 90) evidence = evidence[..87] + "…";
                     string advice = string.IsNullOrEmpty(f.Advice) ? "" : f.Advice.Length > 80 ? f.Advice[..77] + "…" : f.Advice;
@@ -406,13 +424,6 @@ public static class AnalyzeReport
                     $"{s.Findings.Count}\nfindings");
 
             sink.Table(["Severity", "Category", "Finding", "Evidence", "Recommendation"], findingRows, caption);
-
-            // Severity legend
-            sink.Alert(AlertLevel.Info,
-                "Severity definitions",
-                detail: "✗ Critical — likely affecting stability, scalability, or memory health right now. " +
-                        "⚠ Warning — may cause performance degradation or operational instability under load. " +
-                        "ℹ Info — observed but unlikely to impact runtime stability alone.");
         }
         else
         {
@@ -504,6 +515,29 @@ public static class AnalyzeReport
                 .ToList();
             sink.DonutChart(typeSegs, "Top 8 types by heap size",
                 s.TotalHeapBytes > 0 ? $"{FormatSize(s.TotalHeapBytes)}\ntotal" : null);
+
+            // Top types: instance count vs committed bytes — CompareBar surfaces
+            // types that have many instances (pressure) vs types that eat most memory.
+            if (s.TopTypes.Count > 1)
+            {
+                double maxBytes = (double)s.TopTypes.Max(t => t.TotalBytes);
+                double maxCount = (double)s.TopTypes.Max(t => t.Count);
+                // Normalise both axes to 0-100 so the bars are comparable
+                var cbarItems = s.TopTypes.Take(12)
+                    .Select(t =>
+                    {
+                        string lbl = t.Name.Contains('.') ? t.Name[(t.Name.LastIndexOf('.') + 1)..] : t.Name;
+                        if (lbl.Length > 36) lbl = lbl[..36] + "\u2026";
+                        return (lbl,
+                                maxBytes > 0 ? (double)t.TotalBytes / maxBytes * 100.0 : 0,
+                                maxCount > 0 ? (double)t.Count       / maxCount * 100.0 : 0);
+                    })
+                    .ToList();
+                sink.CompareBar(cbarItems,
+                    labelA: $"Committed bytes (max={FormatSize((long)maxBytes)})",
+                    labelB: $"Instance count (max={maxCount:N0})",
+                    caption: "Purple = heap bytes  •  Green = instance count  — both normalised to 100% of their respective maximum");
+            }
 
             sink.Table(
                 ["Type", "Count", "Total Size"],
@@ -811,6 +845,16 @@ public static class AnalyzeReport
             ("App assemblies",   s.AppModuleCount.ToString("N0")),
             ("System/framework", (s.ModuleCount - s.AppModuleCount).ToString("N0")),
         ]);
+        if (s.ModuleCount > 0)
+        {
+            int sys = s.ModuleCount - s.AppModuleCount;
+            var modSegs = new List<(string, double)>();
+            if (s.AppModuleCount > 0) modSegs.Add(("App",            (double)s.AppModuleCount));
+            if (sys > 0)              modSegs.Add(("System/Framework", (double)sys));
+            if (modSegs.Count > 1)
+                sink.DonutChart(modSegs, "Assemblies by origin",
+                    $"{s.ModuleCount}\nassemblies");
+        }
 
         // ── Memory Leak Analysis ──────────────────────────────────────────────
         sink.Section("Memory Leak Analysis");
@@ -847,17 +891,14 @@ public static class AnalyzeReport
                                        ? $"{strType.Count:N0}  ({FormatSize(strType.TotalBytes)})"
                                        : "—"),
             ]);
-            // Generation breakdown stacked bar in leak context
+            // Gen2 % gauge — quick visual signal
             if (s.TotalHeapBytes > 0)
             {
-                var leakGenSegs = new List<(string Label, double Value)>();
-                if (s.Gen0Bytes > 0) leakGenSegs.Add(("Gen0", (double)s.Gen0Bytes));
-                if (s.Gen1Bytes > 0) leakGenSegs.Add(("Gen1", (double)s.Gen1Bytes));
-                if (s.Gen2Bytes > 0) leakGenSegs.Add(("Gen2", (double)s.Gen2Bytes));
-                if (s.LohBytes  > 0) leakGenSegs.Add(("LOH",  (double)s.LohBytes));
-                if (s.PohBytes  > 0) leakGenSegs.Add(("POH",  (double)s.PohBytes));
-                if (leakGenSegs.Count > 1)
-                    sink.StackedBar(leakGenSegs, null, "Generation distribution — Gen2 growth is the primary leak signal", valueMode: "size");
+                double g2pct = s.Gen2Bytes * 100.0 / s.TotalHeapBytes;
+                sink.Gauges([
+                    ("Gen2 % of heap", g2pct, "%"),
+                    ("LOH % of heap",  s.LohBytes * 100.0 / s.TotalHeapBytes, "%"),
+                ], barMax: 100.0);
             }
             if (gen2Pct > 50)
                 sink.Alert(AlertLevel.Critical,

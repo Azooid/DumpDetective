@@ -77,7 +77,7 @@ public sealed class RenderCommand : ICommand
         var a = CliArgs.Parse(args);
         if (a.Help || args.Length == 0)
         {
-            AnsiConsole.Write(new Markup(Help));
+            AnsiConsole.Write(new Text(Help));
             return 0;
         }
 

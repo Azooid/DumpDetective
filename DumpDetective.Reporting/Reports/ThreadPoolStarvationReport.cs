@@ -24,6 +24,25 @@ public sealed class ThreadPoolStarvationReport
             ("Thread pool final active",     data.TpFinalActive.ToString("N0")),
         ]);
 
+        // Health gauges — numbers at a glance
+        if (data.TotalEvents > 0)
+        {
+            var tpGauges = new List<(string, double, string)>();
+            if (data.StarvationAdjustmentCount > 0)
+                tpGauges.Add(("Starvation adjustments", data.StarvationAdjustmentCount, ""));
+            if (data.TpMaxActive > 0)
+            {
+                tpGauges.Add(("Peak workers",  data.TpMaxActive,   " threads"));
+                tpGauges.Add(("Final workers", data.TpFinalActive, " threads"));
+            }
+            if (data.AvgQueueWaitMs > 0)
+                tpGauges.Add(("Avg queue wait", data.AvgQueueWaitMs, " ms"));
+            if (data.MaxQueueWaitMs > 0)
+                tpGauges.Add(("Max queue wait", data.MaxQueueWaitMs, " ms"));
+            if (tpGauges.Count > 0)
+                sink.Gauges(tpGauges, barMax: tpGauges.Max(g => g.Item2));
+        }
+
         if (data.TotalEvents == 0)
         {
             sink.Alert(AlertLevel.Warning, "No events found in trace.",
@@ -89,8 +108,19 @@ public sealed class ThreadPoolStarvationReport
         // Thread pool size growth — sparkline
         if (data.Adjustments.Count > 1)
         {
-            var threadCounts = data.Adjustments.Select(a => (double)a.NewCount).ToList();
-            sink.Sparkline(threadCounts, "Thread pool size over adjustments", " threads");
+            var threadCounts   = data.Adjustments.Select(a => (double)a.NewCount).ToList();
+            var throughputVals = data.Adjustments.Select(a => a.AverageThroughput).ToList();
+            bool hasThroughput = throughputVals.Any(v => v > 0);
+
+            if (hasThroughput)
+                sink.MultiSparkline(
+                    [
+                        ("Worker thread count", (IReadOnlyList<double>)threadCounts, " threads"),
+                        ("Avg throughput",       (IReadOnlyList<double>)throughputVals, " items/s"),
+                    ],
+                    caption: "Both series share the same adjustment-event axis — recovery shows thread count rising while throughput stabilises");
+            else
+                sink.Sparkline(threadCounts, "Thread pool size over adjustments", " threads");
         }
         var rows = data.Adjustments
             .Where(a => !string.Equals(a.ReasonName, "Warmup", StringComparison.OrdinalIgnoreCase) || a.NewCount > 0)

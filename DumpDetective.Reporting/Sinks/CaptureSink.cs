@@ -186,5 +186,30 @@ public sealed class CaptureSink : IRenderSink
             ValueMode = valueMode,
         });
 
+    public void MultiSparkline(
+        IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
+        string? caption = null, string? valueMode = null)
+        => CurrentElements().Add(new ReportMultiSparkline
+        {
+            Series    = [.. series.Select(s => new ReportMultiSparklineSeries
+                { Label = s.Label, Unit = s.Unit, Values = [.. s.Values] })],
+            Caption   = caption,
+            ValueMode = valueMode,
+        });
+
+    public void CompareBar(
+        IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
+        string? labelA = null, string? labelB = null,
+        string? unit = null, string? caption = null, string? valueMode = null)
+        => CurrentElements().Add(new ReportCompareBar
+        {
+            Items     = [.. items.Select(i => new ReportCompareBarItem(i.Label, i.ValueA, i.ValueB))],
+            LabelA    = labelA,
+            LabelB    = labelB,
+            Unit      = unit,
+            Caption   = caption,
+            ValueMode = valueMode,
+        });
+
     public void Dispose() { }
 }
