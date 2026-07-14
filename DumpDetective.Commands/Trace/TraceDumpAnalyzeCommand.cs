@@ -830,11 +830,15 @@ public sealed class TraceDumpAnalyzeCommand : ICommand
                 centerText: $"{DumpHelpers.FormatSize(alloc.EstimatedTotalBytes)}\nallocated");
 
             // Cross-match: allocated vs live — CompareBar gives an immediate visual diagnosis
+            // Group first: generic type names collapse to the same short name after the
+            // dot-split (e.g. List<X.Facet> and IEnumerable<X.Facet> both end in "Facet>"),
+            // so a plain ToDictionary would throw on the duplicate key.
             var dumpTypeLookup = snap.TopTypes
                 .Take(30)
+                .GroupBy(t => t.Name.Split('.').Last(), StringComparer.OrdinalIgnoreCase)
                 .ToDictionary(
-                    t => t.Name.Split('.').Last(),
-                    t => t.TotalBytes,
+                    g => g.Key,
+                    g => g.Sum(t => t.TotalBytes),
                     StringComparer.OrdinalIgnoreCase);
 
             var cbarItems = alloc.TopTypes
