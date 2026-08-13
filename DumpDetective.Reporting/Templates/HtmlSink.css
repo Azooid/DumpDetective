@@ -23,7 +23,11 @@ body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-s
 /* Nav content */
 .nav-inner{padding:.45rem .65rem .9rem;flex:1}
 .nav-section-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.08em;color:#9ca3af;padding:.65rem .4rem .25rem;margin-top:.1rem}
-#sidebar a{display:block;padding:.3rem .6rem;color:#4b5563;text-decoration:none;border-radius:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;transition:background .1s,color .1s;font-size:12px;line-height:1.5}
+#sidebar a{display:flex;align-items:center;gap:.3rem;padding:.3rem .6rem;color:#4b5563;text-decoration:none;border-radius:6px;transition:background .1s,color .1s;font-size:12px;line-height:1.5}
+.nav-label{min-width:0;flex:1 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-badge{display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 .3rem;border-radius:999px;font-size:9.5px;font-weight:700;flex-shrink:0;line-height:16px}
+.nav-badge-crit{background:#fee2e2;color:#b91c1c}
+.nav-badge-warn{background:#fef3c7;color:#92400e}
 #sidebar a:hover{background:#f3f4f8;color:#111827}
 #sidebar a.active{background:#ede9fe;color:#4f46e5;font-weight:600}
 /* Chapter groups */
@@ -211,6 +215,8 @@ td.trend-dn {color:#16a34a}
 td.sev-crit {}
 td.sev-warn {}
 td.sev-info {}
+.tbl-jump-btn{padding:.2rem .55rem;border:1px solid #c7d2fe;border-radius:6px;background:#eef2ff;color:#4338ca;font-size:11px;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .1s,border-color .1s}
+.tbl-jump-btn:hover{background:#e0e7ff;border-color:#a5b4fc}
 .sev-badge{display:inline-flex;align-items:center;gap:.28rem;padding:.14rem .55rem;border-radius:999px;font-size:11px;font-weight:700;white-space:nowrap}
 .sev-badge-crit{background:#fff1f2;border:1px solid #fecdd3;color:#be123c}
 .sev-badge-warn{background:#fffbeb;border:1px solid #fde68a;color:#92400e}
@@ -294,6 +300,22 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 /* ── CSV export button ───────────────────────────────────────────────────── */
 .tbl-csv-btn{padding:.2rem .6rem;border:1px solid #e5e7eb;border-radius:5px;background:#f9fafb;color:#374151;font-size:11px;font-weight:600;cursor:pointer;transition:background .1s,border-color .1s;margin-left:auto;line-height:1.4}
 .tbl-csv-btn:hover{background:#ede9fe;border-color:#a5b4fc;color:#4f46e5}
+/* ── Triage banner ("start here" summary above all report content) ─────── */
+.triage-banner{display:flex;align-items:flex-start;gap:.85rem;padding:.85rem 1.15rem;border-radius:10px;margin:.4rem 0 .3rem;border:1px solid;box-shadow:0 2px 6px rgba(0,0,0,.05)}
+.triage-icon{font-size:1.25rem;line-height:1;flex-shrink:0;margin-top:.05rem}
+.triage-text{flex:1;min-width:0}
+.triage-headline{font-weight:700;font-size:.95rem;margin-bottom:.2rem}
+.triage-sub{font-size:12px;color:#4b5563;line-height:1.55}
+.triage-actions{display:flex;gap:.4rem;flex-wrap:wrap;flex-shrink:0;align-items:center;margin-top:.1rem}
+.tri-btn{padding:.32rem .75rem;border-radius:6px;border:none;font-size:11.5px;font-weight:700;cursor:pointer;transition:opacity .12s;line-height:1.4}
+.tri-btn:hover{opacity:.85}
+.tri-btn-crit{background:#ef4444;color:#fff}
+.tri-btn-warn{background:#f59e0b;color:#fff}
+.triage-banner-issues{background:#fff1f2;border-color:#fecdd3}
+.triage-banner-issues .triage-icon,.triage-banner-issues .triage-headline{color:#9f1239}
+.triage-banner-clean{background:#f0fdf4;border-color:#bbf7d0}
+.triage-banner-clean .triage-icon,.triage-banner-clean .triage-headline{color:#166534}
+
 /* ── Severity jump floating buttons ─────────────────────────────────────── */
 #jump-crit{position:fixed;bottom:4.2rem;right:1.5rem;background:#ef4444;color:#fff;border:none;border-radius:50%;width:36px;height:36px;font-size:.9rem;font-weight:700;cursor:pointer;opacity:0;transition:opacity .2s,transform .15s,background .15s;z-index:100;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 10px rgba(239,68,68,.45);pointer-events:none}
 #jump-crit.vis{opacity:.85;pointer-events:auto}
@@ -345,7 +367,14 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 }
 
 /* ── Dark mode ──────────────────────────────────────────────────────────── */
+/* Global text-color fallback: several elements (e.g. .alert-title) never set
+   their own color and just inherit body's. Light mode's body color (#1a1f2e,
+   near-black) was never overridden here, so anything relying on inheritance
+   rendered near-invisible on dark backgrounds. This one rule fixes all of
+   them at once via normal CSS cascade. */
+[data-theme="dark"] body{color:#c5cae0}
 [data-theme="dark"] ::selection{background:rgba(129,140,248,.25);color:#e2e8f0}
+[data-theme="dark"] .alert-title{color:#e2e8f0}
 [data-theme="dark"] #sidebar{background:#111320;border-right-color:#1e2138}
 [data-theme="dark"] #sidebar::-webkit-scrollbar-thumb{background:#2a2e4a}
 [data-theme="dark"] .nav-brand{background:#111320;border-bottom-color:#1e2138}
@@ -374,6 +403,8 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 [data-theme="dark"] .nav-sub-items a{color:#6b7280!important}
 [data-theme="dark"] .nav-sub-items a:hover{color:#c5cae0!important;background:#1a1c2e!important}
 [data-theme="dark"] .nav-sub-items a.active{color:#818cf8!important;background:#25255a!important}
+[data-theme="dark"] .nav-badge-crit{background:#3f1216;color:#fca5a5}
+[data-theme="dark"] .nav-badge-warn{background:#3a2a08;color:#fcd34d}
 [data-theme="dark"] #content{background:#0b0d15}
 [data-theme="dark"] .hero{background:#111320;border-color:#1e2138;box-shadow:none}
 [data-theme="dark"] .hero-title{color:#e2e8f0}
@@ -460,6 +491,8 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 [data-theme="dark"] td.sev-crit {}
 [data-theme="dark"] td.sev-warn {}
 [data-theme="dark"] td.sev-info {}
+[data-theme="dark"] .tbl-jump-btn{background:#1e2035;border-color:#3730a3;color:#a5b4fc}
+[data-theme="dark"] .tbl-jump-btn:hover{background:#252840;border-color:#4f46e5}
 [data-theme="dark"] .sev-badge-crit{background:#2a1218;border-color:#7f1d1d;color:#fca5a5}
 [data-theme="dark"] .sev-badge-warn{background:#1f1a0c;border-color:#78350f;color:#fcd34d}
 [data-theme="dark"] .sev-badge-info{background:#17152e;border-color:#312e7a;color:#a5b4fc}
@@ -486,6 +519,12 @@ details[open] summary.det-sum{border-bottom:1px solid #e5e7eb}
 /* Jump buttons dark */
 [data-theme="dark"] #jump-crit{background:#b91c1c;box-shadow:0 2px 8px rgba(185,28,28,.5)}
 [data-theme="dark"] #jump-crit:hover{background:#991b1b}
+/* Triage banner dark */
+[data-theme="dark"] .triage-sub{color:#8892b0}
+[data-theme="dark"] .triage-banner-issues{background:#1a0e10;border-color:#7f1d1d}
+[data-theme="dark"] .triage-banner-issues .triage-icon,[data-theme="dark"] .triage-banner-issues .triage-headline{color:#fca5a5}
+[data-theme="dark"] .triage-banner-clean{background:#0d2818;border-color:#166534}
+[data-theme="dark"] .triage-banner-clean .triage-icon,[data-theme="dark"] .triage-banner-clean .triage-headline{color:#4ade80}
 /* Toggle button */
 #dark-toggle{display:flex;align-items:center;justify-content:center;margin-left:auto;width:24px;height:24px;border:1px solid #e5e7eb;border-radius:6px;background:#f9fafb;color:#6b7280;font-size:13px;cursor:pointer;flex-shrink:0;transition:background .12s,color .12s,border-color .12s;padding:0;line-height:1}
 #dark-toggle:hover{background:#f3f4f8;color:#1a1f2e}

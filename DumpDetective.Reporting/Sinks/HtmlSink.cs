@@ -93,8 +93,13 @@ public sealed class HtmlSink : IRenderSink
         // Mark as a nav group divider (collapsible section header) when no commandName and level 2
         string navGroupAttr = (commandName == null && resolvedLevel == 2) ? " data-nav-group=\"1\"" : string.Empty;
 
+        // Stamp the owning CLI command name so other report elements (Correlation
+        // Signals, Action Queue, ...) can jump straight to this chapter by name via
+        // scrollToCommand('heap-stats') instead of guessing a DOM id.
+        string commandAttr = commandName is not null ? $" data-command=\"{H(commandName)}\"" : string.Empty;
+
                 _w.WriteLine($"""
-                        <div class="hero nav-track" id="ch{id}" data-nav-level="{resolvedLevel}" data-track-kind="hero"{navGroupAttr}>
+                        <div class="hero nav-track" id="ch{id}" data-nav-level="{resolvedLevel}" data-track-kind="hero"{navGroupAttr}{commandAttr}>
               <h1 class="hero-title">{H(displayTitle)}</h1>
               {meta}
             </div>
@@ -542,6 +547,12 @@ public sealed class HtmlSink : IRenderSink
         int tid = ++_tableSeq;
         bool large = rows.Count > 50;
 
+        // A column literally named "Jump" holding a CLI command name (e.g. "heap-stats")
+        // renders as a one-click scroll-to-evidence button instead of plain text. Other
+        // sinks (Markdown/Text/JSON/...) just print the command name — this is additive,
+        // not a format change, so no IRenderSink signature change was needed for it.
+        int jumpCol = Array.IndexOf(headers, "Jump");
+
         if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
 
         _w.WriteLine($"""
@@ -569,7 +580,12 @@ public sealed class HtmlSink : IRenderSink
                 string cell = i < row.Length ? row[i] : string.Empty;
                 string cellCls = "";
                 string cellContent = H(cell);
-                if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
+                if (i == jumpCol && cell.Length > 0 && cell != "—")
+                {
+                    cellCls = " class=\"tbl-jump\"";
+                    cellContent = $"<button class=\"tbl-jump-btn\" onclick=\"scrollToCommand('{cell}')\" title=\"Jump to {H(cell)} evidence\">→ {H(cell)}</button>";
+                }
+                else if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
                 else if (cell is "↑" or "↑ ↑")  cellCls = " class=\"trend-up\"";
                 else if (cell.StartsWith("↓"))    cellCls = " class=\"trend-dn\"";
                 else if (cell is "Critical")      { cellCls = " class=\"sev-crit\""; cellContent = "<span class=\"sev-badge sev-badge-crit\">✗ Critical</span>"; }
