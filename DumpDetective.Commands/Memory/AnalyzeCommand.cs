@@ -129,7 +129,7 @@ public sealed class AnalyzeCommand : ICommand
 
             using var sink = SinkFactory.CreateMulti(a.EffectiveOutputPaths.Count > 0 ? a.EffectiveOutputPaths : null);
             var (rptWs, rptMgd) = ToolMemoryDiagnostic.SampleForStep();
-            AnalyzeReport.RenderReport(snap, sink, ctx: dumpCtx);
+            AnalyzeReport.RenderReport(snap, sink, ctx: dumpCtx, canJumpToEvidence: full);
             ToolMemoryDiagnostic.RecordPipelineStep("Build summary", rptWs, rptMgd);
             log.Check("Summary report rendered.");
 

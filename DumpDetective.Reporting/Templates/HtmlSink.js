@@ -259,7 +259,14 @@
  * any collapsed ancestor card, and scrolls it into view.                  */
 window.scrollToCommand = function (name) {
   if (!name) return;
-  const target = document.querySelector('.hero[data-command="' + name + '"]');
+  // A trend report with --full embeds one sub-report per dump, so the same
+  // command name (e.g. "heap-stats") can appear once per dump. Dumps render in
+  // chronological order, so the LAST match is always the most recent dump's
+  // copy — exactly what Correlation Signals / Action Queue need, since both are
+  // built from the latest snapshot. For a single-dump analyze report there's
+  // only ever one match, so this is a no-op change there.
+  const matches = document.querySelectorAll('.hero[data-command="' + name + '"]');
+  const target = matches.length > 0 ? matches[matches.length - 1] : null;
   if (!target) return;
   const collapsed = target.closest('.card.collapsed');
   if (collapsed) collapsed.classList.remove('collapsed');

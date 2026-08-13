@@ -376,6 +376,14 @@ public static class TrendAnalysisReport
             }
         }
 
+        // Correlation Signals + Action Queue on the latest dump — same engines as the
+        // standalone analyze report (DumpCorrelationEngine / ActionQueueBuilder), not a
+        // trend-specific analysis. canJumpToEvidence: full — with --full, each dump's
+        // sub-reports are embedded later in this same document (in chronological order,
+        // so the latest dump's copy is always the last match for scrollToCommand).
+        AnalyzeReport.RenderCorrelationSignals(sN, sink, canJumpToEvidence: full);
+        AnalyzeReport.RenderActionQueue(sN, sink, canJumpToEvidence: full);
+
         // ── 2. Overall Growth Summary ──────────────────────────────────────────
         sink.Section("2. Overall Growth Summary");
         sink.Explain(

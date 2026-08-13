@@ -298,7 +298,14 @@ public static class AnalyzeReport
 
     // ── Scored summary renderer ───────────────────────────────────────────────
 
-    public static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true, DumpContext? ctx = null)
+    /// <param name="canJumpToEvidence">
+    /// Whether embedded command sub-reports will exist elsewhere in this same document
+    /// (i.e. the caller is about to run <c>--full</c>) so Correlation Signals / Action
+    /// Queue can safely render evidence-jump buttons. Defaults to false so callers that
+    /// only render this summary in isolation (e.g. per-dump trend snippets, replay)
+    /// never show a jump button with nothing to jump to.
+    /// </param>
+    public static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true, DumpContext? ctx = null, bool canJumpToEvidence = false)
     {
         if (includeHeader)
             sink.Header(
@@ -436,8 +443,8 @@ public static class AnalyzeReport
         if (narrative is not null)
             sink.Alert(AlertLevel.Info, "Diagnostic interpretation", detail: narrative);
 
-        RenderCorrelationSignals(s, sink);
-        RenderActionQueue(s, sink);
+        RenderCorrelationSignals(s, sink, canJumpToEvidence);
+        RenderActionQueue(s, sink, canJumpToEvidence);
 
         // ── Memory ───────────────────────────────────────────────────────────
         sink.Section("Memory");
@@ -945,7 +952,16 @@ public static class AnalyzeReport
     // TraceDumpCorrelator's cross-source findings, applied to a plain memory dump.
     // See DumpCorrelationEngine for the rules themselves.
 
-    private static void RenderCorrelationSignals(DumpSnapshot s, IRenderSink sink)
+    /// <summary>
+    /// Renders Correlation Signals for <paramref name="s"/>. Shared by the standalone
+    /// analyze report and (on the latest dump) TrendAnalysisReport.
+    /// </summary>
+    /// <param name="canJumpToEvidence">
+    /// Whether the underlying command sub-reports are embedded elsewhere in this same
+    /// document (i.e. <c>--full</c>). When false the "Sources"/"Jump" data is omitted
+    /// entirely rather than rendering a button with nothing to jump to.
+    /// </param>
+    internal static void RenderCorrelationSignals(DumpSnapshot s, IRenderSink sink, bool canJumpToEvidence = false)
     {
         var correlations = DumpCorrelationEngine.Correlate(s, ThresholdLoader.Current.Scoring);
 
@@ -994,7 +1010,7 @@ public static class AnalyzeReport
                 sink.BlankLine();
                 sink.Text($"Action: {c.Advice}");
             }
-            if (c.ContributingAreas.Length > 0)
+            if (canJumpToEvidence && c.ContributingAreas.Length > 0)
                 sink.Table(["Jump"], c.ContributingAreas.Select(a => new[] { a }).ToList());
             sink.EndDetails();
         }
@@ -1005,7 +1021,8 @@ public static class AnalyzeReport
     // ActionQueueBuilder — this is a re-presentation of the same Finding data, not a
     // new analysis, so it always agrees with the Findings table above.
 
-    private static void RenderActionQueue(DumpSnapshot s, IRenderSink sink)
+    /// <param name="canJumpToEvidence">See <see cref="RenderCorrelationSignals"/>.</param>
+    internal static void RenderActionQueue(DumpSnapshot s, IRenderSink sink, bool canJumpToEvidence = false)
     {
         var items = ActionQueueBuilder.Build(s.Findings);
 
@@ -1021,13 +1038,18 @@ public static class AnalyzeReport
                 "Next — worth lining up once Now items are handled.",
                 "Watch — lower urgency; revisit if the situation escalates.",
             ],
-            action: items.Count > 0 ? "Use the Jump column to go straight to the evidence backing each item." : null);
+            action: items.Count > 0 && canJumpToEvidence
+                ? "Use the Jump column to go straight to the evidence backing each item." : null);
 
         if (items.Count == 0)
         {
             sink.Alert(AlertLevel.Info, "Nothing to queue — no actionable findings.");
             return;
         }
+
+        var headers = canJumpToEvidence
+            ? new[] { "Priority", "Score", "Severity", "Category", "Finding", "Owner", "Jump" }
+            : new[] { "Priority", "Score", "Severity", "Category", "Finding", "Owner" };
 
         foreach (var bucket in new[] { ActionBucket.Now, ActionBucket.Next, ActionBucket.Watch })
         {
@@ -1036,16 +1058,20 @@ public static class AnalyzeReport
 
             sink.BeginDetails($"{bucket}  ({bucketItems.Count})", open: bucket != ActionBucket.Watch);
             sink.Table(
-                ["Priority", "Score", "Severity", "Category", "Finding", "Owner", "Jump"],
-                bucketItems.Select(i => new[]
+                headers,
+                bucketItems.Select(i =>
                 {
-                    i.Priority,
-                    i.Score.ToString(),
-                    i.Severity switch { FindingSeverity.Critical => "Critical", FindingSeverity.Warning => "Warning", _ => "Info" },
-                    i.Category,
-                    i.Headline,
-                    i.SuggestedOwner,
-                    i.TargetCommand ?? "—",
+                    string[] row =
+                    [
+                        i.Priority,
+                        i.Score.ToString(),
+                        i.Severity switch { FindingSeverity.Critical => "Critical", FindingSeverity.Warning => "Warning", _ => "Info" },
+                        i.Category,
+                        i.Headline,
+                        i.SuggestedOwner,
+                        i.TargetCommand ?? "—",
+                    ];
+                    return canJumpToEvidence ? row : row[..^1];
                 }).ToList());
             sink.EndDetails();
         }
