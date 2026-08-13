@@ -363,3 +363,5 @@ MigrationBackup/
 FodyWeavers.xsd
 /DumpDetective.DiagnosticScenarios/Diagnostics/DebugDiag/DumpDetective.exe
 .vscode/mcp.json
+
+.tokensave/

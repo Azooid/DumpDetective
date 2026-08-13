@@ -10,7 +10,10 @@ DumpDetective is a .NET AOT CLI tool for analyzing Windows memory dumps (`.dmp` 
 # Full incident report from a dump
 DumpDetective analyze app.dmp --full --output report.html
 
-# Combined trace analysis
+# Combined trace + dump cross-source analysis
+DumpDetective trace-dump-analyze app.nettrace app.dmp --output report.html
+
+# Combined trace analysis only
 DumpDetective trace-analyze app.nettrace --output trace.html
 
 # Re-render a saved report in a different format
@@ -23,12 +26,13 @@ DumpDetective render report.bin --output report.md
 
 | Section | Contents |
 |---|---|
+| [Architecture](Architecture.md) | Project layout, dependency graph, data-flow pipeline, and extension points |
 | [Memory Analysis Guide](Memory-Guide.md) | Workflows, triage paths, and all memory command options |
 | [Trace Analysis Guide](Trace-Guide.md) | Workflows and all trace command options |
 | [Cache Inventory](cache.md) | Built-in system caches, storage locations, lifecycle, and cleanup |
 | [Plugin System](Plugins.md) | How to write and install external plugin commands |
-| [Memory Commands](#memory-commands) | All 31 dump-analysis commands with links to detailed docs |
-| [Trace Commands](#trace-commands) | All 12 trace commands with links to detailed docs |
+| [Memory Commands](#memory-commands) | All 38 dump-analysis commands with links to detailed docs |
+| [Trace Commands](#trace-commands) | All 31 trace commands with links to detailed docs |
 
 ---
 
@@ -42,6 +46,7 @@ Commands that operate on `.dmp` / `.mdmp` dump files.
 |---|---|:---:|
 | [analyze](memory/Orchestrator/analyze.md) | Scored health report for one dump; optionally runs all sub-commands | — |
 | [trend-analysis](memory/Orchestrator/trend-analysis.md) | Multi-dump trend report: heap growth, type counts, GC metrics across captures | — |
+| [diagnose](memory/Targeted-Interactive/diagnose.md) | Synthesize all analysis into an executive + engineering diagnostic summary | — |
 
 ### Replay and Comparison
 
@@ -57,24 +62,48 @@ Commands that operate on `.dmp` / `.mdmp` dump files.
 | [load](memory/Cache-Lifecycle/load.md) | Pre-build all analysis caches so subsequent runs complete in seconds | — |
 | [close](memory/Cache-Lifecycle/close.md) | Delete `.ddcache` directories to reclaim disk space | — |
 
-### Heap and Memory
+### Heap Overview
 
 | Command | Description | In `--full` |
 |---|---|:---:|
 | [heap-stats](memory/Heap-Memory/heap-stats.md) | Top types by total size and instance count across the entire heap | ✓ |
 | [gen-summary](memory/Heap-Memory/gen-summary.md) | Heap bytes and object counts broken down by GC generation (Gen0–POH) | ✓ |
+| [memory-pressure](memory/Heap-Memory/memory-pressure.md) | Unified view of managed heap, GC generations, and thread stack memory usage | ✓ |
+
+### Heap Allocation and Fragmentation
+
+| Command | Description | In `--full` |
+|---|---|:---:|
 | [heap-fragmentation](memory/Heap-Memory/heap-fragmentation.md) | Free-hole analysis per heap segment; live/free byte ratio per segment | ✓ |
 | [large-objects](memory/Heap-Memory/large-objects.md) | Individual objects ≥ 85 KB on the LOH; aggregated by type | ✓ |
 | [pinned-objects](memory/Heap-Memory/pinned-objects.md) | Objects pinned via GC handles; grouped by type and handle kind | ✓ |
+
+### Memory Leaks
+
+| Command | Description | In `--full` |
+|---|---|:---:|
 | [memory-leak](memory/Heap-Memory/memory-leak.md) | Suspects ranked by count and size; root-chain traces to GC roots | ✓ |
 | [high-refs](memory/Heap-Memory/high-refs.md) | Most-referenced objects by inbound reference count | ✓ |
 | [string-duplicates](memory/Heap-Memory/string-duplicates.md) | Duplicate string groups sorted by wasted bytes | ✓ |
+
+### Retention / Leak Signals
+
+| Command | Description | In `--full` |
+|---|---|:---:|
+| [cache-patterns](memory/Retention-Leak/cache-patterns.md) | Detect unbounded Dictionary / MemoryCache / HashSet instances by entry count | ✓ |
+| [closure-capture](memory/Retention-Leak/closure-capture.md) | Find compiler-generated closure display-class objects capturing large graphs | ✓ |
+| [datatable-amp](memory/Retention-Leak/datatable-amp.md) | Measure DataTable / DataSet memory amplification vs. typed collections | ✓ |
+
+### GC / Lifetime
+
+| Command | Description | In `--full` |
+|---|---|:---:|
 | [finalizer-queue](memory/Heap-Memory/finalizer-queue.md) | Types queued for finalization; resurrection detection | ✓ |
 | [handle-table](memory/Heap-Memory/handle-table.md) | GC handle table breakdown by kind: Strong, WeakShort, Pinned, Async, Dependent | ✓ |
 | [static-refs](memory/Heap-Memory/static-refs.md) | Statically-rooted object trees; optional BFS retained-size computation | ✓ |
 | [weak-refs](memory/Heap-Memory/weak-refs.md) | Weak GC handles — alive vs. collected object breakdown | ✓ |
 | [event-analysis](memory/Heap-Memory/event-analysis.md) | Event fields with high subscriber counts; potential event-handler leaks | ✓ |
-| [gc-roots](memory/Heap-Memory/gc-roots.md) | Trace root-holding paths from a specific type or object address | — |
+| [gc-root-map](memory/Heap-Memory/gc-root-map.md) | Classify all GC roots by kind and show top types held per root category | ✓ |
 
 ### Exceptions and Diagnostics
 
@@ -90,6 +119,7 @@ Commands that operate on `.dmp` / `.mdmp` dump files.
 | [thread-pool](memory/Threads-Concurrency/thread-pool.md) | ThreadPool counters; pending work items, task state breakdown | ✓ |
 | [deadlock-detection](memory/Threads-Concurrency/deadlock-detection.md) | Sync-block graph analysis; cycle detection for monitor-based deadlocks | ✓ |
 | [async-stacks](memory/Threads-Concurrency/async-stacks.md) | Active async state machines; suspension state breakdown | ✓ |
+| [native-interop](memory/Threads-Concurrency/native-interop.md) | Threads blocked in native / P/Invoke / CLR interop transition frames | ✓ |
 
 ### Infrastructure and Network
 
@@ -107,6 +137,7 @@ Commands that operate on `.dmp` / `.mdmp` dump files.
 | [type-instances](memory/Targeted-Interactive/type-instances.md) | All instances of a specific type with individual sizes and retained sizes | — |
 | [object-inspect](memory/Targeted-Interactive/object-inspect.md) | Deep recursive field dump for one object by address | — |
 | [module-list](memory/Targeted-Interactive/module-list.md) | Loaded assemblies classified as Dynamic, GAC, System, or App | ✓ |
+| [gc-roots](memory/Heap-Memory/gc-roots.md) | Trace root-holding paths from a specific type or object address | — |
 
 ---
 
@@ -118,38 +149,87 @@ Commands that operate on `.nettrace` or `.etl` trace files.
 
 | Command | Description |
 |---|---|
-| [trace-analyze](trace/Orchestrator/trace-analyze.md) | Combined report: runs all ten trace analyzers in a single pass |
-| [trace-dump-analyze](trace/Orchestrator/trace-dump-analyze.md) | Cross-source analysis: runs all trace analyzers + lightweight dump walk, then correlates both sources to surface the highest-confidence root causes |
+| [trace-analyze](trace/Orchestrator/trace-analyze.md) | Full trace report — opens trace once and runs all 29 sub-analyzers in a single pass |
+| [trace-dump-analyze](trace/Orchestrator/trace-dump-analyze.md) | Cross-source analysis — runs all 29 trace sub-analyzers + lightweight dump walk + correlation engine |
 
 ### CPU and Allocation
 
 | Command | Description |
 |---|---|
 | [cpu-trace](trace/CPU-Allocation/cpu-trace.md) | CPU sampling: hot path, top methods by exclusive time, call tree |
-| [alloc-trace](trace/CPU-Allocation/alloc-trace.md) | GCAllocationTick sampling: top types and call sites by estimated byte volume |
+| [alloc-trace](trace/CPU-Allocation/alloc-trace.md) | `GCAllocationTick` sampling: top types and call sites by estimated byte volume |
+| [alloc-burst-trace](trace/CPU-Allocation/alloc-burst-trace.md) | Identify 500 ms windows with 3× or more the median allocation rate |
 
-### GC, Exceptions, and Locks
+### GC and Memory
 
 | Command | Description |
 |---|---|
 | [gc-trace](trace/GC-Exceptions-Locks/gc-trace.md) | GC Start/Stop pairs: per-generation pause stats, trigger reasons, heap sizes |
-| [contention-trace](trace/GC-Exceptions-Locks/contention-trace.md) | ContentionStart/Stop pairs: lock hotspots by total wait time |
-| [exceptions-trace](trace/GC-Exceptions-Locks/exceptions-trace.md) | First-chance exception events: top types, flood detection, throw sites |
+| [finalizer-trace](trace/GC-Exceptions-Locks/finalizer-trace.md) | Finalization bursts, queue growth, and top finalizer types from GC events |
+| [loh-trace](trace/GC-Exceptions-Locks/loh-trace.md) | LOH growth across GC collections; fragmentation trend detection |
 
-### Threads and Concurrency
+### Exceptions and Locks
 
 | Command | Description |
 |---|---|
-| [threadpool-starvation](trace/Threads-Concurrency/threadpool-starvation.md) | WaitHandle wait events and hill-climbing adjustments: starvation signal detection |
-| [async-trace](trace/Threads-Concurrency/async-trace.md) | Async Task scheduling, sync-over-async hotspots, continuation call sites |
+| [contention-trace](trace/GC-Exceptions-Locks/contention-trace.md) | `ContentionStart/Stop` pairs: lock hotspots by total wait time |
+| [exceptions-trace](trace/GC-Exceptions-Locks/exceptions-trace.md) | First-chance exception events: top types, flood detection, throw sites |
+| [deadlock-trace](trace/Threads-Concurrency/deadlock-trace.md) | Heuristic detection of mutually-blocked thread pairs from contention and wait events |
 
-### JIT, HTTP, and SQL
+### Threads and Async
+
+| Command | Description |
+|---|---|
+| [threadpool-starvation](trace/Threads-Concurrency/threadpool-starvation.md) | WaitHandle events and hill-climbing adjustments: starvation signal detection |
+| [async-trace](trace/Threads-Concurrency/async-trace.md) | Async Task scheduling, sync-over-async hotspots, continuation call sites |
+| [context-switch-trace](trace/Threads-Concurrency/context-switch-trace.md) | Thread scheduling frequency, voluntary vs. preempted splits, wait-reason breakdown (ETL only) |
+| [task-scheduler-trace](trace/Threads-Concurrency/task-scheduler-trace.md) | Long-running tasks, cancelled tasks, and excessive wait depth from Task events |
+
+### JIT
 
 | Command | Description |
 |---|---|
 | [jit-trace](trace/JIT-HTTP/jit-trace.md) | JIT compilation time, slowest methods, top modules by compilation load |
+
+### HTTP and ASP.NET
+
+| Command | Description |
+|---|---|
 | [http-trace](trace/JIT-HTTP/http-trace.md) | HTTP request latency, top endpoints by count and latency, error rates |
-| [sql-trace](trace/JIT-HTTP/sql-trace.md) | SQL/EF query latency, slow query list, per-database summary |
+| [kestrel-trace](trace/JIT-HTTP/kestrel-trace.md) | Kestrel connection rejections, queue pressure, and request errors |
+| [aspnetcore-pipeline-trace](trace/JIT-HTTP/aspnetcore-pipeline-trace.md) | Auth failures, unmatched routes, and endpoint error patterns from ASP.NET Core events |
+
+### SQL and Serialization
+
+| Command | Description |
+|---|---|
+| [sql-trace](trace/SQL-Serialization/sql-trace.md) | SQL/EF query latency, slow query list, per-database summary |
+| [json-trace](trace/SQL-Serialization/json-trace.md) | CPU time and allocation pressure from `System.Text.Json`, Newtonsoft, and DataContract JSON |
+| [connection-pool-trace](trace/SQL-Serialization/connection-pool-trace.md) | DB connection open/close tracking, leak detection, and peak concurrency from SqlClient events |
+
+### Network and I/O
+
+| Command | Description |
+|---|---|
+| [socket-trace](trace/Network-IO/socket-trace.md) | Connection latency, failures, and top remote hosts from `System.Net.Sockets` events |
+| [dns-trace](trace/Network-IO/dns-trace.md) | DNS lookup latency, failure storms, and top hostnames from `System.Net.NameResolution` events |
+| [file-io-trace](trace/Network-IO/file-io-trace.md) | Slow synchronous reads/writes and high-throughput files from kernel file events (ETL only) |
+| [handle-leak-trace](trace/Network-IO/handle-leak-trace.md) | GCHandle leak detection by comparing created vs. destroyed handles per type |
+
+### Observability
+
+| Command | Description |
+|---|---|
+| [otel-trace](trace/Observability/otel-trace.md) | OpenTelemetry Activity span latency, error rates, and top operations from DiagnosticSource events |
+| [process-lifecycle-trace](trace/Observability/process-lifecycle-trace.md) | Process crashes, restarts, and abnormal exits from Process/Start/Stop events |
+| [retry-storm-trace](trace/Observability/retry-storm-trace.md) | Bursts of transient retry-pattern exceptions; identifies retry-storm periods |
+
+### Intelligence
+
+| Command | Description |
+|---|---|
+| [anomaly-trace](trace/Intelligence/anomaly-trace.md) | Z-score analysis over CPU, GC, allocation, contention, and exception rate timelines |
+| [root-cause-trace](trace/Intelligence/root-cause-trace.md) | Runs all trace analyzers and derives ranked causal chains with actionable remediation advice |
 
 ---
 
@@ -160,44 +240,59 @@ Commands that operate on `.nettrace` or `.etl` trace files.
 1. `analyze app.dmp --full` — start here; read the health score and Critical findings
 2. `memory-leak` — rank suspects by retained size and instance count
 3. `high-refs` — find objects referenced by unusually many others
-4. `heap-fragmentation` — check if LOH fragmentation is contributing
-5. `type-instances --type <SuspectType>` — enumerate individual instances
-6. `object-inspect --address <addr>` — trace field values for a specific instance
-7. Save `.bin` snapshots over time → `diff` to confirm growth rate
+4. `cache-patterns` — check for unbounded Dictionary or MemoryCache instances
+5. `closure-capture` — check for closures capturing large object graphs
+6. `heap-fragmentation` — check if LOH fragmentation is contributing
+7. `type-instances --type <SuspectType>` — enumerate individual instances
+8. `object-inspect --address <addr>` — trace field values for a specific instance
+9. Save `.bin` snapshots over time → `diff` to confirm growth rate
 
 ### Deadlock / Thread Hang
 
 1. `analyze app.dmp` — check for Critical: deadlock cycle finding
 2. `deadlock-detection` — get the exact thread cycle
 3. `thread-analysis --blocked-only` — see all blocked threads with stack frames
-4. `async-stacks` — look for async state machines stuck in `Awaiting` state
-5. `thread-pool` — check if the pool is saturated
+4. `native-interop` — check for threads stuck in P/Invoke or CLR interop frames
+5. `async-stacks` — look for async state machines stuck in `Awaiting` state
+6. `thread-pool` — check if the pool is saturated
 
 ### GC Pause / Allocation Pressure
 
 1. `gc-trace app.nettrace` — identify pause outliers and trigger reasons
 2. `alloc-trace app.nettrace` — find the allocating types and call sites
-3. `gen-summary app.dmp` — verify Gen2/LOH growth
-4. `large-objects app.dmp` — identify LOH contributors
-5. `heap-fragmentation app.dmp` — measure fragmentation in LOH segments
+3. `alloc-burst-trace app.nettrace` — identify spike windows
+4. `gen-summary app.dmp` — verify Gen2/LOH growth
+5. `large-objects app.dmp` — identify LOH contributors
+6. `heap-fragmentation app.dmp` — measure fragmentation in LOH segments
+7. `loh-trace app.nettrace` — correlate LOH growth across GC collections
 
 ### CPU Hotspot
 
 1. `cpu-trace app.nettrace` — follow the hot path to the business-logic frame
 2. `alloc-trace app.nettrace` — correlate CPU with allocation churn
 3. `contention-trace app.nettrace` — check if lock waiting contributes to CPU time
+4. `anomaly-trace app.nettrace` — z-score analysis to pinpoint anomaly window
 
 ### Exception Storm
 
 1. `exceptions-trace app.nettrace` — count total exceptions and top types
-2. `exception-analysis app.dmp` — cross-reference with live exception instances in the dump
-3. If `TaskCanceledException` / `TimeoutException` dominant: check `connection-pool` and `thread-pool`
+2. `retry-storm-trace app.nettrace` — detect retry-pattern bursts
+3. `exception-analysis app.dmp` — cross-reference with live exception instances in the dump
+4. If `TaskCanceledException` / `TimeoutException` dominant: check `connection-pool` and `thread-pool`
 
 ### ThreadPool Starvation
 
 1. `threadpool-starvation app.nettrace` — count starvation adjustment events
 2. `thread-pool app.dmp` — check pending work item count
 3. `async-stacks app.dmp` — count `Awaiting` async state machines
+4. `task-scheduler-trace app.nettrace` — look for long-running tasks blocking the pool
+
+### Unknown / Composite
+
+1. `trace-dump-analyze app.nettrace app.dmp` — cross-source analysis with ranked root causes
+2. `root-cause-trace app.nettrace` — trace-only causal chain synthesis
+3. `anomaly-trace app.nettrace` — statistical anomaly window identification
+4. `diagnose app.dmp` — multi-analyzer synthesis with executive + engineering summary
 4. `deadlock-detection app.dmp` — rule out sync-over-async deadlock
 
 ---
