@@ -1048,8 +1048,8 @@ public static class AnalyzeReport
         }
 
         var headers = canJumpToEvidence
-            ? new[] { "Priority", "Score", "Severity", "Category", "Finding", "Owner", "Jump" }
-            : new[] { "Priority", "Score", "Severity", "Category", "Finding", "Owner" };
+            ? new[] { "Priority", "Score", "Severity", "Category", "Finding", "Jump" }
+            : new[] { "Priority", "Score", "Severity", "Category", "Finding" };
 
         foreach (var bucket in new[] { ActionBucket.Now, ActionBucket.Next, ActionBucket.Watch })
         {
@@ -1068,7 +1068,6 @@ public static class AnalyzeReport
                         i.Severity switch { FindingSeverity.Critical => "Critical", FindingSeverity.Warning => "Warning", _ => "Info" },
                         i.Category,
                         i.Headline,
-                        i.SuggestedOwner,
                         i.TargetCommand ?? "—",
                     ];
                     return canJumpToEvidence ? row : row[..^1];

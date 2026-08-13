@@ -32,16 +32,15 @@ public static class ActionQueueBuilder
                        : ActionBucket.Watch;
 
             items.Add(new ActionItem(
-                Priority:       $"P{i + 1}",
-                Score:          score,
-                Bucket:         bucket,
-                Severity:       f.Severity,
-                Category:       f.Category,
-                Headline:       f.Headline,
-                Detail:         f.Detail,
-                Advice:         f.Advice,
-                SuggestedOwner: SuggestedOwnerFor(f.Category),
-                TargetCommand:  TargetCommandFor(f.Category, f.Headline)));
+                Priority:      $"P{i + 1}",
+                Score:         score,
+                Bucket:        bucket,
+                Severity:      f.Severity,
+                Category:      f.Category,
+                Headline:      f.Headline,
+                Detail:        f.Detail,
+                Advice:        f.Advice,
+                TargetCommand: TargetCommandFor(f.Category, f.Headline)));
         }
 
         return items;
@@ -52,18 +51,6 @@ public static class ActionQueueBuilder
         FindingSeverity.Critical => 90,
         FindingSeverity.Warning  => 60,
         _                        => 30,
-    };
-
-    // Generic team labels — DumpDetective has no ticketing/org integration, so this is
-    // a suggestion to route triage, not a real assignment.
-    private static string SuggestedOwnerFor(string category) => category switch
-    {
-        "Memory" or "Memory Leak"      => "Platform / Memory Team",
-        "Connections"                  => "Data / Platform Team",
-        "WCF"                          => "Integration Team",
-        "Leaks" or "Async" or
-        "Threading" or "Exceptions"    => "App / Service Team",
-        _                               => "Service Owner",
     };
 
     // Same keyword sniffing AnalyzeReport.Evidence() already uses to pick the most
