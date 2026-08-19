@@ -1,73 +1,85 @@
-# DumpDetective
+# 🔍 DumpDetective
 
-A .NET CLI tool for diagnosing production incidents from Windows memory dumps and .NET traces.
+**Your production service just fell over. You have a .dmp file and no idea where to start.**
 
-Point it at a `.dmp` or `.nettrace` file and get an HTML report with a health score, prioritized findings, and 30+ targeted sub-reports — heap analysis, memory leak detection, thread and deadlock inspection, CPU hot paths, GC diagnostics, and more.
+DumpDetective turns that dump into an **interactive HTML report in one command** — health score, prioritized findings, and **30 targeted sub-reports** covering memory leaks, thread deadlocks, async backlogs, GC pressure, event handler leaks, and more. All run in parallel from a single heap walk.
+
+Works with **.nettrace** and **.etl** trace files too: **29 trace sub-reports** covering CPU hot paths, allocations, GC pauses, contention, HTTP, SQL, ThreadPool starvation, and more.
+
+**No steep learning curve. No manual .windbg commands. No hours debugging. Just answers.**
 
 ---
 
-## Install
+## ⚡ Quick Start
 
-``bash
+**Step 1: Install (one time)**
+```bash
 dotnet tool install --global DumpDetective.Cli
-``
+```
 
-``bash
-dotnet tool update --global DumpDetective.Cli    # update
-dotnet tool uninstall --global DumpDetective.Cli  # remove
-``
+**Step 2: Analyze (5–30 seconds)**
+```bash
+DumpDetective analyze app.dmp --full
+# Creates app.html with health score, findings, and 30 sub-reports
+```
 
----
+**Step 3: Investigate**
+- Open `app.html` in your browser
+- Review the health score (0–100) and findings
+- Explore interactive charts, sortable tables, and detailed call stacks
+- Dark mode toggle available
 
-## What it does
-
-- **Health score** (0–100) with prioritized Critical / Warning / Info findings per dump.
-- **30 memory sub-reports** run in parallel from a single heap walk: heap stats, memory leak suspects with GC root traces, Lengauer-Tarjan dominator tree, fragmentation, pinned objects, static refs, event handler leaks, deadlocks, async backlogs, thread pool pressure, and more.
-- **29 trace sub-reports** from one trace-file pass: CPU hot paths, allocation hotspots, GC pauses, contention, exceptions, ThreadPool starvation, async tasks, JIT, HTTP, SQL, network I/O, OpenTelemetry, and more.
-- **Cross-source correlation** (`trace-dump-analyze`) links trace signals to heap evidence automatically.
-- **Multi-dump trend analysis** for comparing behavior across time or deployments.
-- **Report replay** — save any report as `.bin` (Brotli-compressed) and convert to any format later without re-opening the dump.
-- **Report diff** — compare two saved reports side-by-side; changed cells, new alerts, and per-section deltas.
-- **Plugin system** — drop a `.NET` class library into `plugins/` to add custom commands without modifying the host binary.
-- **BFS retained-size index** (`.bfs.idx`) built once per dump, reused on every subsequent run.
-
----
-
-## Requirements
-
-- .NET 8+ runtime (for `dotnet tool install`); .NET 10 SDK required to build from source
-- Windows (WinDbg-style dumps); Linux `.core` dumps supported from v3.3.0
-- 4 GB+ free RAM for small dumps; 16–20 GB recommended for large production dumps (> 15 GB)
-- SSD required — dumps are memory-mapped with random I/O patterns
+**Maintenance**
+```bash
+dotnet tool update --global DumpDetective.Cli    # update to latest
+dotnet tool uninstall --global DumpDetective.Cli # remove
+```
 
 ---
 
-## Quick start
+## 🎯 Five Minutes to an Answer
 
-``bash
-# Full scored report — heap walk + 30 sub-reports in parallel
+```bash
+# 1. Full scored report — 30 sub-reports in parallel
 DumpDetective analyze app.dmp --full
 
-# Save as replayable binary (re-render to any format without reopening the dump)
+# 2. Save for replay (no need to keep the dump file open later)
 DumpDetective analyze app.dmp --full --output report.bin
 DumpDetective render report.bin --output report.html
 
-# Pre-build all analysis caches once (subsequent analyze runs are much faster)
+# 3. Pre-build caches once so every future run completes in seconds
 DumpDetective load app.dmp
 
-# Combined trace analysis
+# 4. Trace file instead of a dump
 DumpDetective trace-analyze app.nettrace
 
-# Cross-source trace + dump analysis
+# 5. Both — cross-source correlation links trace signals to heap evidence
 DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
+```
 
-# Compare two saved reports
-DumpDetective diff before.bin after.bin --output delta.html
-``
+The HTML report is self-contained: sticky sidebar navigation, collapsible sections, sortable/filterable tables, embedded charts, and a dark mode toggle. Share it as a single file.
 
 ---
 
-## Memory dump commands
+## 🏆 What You Get
+
+| Feature | Details |
+|---|---|
+| **Health score** | 0–100 score per dump, deducting points for each finding. Critical / Warning / Info grouped findings with actionable advice. |
+| **30 memory sub-reports** | Run in parallel after one heap walk: leaks, dominator tree (exact retained memory via Lengauer-Tarjan), fragmentation, deadlocks, async backlogs, event handler leaks, static roots, and more. |
+| **29 trace sub-reports** | One pass over the trace: CPU, allocations, GC, contention, exceptions, starvation, async tasks, JIT, HTTP, SQL, network I/O, OpenTelemetry, and more. |
+| **Cross-source correlation** | trace-dump-analyze runs trace + dump together and applies 10 built-in correlation rules to surface the highest-confidence root causes. |
+| **Trend analysis** | trend-analysis compares multiple dumps over time — heap growth, type counts, event leaks, GC metrics. |
+| **Report replay and diff** | Save any report as .bin (Brotli-compressed). Re-render to any format later. Diff two saved reports without reopening dumps. |
+| **Plugin system** | Drop a .NET class library into plugins/ to add custom commands. They appear in --help and can run in analyze --full. |
+| **Retained-size index** | .bfs.idx is built once per dump and reused on every run for instant BFS retained-size queries. |
+| **Dominator index** | .idom.idx (Lengauer-Tarjan) is built automatically on first analyze --full and cached. Subsequent runs load it in ~2 s. |
+
+---
+
+## 💾 Memory Dump Commands
+
+All commands work with `.dmp`, `.mdmp` (WinDbg), and `.core` (Linux) files. Commands run in seconds on cached dumps.
 
 | Category | Commands |
 |---|---|
@@ -82,9 +94,9 @@ DumpDetective diff before.bin after.bin --output delta.html
 | Infrastructure | `connection-pool`, `http-requests`, `timer-leaks`, `wcf-channels`, `module-list` |
 | Targeted | `type-instances`, `object-inspect`, `gc-roots` |
 
----
+## ⏱️ Trace Commands
 
-## Trace commands
+All commands work with `.nettrace` and `.etl` trace files. Analyze one trace or correlate multiple traces with a heap dump.
 
 | Category | Commands |
 |---|---|
@@ -102,38 +114,207 @@ DumpDetective diff before.bin after.bin --output delta.html
 
 ---
 
-## Output formats
+## 📄 Output Formats
 
-Every command writes `<dump-name>.html` by default. Use `-o` / `--output` or `--format` to change this. Both flags are repeatable:
+Every command writes <dump-name>.html by default. Use -o / --output or --format to change it. Both flags are repeatable:
 
-``bash
-DumpDetective heap-stats app.dmp -o report.html -o report.bin  # two files at once
+```bash
+DumpDetective heap-stats app.dmp -o report.html -o report.bin  # both at once
 DumpDetective analyze app.dmp --full --format bin               # auto-named .bin
-``
+```
 
 | Extension | Description |
 |---|---|
-| `.html` | Interactive — sticky nav, charts, sortable tables, dark mode, self-contained |
-| `.md` | Markdown |
+| .html | Interactive — sticky nav, charts, sortable tables, dark mode, fully self-contained |
+| .md | Markdown |
 | `.json` | Structured JSON, re-renderable via `render` |
-| `.bin` | Brotli-compressed JSON (~50–70% smaller than `.json`) |
-| `.txt` | Plain text |
+| .bin | Brotli-compressed JSON (~50–70% smaller) |
+| .txt | Plain text |
 
 ---
 
-## Documentation
+## 🔌 Plugins & Custom Commands
 
-Full command reference, options, triage playbooks, performance benchmarks, and architecture details:
+Extend DumpDetective with your own analysis logic — no source code changes needed.
 
-- **[Docs/documentation.md](Docs/documentation.md)** — all commands, output formats, performance expectations, health score, project structure
-- [Memory Analysis Guide](Docs/Memory-Guide.md) — dump workflows and all memory command options
-- [Trace Analysis Guide](Docs/Trace-Guide.md) — trace workflows and all trace command options
-- [Cache Inventory](Docs/cache.md) — BFS index, `.ddcache`, and cache lifecycle
-- [Plugin System](Docs/Plugins.md) — write and install custom analysis commands
-- [Architecture](Docs/Architecture.md) — project structure, dependency graph, and extension points
+Drop a .NET class library anywhere in plugins/ (next to the exe) or ~/.dumpdetective/plugins/ and DumpDetective loads it automatically. Your commands appear in --help, run standalone, and can participate in analyze --full.
+
+```csharp
+public sealed class TopStringsCommand : ICommand
+{
+    public string Name    => "top-strings";
+    public string Description => "Top 20 strings by instance count.";
+    public bool   IncludeInFullAnalyze => true;
+    public string Category => "My Custom Commands";
+
+    public int Run(string[] args)
+    {
+        var a = CliArgs.Parse(args);
+        return CommandBase.Execute(a, Render);
+    }
+
+    public void Render(DumpContext ctx, IRenderSink sink)
+    {
+        CommandBase.RenderHeader("Top Strings", ctx, sink);
+        var top = ctx.Heap.EnumerateObjects()
+            .Where(o => o.Type?.Name == "System.String")
+            .OrderByDescending(o => o.Size)
+            .Take(20);
+        sink.Table(["Address", "Size", "Value"],
+            top.Select(o => new[] { o.Address.ToString("x"), o.Size.ToString(),
+                                    o.AsString() ?? "" }).ToList());
+    }
+}
+```
+
+```bash
+# Compile as a class library targeting net8.0 (or net10.0), then:
+cp MyPlugin.dll plugins/
+DumpDetective top-strings app.dmp
+DumpDetective analyze app.dmp --full --with-plugins  # include in full-analyze
+```
+
+See [Docs/Plugins.md](Docs/Plugins.md) for the full API: heap-walk contribution, cache pinning, trace sub-analyzers, and cross-source correlation rules.
 
 ---
 
-## License
+## 🛠️ Requirements
+
+| Requirement | Details |
+|---|---|
+| **.NET runtime** | .NET 8+ (for `dotnet tool install`); .NET 10 SDK to build from source |
+| **OS** | Windows for WinDbg `.dmp`/`.mdmp` dumps; Linux `.core` dumps supported since v3.3.0 |
+| **RAM** | 4 GB+ for small dumps; 16–20 GB recommended for production dumps ≥15 GB |
+| **Storage** | SSD strongly recommended — dumps are memory-mapped with random I/O patterns |
+| **Performance** | First run builds caches (~5–30s); subsequent runs use cached indexes (typically <1s) |
+
+---
+
+## ⚙️ Advanced Usage & Tips
+
+### Performance optimization
+```bash
+# Pre-build indexes once so all future runs are instant
+DumpDetective load app.dmp
+
+# Subsequent runs will reuse .bfs.idx and .idom.idx caches
+DumpDetective heap-stats app.dmp             # runs in <1 second
+DumpDetective dominator-tree app.dmp         # instant retained-size queries
+```
+
+### Save & replay reports (no dump file needed later)
+```bash
+# During incident, build and save report
+DumpDetective analyze app.dmp --full --output incident.bin
+
+# Later, convert to HTML or compare with another report
+DumpDetective render incident.bin --output incident.html
+DumpDetective diff incident.bin baseline.bin --output changes.html
+```
+
+### Multi-format output
+```bash
+# Generate multiple formats in one command
+DumpDetective analyze app.dmp --full \
+  --output report.html \
+  --output report.json \
+  --output report.md
+
+# Or use --format for auto-naming
+DumpDetective analyze app.dmp --full --format html --format json
+```
+
+### Configure analysis thresholds
+Place `dd-thresholds.json` in your working directory to customize health score rules:
+```json
+{
+  "CriticalThresholds": {
+    "HeapWaste": 0.25,
+    "DeadObjectsRatio": 0.10
+  },
+  "WarningThresholds": {
+    "HeapWaste": 0.15,
+    "DeadObjectsRatio": 0.05
+  }
+}
+```
+
+---
+
+## ❓ Quick Reference
+
+### When to use what?
+
+| Scenario | Command | Why |
+|---|---|---|
+| **Service crashed, you have a dump** | `analyze --full` | One command, all insights, health score, prioritized findings |
+| **Slow allocations or GC pauses** | `alloc-trace` or `gc-trace` | See allocation call stacks and GC timeline with timings |
+| **High memory, don't know why** | `heap-stats` + `dominator-tree` | Overall heap shape, then exact retained-size paths |
+| **Memory grew over time** | `trend-analysis` on multiple dumps | Compare heap snapshots over hours/days |
+| **Thread deadlock suspected** | `deadlock-detection` + `thread-analysis` | Lock cycles and blocking call stacks |
+| **Event handlers not unsubscribing** | `event-analysis` | Enumerate registered event handlers with retained sizes |
+| **Correlate trace to dump** | `trace-dump-analyze` | Link CPU spikes / allocations to heap evidence |
+| **Custom analysis** | Build a plugin | Inherit `ICommand`, run in `analyze --full` |
+
+### Common workflows
+
+```bash
+# Incident investigation
+DumpDetective analyze app.dmp --full                      # Get overview + findings
+DumpDetective dominator-tree app.dmp -o dominator.html   # Dig into top retained paths
+DumpDetective trace-dump-analyze app.nettrace app.dmp    # Cross-source root cause
+
+# Performance tuning
+DumpDetective alloc-trace app.nettrace -o alloc.html     # Hot allocation call stacks
+DumpDetective gc-trace app.nettrace -o gc.html           # GC pause analysis
+DumpDetective heap-fragmentation app.dmp                 # Large-object heap waste
+
+# Trend analysis
+DumpDetective load app-before.dmp app-after.dmp          # Pre-build caches
+DumpDetective trend-analysis app-before.dmp app-after.dmp
+```
+
+---
+
+## ❓ FAQ & Troubleshooting
+
+**Q: How long does analysis take?**  
+A: First run builds indexes (~5–30s for small dumps, ~2–5 min for 15GB+ dumps). Subsequent runs are instant (<1s) because caches are reused.
+
+**Q: What's the health score?**  
+A: A 0–100 score reflecting heap health. Deducted for leaks, fragmentation, deadlocks, etc. Configurable via `dd-thresholds.json`.
+
+**Q: Can I use DumpDetective on Linux?**  
+A: Yes, for `.core` dumps (supported since v3.3.0). For WinDbg `.dmp`/`.mdmp` files, you need Windows.
+
+**Q: How much memory does DumpDetective need?**  
+A: Roughly 1–2x the dump size. A 15 GB dump needs ~20 GB RAM. Use `DumpDetective load` to pre-build caches if you're tight on resources.
+
+**Q: Can I add my own analysis commands?**  
+A: Yes! Drop a .NET plugin in `plugins/` or `~/.dumpdetective/plugins/`. See [Docs/Plugins.md](Docs/Plugins.md).
+
+**Q: What cache files can I delete?**  
+A: `.bfs.idx`, `.idom.idx`, and `.ddcache/` are safe to delete — they rebuild automatically. Keep the `.dmp` file.
+
+**Q: Is my dump file kept secure?**  
+A: Dumps are processed locally only. No data is sent anywhere. Analyze offline dumps confidently.
+
+**Q: Why is the HTML report so large?**  
+A: It's fully self-contained (all CSS, JS, data embedded). One file = one complete, shareable report.
+
+---
+
+## 📚 Full Documentation
+
+- **[Docs/documentation.md](Docs/documentation.md)** — complete command reference, options, performance benchmarks, health score thresholds
+- [Memory Analysis Guide](Docs/Memory-Guide.md) — deep-dive on dump commands with examples
+- [Trace Analysis Guide](Docs/Trace-Guide.md) — deep-dive on trace commands with examples
+- [Cache Inventory](Docs/cache.md) — understanding .bfs.idx, .idom.idx, .ddcache lifecycle and performance
+- [Plugin System](Docs/Plugins.md) — write and install custom commands with full API reference
+- [Architecture](Docs/Architecture.md) — project structure, dependency graph, design decisions
+
+---
+
+## 📝 License
 
 [MIT](LICENSE)
