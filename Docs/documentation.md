@@ -329,3 +329,335 @@ Optional file in the working directory. Controls health-scoring thresholds used 
 Key threshold groups: heap size per generation, finalizer queue depth, thread counts, event subscriber totals, connection counts, async backlog depth.
 
 See [Memory-Guide.md → Health Scoring](Memory-Guide.md#health-scoring) for default threshold values.
+
+---
+
+## Health Score
+
+The `analyze` command produces a score from **0–100** for the dump, deducting points for each finding:
+
+| Signal | Deduction |
+|---|---|
+| Event leak > 1000 subscribers on a single field | -20 |
+| Thread pool saturated | -15 |
+| Heap > 2 GB | -15 |
+| Finalizer queue > 500 objects | -15 |
+| Async backlog > 500 continuations | -10 |
+| Heap fragmentation >= 40% | -10 |
+| DB connections > 50 | -10 |
+| LOH > 500 MB | -10 |
+| WCF faulted channels | -10 |
+| Event leaks (moderate) | -10 |
+| Blocked threads > 20 | -10 |
+| Heap fragmentation 20–40% | -5 |
+| Blocked threads 5–20 | -5 |
+| Finalizer queue 100–500 | -5 |
+| Async backlog 100–500 | -5 |
+| Thread pool near capacity | -5 |
+| Exception threads > 5 | -5 |
+| String duplication > 100 MB | -5 |
+| Pinned handles > 2000 | -5 |
+| Timer objects > 500 | -5 |
+
+Score labels: **Healthy** (≥85) · **Stable** (≥70) · **Degraded** (≥50) · **Critical** (<50)
+
+Thresholds are fully configurable via `dd-thresholds.json` placed alongside the executable.
+
+---
+
+## Performance and Resource Expectations
+
+Analysis time and memory scale with **object count**, not dump file size. A largely native-memory process can produce a multi-GB dump with very few managed objects and complete in seconds.
+
+### Combined estimates
+
+| Dump file size | Typical object count | `analyze --full` wall clock | Peak working set |
+|---|---|---|---|
+| < 500 MB | < 1 M | < 5 s | < 300 MB |
+| 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
+| 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
+| 15 – 30 GB | ~50 – 120 M | 5–8 min (with cache) / 15–25 min (first run) | 12–17 GB |
+
+> Use `--debug` on a first run to print peak working set and the exact object count.
+
+### Full-analyze benchmark (~25 GB IIS dump, 86.5 M objects)
+
+| Stage | Time |
+|---|---|
+| Heap walk | 132.6 s |
+| Finalizer queue scan | 22.2 s |
+| BFS index build (first run, 3 passes) | ~352 s |
+| BFS index load (cached) | 16.3 s |
+| Dominator index build (first run, 3 passes) | ~390 s |
+| Dominator index load (cached) | ~2 s |
+| Sub-reports wall time (30 in parallel) | ~30–240 s depending on cache state |
+
+### BFS index build timings
+
+| Phase | ~87 M nodes | ~95 M nodes | ~111 M nodes |
+|---|---:|---:|---:|
+| Pass 1 — enumerate | 47.6 s | 48.0 s | 52.6 s |
+| Pass 2 — count edges | 66.5 s | 68.0 s | 74.0 s |
+| Pass 3 — fill edges | 67.1 s | 68.7 s | 74.0 s |
+| Save (Brotli Optimal) | 30.7 s | 32.4 s | 36.6 s |
+| **Total build** | **211.9 s** | **217.1 s** | **237.2 s** |
+| Load (subsequent runs) | 9.8 s | 10.2 s | 11.5 s |
+
+### Hardware recommendations
+
+**Minimum (< 4 GB dumps)**
+
+| Component | Minimum |
+|---|---|
+| RAM | 4 GB free |
+| Storage | SSD required — dump is memory-mapped with random I/O |
+| CPU | 4 physical cores (8 logical) |
+
+**Recommended (4–30 GB production dumps)**
+
+| Component | Recommended |
+|---|---|
+| RAM | 16 GB free minimum; 20 GB preferred for `analyze --full` on 25 GB+ dumps |
+| Storage | NVMe SSD |
+| CPU | 8 physical cores (16 logical) |
+
+---
+
+## Project Structure
+
+```
+DumpDetective.slnx
+
+DumpDetective.Core/               Models, interfaces, shared utilities
+  Interfaces/
+    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Category, Kind, Run, BuildReport
+    IRenderSink.cs                Format-agnostic output interface
+    IHeapObjectConsumer.cs        Heap-walk consumer interface
+    ITracePlugin.cs               Trace sub-analyzer interface for plugins
+  Models/
+    DumpSnapshot.cs               All collected metrics for one dump (JSON-serialisable)
+    Finding.cs                    Scored finding (severity, category, headline, advice)
+    ReportDoc.cs                  Replayable report document model
+    ThresholdConfig.cs            Configurable scoring / trend thresholds
+  Runtime/
+    DumpContext.cs                ClrMD DataTarget + ClrRuntime wrapper
+    HeapSnapshot.cs               TypeStats, InboundCounts, StringGroups, gen counters
+  Utilities/
+    CliArgs.cs                    Shared argument parser
+    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus
+    DumpHelpers.cs                FormatSize, IsSystemType, OpenDump, SegmentKindLabel
+    HealthScorer.cs               Score(DumpSnapshot, ScoringThresholds) -> (Findings, score)
+    ProgressLogger.cs             Live spinner + completion lines via Spectre.Console
+
+DumpDetective.Analysis.Memory/    ClrMD data collection and heap walking
+  DumpCollector.cs                CollectFull / CollectLightweight orchestration
+  HeapWalker.cs                   Single EnumerateObjects() call feeding all consumers
+  BfsIndexBuilder.cs              3-pass parallel CSR graph builder for .bfs.idx cache
+  BfsIndexCache.cs                Load / validate / save the .bfs.idx cache
+  LengauerTarjan.cs               Iterative LT dominator algorithm with path compression
+  DomTreeBuilder.cs               3-pass dominator-index builder (BuildGraph/RunLT/FinalizeAndSave)
+  DomTreeCache.cs                 Load / validate / save the .idom.idx cache
+  Consumers/                      IHeapObjectConsumer implementations (one concern each)
+  Analyzers/                      Per-command analysis logic (pure POCO in / POCO out)
+
+DumpDetective.Analysis.Trace/     .nettrace / ETL data collection
+  Analyzers/                      One file per trace command
+
+DumpDetective.Reporting/          Output format implementations
+  Sinks/
+    HtmlSink.cs                   Self-contained HTML; inline CSS/JS; sticky nav
+    MarkdownSink.cs / TextSink.cs / JsonSink.cs / BinSink.cs / CaptureSink.cs
+  Reports/                        Per-command report builders
+  ReportDocReplay.cs              Replays a ReportDoc through any IRenderSink
+  ReportDiffer.cs                 Produces diff ReportDoc from two inputs
+
+DumpDetective.Commands/           ICommand implementations
+  Memory/                         Memory-dump commands
+  Trace/                          Trace commands
+
+DumpDetective.Cli/                Entry point
+  Program.cs                      Top-level statements; --debug flag
+  CommandRegistry.cs              Single source of truth for all ICommand instances
+  HelpPrinter.cs                  Dynamic --help grouped by ICommand.Category
+
+DumpDetective.DiagnosticScenarios/  Per-scenario dump generation for tests
+DumpDetective.Tests/              xUnit test project
+```
+
+### Dependency graph
+
+```
+Cli ──────────────────────────────────────► Commands
+ │                                              │
+ │                                              ▼
+ │                               Analysis.Memory ──────┐
+ │                               Analysis.Trace  ──────┤
+ │                                                     │
+ └──────────────────► Reporting ──────────► Core ◄─────┘
+```
+
+---
+
+## Health Score
+
+The `analyze` command produces a score from **0–100** for the dump, deducting points for each finding:
+
+| Signal | Deduction |
+|---|---|
+| Event leak > 1000 subscribers on a single field | -20 |
+| Thread pool saturated | -15 |
+| Heap > 2 GB | -15 |
+| Finalizer queue > 500 objects | -15 |
+| Async backlog > 500 continuations | -10 |
+| Heap fragmentation >= 40% | -10 |
+| DB connections > 50 | -10 |
+| LOH > 500 MB | -10 |
+| WCF faulted channels | -10 |
+| Event leaks (moderate) | -10 |
+| Blocked threads > 20 | -10 |
+| Heap fragmentation 20–40% | -5 |
+| Blocked threads 5–20 | -5 |
+| Finalizer queue 100–500 | -5 |
+| Async backlog 100–500 | -5 |
+| Thread pool near capacity | -5 |
+| Exception threads > 5 | -5 |
+| String duplication > 100 MB | -5 |
+| Pinned handles > 2000 | -5 |
+| Timer objects > 500 | -5 |
+
+Score labels: **Healthy** (≥85) · **Stable** (≥70) · **Degraded** (≥50) · **Critical** (<50)
+
+Thresholds are fully configurable via `dd-thresholds.json` placed alongside the executable.
+
+---
+
+## Performance and Resource Expectations
+
+Analysis time and memory scale with **object count**, not dump file size. A largely native-memory process can produce a multi-GB dump with very few managed objects and complete in seconds.
+
+### Combined estimates
+
+| Dump file size | Typical object count | `analyze --full` wall clock | Peak working set |
+|---|---|---|---|
+| < 500 MB | < 1 M | < 5 s | < 300 MB |
+| 500 MB – 4 GB | 1 – 15 M | 10–30 s | < 2 GB |
+| 4 – 15 GB | ~15 – 50 M | 1–3 min | 2–6 GB |
+| 15 – 30 GB | ~50 – 120 M | 5–8 min (with cache) / 15–25 min (first run) | 12–17 GB |
+
+> Use `--debug` on a first run to print peak working set and the exact object count.
+
+### Full-analyze benchmark (~25 GB IIS dump, 86.5 M objects)
+
+| Stage | Time |
+|---|---|
+| Heap walk | 132.6 s |
+| Finalizer queue scan | 22.2 s |
+| BFS index build (first run, 3 passes) | ~352 s |
+| BFS index load (cached) | 16.3 s |
+| Dominator index build (first run, 3 passes) | ~390 s |
+| Dominator index load (cached) | ~2 s |
+| Sub-reports wall time (30 in parallel) | ~30–240 s depending on cache state |
+
+### BFS index build timings
+
+| Phase | ~87 M nodes | ~95 M nodes | ~111 M nodes |
+|---|---:|---:|---:|
+| Pass 1 — enumerate | 47.6 s | 48.0 s | 52.6 s |
+| Pass 2 — count edges | 66.5 s | 68.0 s | 74.0 s |
+| Pass 3 — fill edges | 67.1 s | 68.7 s | 74.0 s |
+| Save (Brotli Optimal) | 30.7 s | 32.4 s | 36.6 s |
+| **Total build** | **211.9 s** | **217.1 s** | **237.2 s** |
+| Load (subsequent runs) | 9.8 s | 10.2 s | 11.5 s |
+
+### Hardware recommendations
+
+**Minimum (< 4 GB dumps)**
+
+| Component | Minimum |
+|---|---|
+| RAM | 4 GB free |
+| Storage | SSD required — dump is memory-mapped with random I/O |
+| CPU | 4 physical cores (8 logical) |
+
+**Recommended (4–30 GB production dumps)**
+
+| Component | Recommended |
+|---|---|
+| RAM | 16 GB free minimum; 20 GB preferred for `analyze --full` on 25 GB+ dumps |
+| Storage | NVMe SSD |
+| CPU | 8 physical cores (16 logical) |
+
+---
+
+## Project Structure
+
+```
+DumpDetective.slnx
+
+DumpDetective.Core/               Models, interfaces, shared utilities
+  Interfaces/
+    ICommand.cs                   Name, Description, IncludeInFullAnalyze, Category, Kind, Run, BuildReport
+    IRenderSink.cs                Format-agnostic output interface
+    IHeapObjectConsumer.cs        Heap-walk consumer interface
+    ITracePlugin.cs               Trace sub-analyzer interface for plugins
+  Models/
+    DumpSnapshot.cs               All collected metrics for one dump (JSON-serialisable)
+    Finding.cs                    Scored finding (severity, category, headline, advice)
+    ReportDoc.cs                  Replayable report document model
+    ThresholdConfig.cs            Configurable scoring / trend thresholds
+  Runtime/
+    DumpContext.cs                ClrMD DataTarget + ClrRuntime wrapper
+    HeapSnapshot.cs               TypeStats, InboundCounts, StringGroups, gen counters
+  Utilities/
+    CliArgs.cs                    Shared argument parser
+    CommandBase.cs                Execute lifecycle, TryHelp, RunStatus
+    DumpHelpers.cs                FormatSize, IsSystemType, OpenDump, SegmentKindLabel
+    HealthScorer.cs               Score(DumpSnapshot, ScoringThresholds) -> (Findings, score)
+    ProgressLogger.cs             Live spinner + completion lines via Spectre.Console
+
+DumpDetective.Analysis.Memory/    ClrMD data collection and heap walking
+  DumpCollector.cs                CollectFull / CollectLightweight orchestration
+  HeapWalker.cs                   Single EnumerateObjects() call feeding all consumers
+  BfsIndexBuilder.cs              3-pass parallel CSR graph builder for .bfs.idx cache
+  BfsIndexCache.cs                Load / validate / save the .bfs.idx cache
+  LengauerTarjan.cs               Iterative LT dominator algorithm with path compression
+  DomTreeBuilder.cs               3-pass dominator-index builder (BuildGraph/RunLT/FinalizeAndSave)
+  DomTreeCache.cs                 Load / validate / save the .idom.idx cache
+  Consumers/                      IHeapObjectConsumer implementations (one concern each)
+  Analyzers/                      Per-command analysis logic (pure POCO in / POCO out)
+
+DumpDetective.Analysis.Trace/     .nettrace / ETL data collection
+  Analyzers/                      One file per trace command
+
+DumpDetective.Reporting/          Output format implementations
+  Sinks/
+    HtmlSink.cs                   Self-contained HTML; inline CSS/JS; sticky nav
+    MarkdownSink.cs / TextSink.cs / JsonSink.cs / BinSink.cs / CaptureSink.cs
+  Reports/                        Per-command report builders
+  ReportDocReplay.cs              Replays a ReportDoc through any IRenderSink
+  ReportDiffer.cs                 Produces diff ReportDoc from two inputs
+
+DumpDetective.Commands/           ICommand implementations
+  Memory/                         Memory-dump commands
+  Trace/                          Trace commands
+
+DumpDetective.Cli/                Entry point
+  Program.cs                      Top-level statements; --debug flag
+  CommandRegistry.cs              Single source of truth for all ICommand instances
+  HelpPrinter.cs                  Dynamic --help grouped by ICommand.Category
+
+DumpDetective.DiagnosticScenarios/  Per-scenario dump generation for tests
+DumpDetective.Tests/              xUnit test project
+```
+
+### Dependency graph
+
+```
+Cli ──────────────────────────────────────► Commands
+ │                                              │
+ │                                              ▼
+ │                               Analysis.Memory ──────┐
+ │                               Analysis.Trace  ──────┤
+ │                                                     │
+ └──────────────────► Reporting ──────────► Core ◄─────┘
+```
