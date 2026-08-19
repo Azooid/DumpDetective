@@ -14,7 +14,7 @@ Every command writes an HTML report alongside the dump file by default. Use `--o
 ## Features
 
 - One-command health report (`analyze`) with a score and prioritized findings.
-- Deep memory diagnostics (`memory-leak`, `high-refs`, `gc-roots`, `object-inspect`).
+- Deep memory diagnostics (`memory-leak`, `high-refs`, `dominator-tree`, `gc-roots`, `object-inspect`).
 - Combined trace diagnostics (`trace-analyze`) runs 29 sub-analyzers in a single pass — CPU, allocations, GC, exceptions, contention, deadlocks, retry storms, ThreadPool starvation, async tasks, JIT, HTTP, Kestrel, ASP.NET Core pipeline, SQL, JSON serialization, connection pools, sockets, DNS, file I/O, handles, LOH, finalizers, process lifecycle, OpenTelemetry, and anomaly detection. A classifier pipeline pre-filters events per analyzer so large ETL files process faster.
 - Cross-source trace + dump analysis (`trace-dump-analyze`) with 10 built-in correlation rules, plus plugin-extensible rules via `--with-plugins`.
 - Multi-dump trend analysis for comparing behavior over time.
@@ -487,6 +487,7 @@ Both `-o` and `--format` are **repeatable**: `-o report.html -o report.bin` or `
 | `pinned-objects` | Yes | Pinned GC handles causing heap fragmentation |
 | `memory-leak` | Yes | Suspect types with root-chain BFS traces |
 | `high-refs` | Yes | Highly-referenced "hub" objects -- caches, shared state |
+| `dominator-tree` | Yes* | Exact retained memory per type group via Lengauer-Tarjan dominator algorithm |
 | `string-duplicates` | Yes | Duplicate strings and wasted memory |
 | `finalizer-queue` | Yes | Objects waiting in the finalizer queue |
 | `handle-table` | Yes | GC handles grouped by kind |
@@ -572,6 +573,7 @@ Options:
 | `finalizer-queue.bin` | Finalizer queue per-type stats and thread info |
 | `<dump>.bfs.idx` | Brotli-compressed forward-reference BFS graph (CSR format) |
 | `<dump>.parent.map` | Child-to-parent address map (~1.2–1.3 GB typical) |
+| `<dump>.idom.idx` | Brotli-compressed Lengauer-Tarjan dominator index (`idom[]` + `retained[]`) |
 
 The BFS index is built in 3 passes with 8 parallel workers. Pass 1 enumerates all live objects and records shallow sizes. Pass 2 counts outbound references per node to size the CSR arrays. Pass 3 fills the edge arrays. The result is validated against the dump's file size and last-write timestamp on every load — a stale or mismatched cache is rebuilt automatically.
 
@@ -586,7 +588,7 @@ The BFS index is built in 3 passes with 8 parallel workers. Pass 1 enumerates al
 | **Total build** | **211.9 s** | **217.1 s** | **237.2 s** |
 | Load (subsequent runs) | 9.8 s | 10.2 s | 11.5 s |
 
-With caches loaded, sub-reports in `analyze --full` complete much faster than cold runs because BFS-heavy analyzers reuse the pre-built index. On the latest ~25 GB benchmark, sub-report wall time was **28.5s** without plugins (29 reports) and **22.7s** with Example plugins (32 reports). Trace analyzers also cache repeated event-name classification so large `.nettrace` / `.etl` files avoid re-evaluating the same provider/event strings on every event. See [Performance & Resource Expectations](#performance--resource-expectations) for the full side-by-side benchmark.
+With caches loaded, sub-reports in `analyze --full` complete much faster than cold runs because BFS-heavy analyzers reuse the pre-built index. On the latest ~25 GB benchmark, sub-report wall time was **28.5s** without plugins (29 reports, pre-dominator-tree) and **22.7s** with Example plugins (32 reports). Trace analyzers also cache repeated event-name classification so large `.nettrace` / `.etl` files avoid re-evaluating the same provider/event strings on every event. See [Performance & Resource Expectations](#performance--resource-expectations) for the full side-by-side benchmark.
 
 **Cache tradeoff (~100 M object heap):**
 
@@ -998,6 +1000,8 @@ Commands:
 
 Included plugin commands in the plugin run: `duplicate-modules`, `namespace-heap`, `thread-hotspots`.
 
+> \* `dominator-tree` is included in `analyze --full` and runs as sub-report 30 once the `.idom.idx` cache is built (either by `load` or by the first `analyze --full` run, which builds it automatically in 3 timed passes after the BFS index).
+
 **End-to-end comparison (same dump)**
 
 | Metric | Without plugins | With Example plugins | Delta |
@@ -1007,6 +1011,8 @@ Included plugin commands in the plugin run: `duplicate-modules`, `namespace-heap
 | Finalizer queue scan | 22.2s | 22.7s | +0.5s |
 | BFS index load | 16.3s | 10.5s | -5.8s |
 | Sub-reports wall time (parallel) | 28.5s (29 reports) | 22.7s (32 reports) | -5.8s |
+
+> Note: benchmarks above pre-date the `dominator-tree` addition (now sub-report 30 when `.idom.idx` is cached).
 | Total execution time | 203.1s | 203.4s | +0.3s |
 
 **Peak memory comparison**
@@ -1053,7 +1059,7 @@ See the measured benchmark above for a concrete large-dump example.
 
 > Object count is what actually drives analysis time, not file size. Use `--debug` on a first run to see the exact object count for your dump.
 >
-> `analyze --full` runs all built-in sub-reports in parallel (29 in the current build). With `--with-plugins`, plugin sub-reports are appended (32 in the Example plugin benchmark). `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
+> `analyze --full` runs all built-in sub-reports in parallel (30 in the current build, including `dominator-tree`). With `--with-plugins`, plugin sub-reports are appended (33 in the Example plugin benchmark). `analyze` without `--full` finishes right after collection — the table above shows `--full` times.
 
 ### What drives `--full` time
 
