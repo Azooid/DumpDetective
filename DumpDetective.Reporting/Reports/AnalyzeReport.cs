@@ -1,6 +1,7 @@
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Core.Models;
 using DumpDetective.Core.Runtime;
+using DumpDetective.Core.Tracing;
 using DumpDetective.Core.Utilities;
 using DumpDetective.Reporting.Sinks;
 using Spectre.Console;
@@ -297,7 +298,14 @@ public static class AnalyzeReport
 
     // ── Scored summary renderer ───────────────────────────────────────────────
 
-    public static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true, DumpContext? ctx = null)
+    /// <param name="canJumpToEvidence">
+    /// Whether embedded command sub-reports will exist elsewhere in this same document
+    /// (i.e. the caller is about to run <c>--full</c>) so Correlation Signals / Action
+    /// Queue can safely render evidence-jump buttons. Defaults to false so callers that
+    /// only render this summary in isolation (e.g. per-dump trend snippets, replay)
+    /// never show a jump button with nothing to jump to.
+    /// </param>
+    public static void RenderReport(DumpSnapshot s, IRenderSink sink, bool includeHeader = true, DumpContext? ctx = null, bool canJumpToEvidence = false)
     {
         if (includeHeader)
             sink.Header(
@@ -434,6 +442,9 @@ public static class AnalyzeReport
         string? narrative = BuildCrossMetricNarrative(s);
         if (narrative is not null)
             sink.Alert(AlertLevel.Info, "Diagnostic interpretation", detail: narrative);
+
+        RenderCorrelationSignals(s, sink, canJumpToEvidence);
+        RenderActionQueue(s, sink, canJumpToEvidence);
 
         // ── Memory ───────────────────────────────────────────────────────────
         sink.Section("Memory");
@@ -932,6 +943,136 @@ public static class AnalyzeReport
                         new[] { t.Name, t.Count.ToString("N0"), FormatSize(t.TotalBytes) }).ToList(),
                     "High-count / large types — types accumulating without release are leak suspects. " +
                     "Run 'memory-leak <dump>' for Gen2/LOH breakdown + GC root chains.");
+        }
+    }
+
+    // ── Correlation Signals ───────────────────────────────────────────────────
+    // Cross-signal correlation for a dump-only analysis — the same distinction
+    // trace-dump-analyze already draws between a single sub-analyzer's findings and
+    // TraceDumpCorrelator's cross-source findings, applied to a plain memory dump.
+    // See DumpCorrelationEngine for the rules themselves.
+
+    /// <summary>
+    /// Renders Correlation Signals for <paramref name="s"/>. Shared by the standalone
+    /// analyze report and (on the latest dump) TrendAnalysisReport.
+    /// </summary>
+    /// <param name="canJumpToEvidence">
+    /// Whether the underlying command sub-reports are embedded elsewhere in this same
+    /// document (i.e. <c>--full</c>). When false the "Sources"/"Jump" data is omitted
+    /// entirely rather than rendering a button with nothing to jump to.
+    /// </param>
+    internal static void RenderCorrelationSignals(DumpSnapshot s, IRenderSink sink, bool canJumpToEvidence = false)
+    {
+        var correlations = DumpCorrelationEngine.Correlate(s, ThresholdLoader.Current.Scoring);
+
+        sink.Section("Correlation Signals", "correlation-signals");
+        sink.Explain(
+            what: "Findings above are single signals — one metric past one threshold. This section checks whether " +
+                  "two or more of those signals are actually the same underlying problem rather than independent ones.",
+            why:  "A dump can show many symptoms of one root cause (e.g. an event leak, Gen2 growth, and a deep " +
+                  "finalizer queue can all be the same retention bug). Fixing the shared cause is far more effective " +
+                  "than chasing each symptom separately.",
+            action: correlations.Count > 0
+                ? "Work through these before the individual sections below — each one already explains which " +
+                  "sections it draws from and links straight to them."
+                : null);
+
+        if (correlations.Count == 0)
+        {
+            sink.Alert(AlertLevel.Info,
+                "No cross-signal patterns detected.",
+                "The individual findings above don't currently overlap enough to suggest a shared root cause. " +
+                "That doesn't mean there's nothing wrong — check the Findings table and individual sections.");
+            return;
+        }
+
+        var rows = correlations.Select(c => new[]
+        {
+            c.Severity switch { FindingSeverity.Critical => "Critical", FindingSeverity.Warning => "Warning", _ => "Info" },
+            c.ConfidenceLabel,
+            c.Score.ToString(),
+            c.Category,
+            c.Headline,
+            string.Join(", ", c.ContributingAreas),
+        }).ToList();
+
+        sink.Table(
+            ["Severity", "Confidence", "Score", "Category", "Signal", "Sources"],
+            rows,
+            caption: $"{correlations.Count} correlated signal(s), ranked by confidence-weighted score.");
+
+        foreach (var c in correlations)
+        {
+            sink.BeginDetails($"[{c.Severity}]  {c.Category}  —  {c.Headline}  (score {c.Score}/100, confidence {c.ConfidenceLabel})");
+            sink.Text(c.Detail);
+            if (!string.IsNullOrWhiteSpace(c.Advice))
+            {
+                sink.BlankLine();
+                sink.Text($"Action: {c.Advice}");
+            }
+            if (canJumpToEvidence && c.ContributingAreas.Length > 0)
+                sink.Table(["Jump"], c.ContributingAreas.Select(a => new[] { a }).ToList());
+            sink.EndDetails();
+        }
+    }
+
+    // ── Action Queue ──────────────────────────────────────────────────────────
+    // Promotes the Findings list into a ranked, bucketed triage queue. See
+    // ActionQueueBuilder — this is a re-presentation of the same Finding data, not a
+    // new analysis, so it always agrees with the Findings table above.
+
+    /// <param name="canJumpToEvidence">See <see cref="RenderCorrelationSignals"/>.</param>
+    internal static void RenderActionQueue(DumpSnapshot s, IRenderSink sink, bool canJumpToEvidence = false)
+    {
+        var items = ActionQueueBuilder.Build(s.Findings);
+
+        sink.Section("Action Queue", "action-queue");
+        sink.Explain(
+            what: "Every finding above, ranked and bucketed into Now / Next / Watch so you know what to act on " +
+                  "first without re-reading the whole findings table.",
+            why:  "Not every finding deserves the same urgency even at the same severity level — ranking by a " +
+                  "combined severity + magnitude score surfaces the handful that matter most right now.",
+            bullets:
+            [
+                "Now — investigate immediately; these are driving the health score down the most.",
+                "Next — worth lining up once Now items are handled.",
+                "Watch — lower urgency; revisit if the situation escalates.",
+            ],
+            action: items.Count > 0 && canJumpToEvidence
+                ? "Use the Jump column to go straight to the evidence backing each item." : null);
+
+        if (items.Count == 0)
+        {
+            sink.Alert(AlertLevel.Info, "Nothing to queue — no actionable findings.");
+            return;
+        }
+
+        var headers = canJumpToEvidence
+            ? new[] { "Priority", "Score", "Severity", "Category", "Finding", "Jump" }
+            : new[] { "Priority", "Score", "Severity", "Category", "Finding" };
+
+        foreach (var bucket in new[] { ActionBucket.Now, ActionBucket.Next, ActionBucket.Watch })
+        {
+            var bucketItems = items.Where(i => i.Bucket == bucket).ToList();
+            if (bucketItems.Count == 0) continue;
+
+            sink.BeginDetails($"{bucket}  ({bucketItems.Count})", open: bucket != ActionBucket.Watch);
+            sink.Table(
+                headers,
+                bucketItems.Select(i =>
+                {
+                    string[] row =
+                    [
+                        i.Priority,
+                        i.Score.ToString(),
+                        i.Severity switch { FindingSeverity.Critical => "Critical", FindingSeverity.Warning => "Warning", _ => "Info" },
+                        i.Category,
+                        i.Headline,
+                        i.TargetCommand ?? "—",
+                    ];
+                    return canJumpToEvidence ? row : row[..^1];
+                }).ToList());
+            sink.EndDetails();
         }
     }
 

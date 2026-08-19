@@ -139,6 +139,28 @@ public sealed class CaptureSink : IRenderSink
         });
     }
 
+    public void DomTree(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> roots,
+                        long totalHeapBytes, string? caption = null, int topN = 20)
+    {
+        static ReportDomRetainerNode ToDto(DomRetainerNode n) => new()
+        {
+            TypeName      = n.TypeName,
+            InstanceCount = n.InstanceCount,
+            ShallowBytes  = n.ShallowBytes,
+            RetainedBytes = n.RetainedBytes,
+            RetainedPct   = n.RetainedPct,
+            Children      = [.. n.Children.Select(ToDto)],
+        };
+
+        CurrentElements().Add(new ReportDomTree
+        {
+            Roots          = [.. roots.Take(topN).Select(ToDto)],
+            TotalHeapBytes = totalHeapBytes,
+            Caption        = caption,
+            TopN           = topN,
+        });
+    }
+
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
         => CurrentElements().Add(new ReportExplain

@@ -93,8 +93,13 @@ public sealed class HtmlSink : IRenderSink
         // Mark as a nav group divider (collapsible section header) when no commandName and level 2
         string navGroupAttr = (commandName == null && resolvedLevel == 2) ? " data-nav-group=\"1\"" : string.Empty;
 
+        // Stamp the owning CLI command name so other report elements (Correlation
+        // Signals, Action Queue, ...) can jump straight to this chapter by name via
+        // scrollToCommand('heap-stats') instead of guessing a DOM id.
+        string commandAttr = commandName is not null ? $" data-command=\"{H(commandName)}\"" : string.Empty;
+
                 _w.WriteLine($"""
-                        <div class="hero nav-track" id="ch{id}" data-nav-level="{resolvedLevel}" data-track-kind="hero"{navGroupAttr}>
+                        <div class="hero nav-track" id="ch{id}" data-nav-level="{resolvedLevel}" data-track-kind="hero"{navGroupAttr}{commandAttr}>
               <h1 class="hero-title">{H(displayTitle)}</h1>
               {meta}
             </div>
@@ -542,6 +547,12 @@ public sealed class HtmlSink : IRenderSink
         int tid = ++_tableSeq;
         bool large = rows.Count > 50;
 
+        // A column literally named "Jump" holding a CLI command name (e.g. "heap-stats")
+        // renders as a one-click scroll-to-evidence button instead of plain text. Other
+        // sinks (Markdown/Text/JSON/...) just print the command name — this is additive,
+        // not a format change, so no IRenderSink signature change was needed for it.
+        int jumpCol = Array.IndexOf(headers, "Jump");
+
         if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
 
         _w.WriteLine($"""
@@ -569,7 +580,12 @@ public sealed class HtmlSink : IRenderSink
                 string cell = i < row.Length ? row[i] : string.Empty;
                 string cellCls = "";
                 string cellContent = H(cell);
-                if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
+                if (i == jumpCol && cell.Length > 0 && cell != "—")
+                {
+                    cellCls = " class=\"tbl-jump\"";
+                    cellContent = $"<button class=\"tbl-jump-btn\" onclick=\"scrollToCommand('{cell}')\" title=\"Jump to {H(cell)} evidence\">→ {H(cell)}</button>";
+                }
+                else if (cell is "↑↑" or "↑↑ ↑↑") cellCls = " class=\"trend-up2\"";
                 else if (cell is "↑" or "↑ ↑")  cellCls = " class=\"trend-up\"";
                 else if (cell.StartsWith("↓"))    cellCls = " class=\"trend-dn\"";
                 else if (cell is "Critical")      { cellCls = " class=\"sev-crit\""; cellContent = "<span class=\"sev-badge sev-badge-crit\">✗ Critical</span>"; }
@@ -691,6 +707,85 @@ public sealed class HtmlSink : IRenderSink
             RenderTreeRow(node, 0);
         }
         _w.WriteLine("</tbody></table></div>");
+    }
+
+    public void DomTree(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> roots,
+                        long totalHeapBytes, string? caption = null, int topN = 20)
+    {
+        if (roots is null || roots.Count == 0) return;
+
+        var treeId = $"domtree{System.Threading.Interlocked.Increment(ref _treeSeq)}";
+
+        if (caption is not null)
+            _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+
+        _w.WriteLine($"<div class=\"ctree-toolbar\">");
+        _w.WriteLine($"  <button class=\"ct-expbtn\" onclick=\"ctExpandAll('{treeId}')\">⊞ Expand All</button>");
+        _w.WriteLine($"  <button class=\"ct-expbtn\" onclick=\"ctCollapseAll('{treeId}')\">⊟ Collapse All</button>");
+        _w.WriteLine("</div>");
+
+        _w.WriteLine($"<div class=\"ctree-wrap\" id=\"{treeId}\">");
+        _w.WriteLine("<table class=\"ctree-table\"><thead><tr>");
+        _w.WriteLine("<th class=\"ctw-name\">Type  <span class=\"ct-mod\">× instances</span></th>");
+        _w.WriteLine("<th class=\"ctw-bar\">% Heap</th>");
+        _w.WriteLine("<th class=\"ctw-pct\">% Heap</th>");
+        _w.WriteLine("<th class=\"ctw-cnt\">Retained</th>");
+        _w.WriteLine("<th class=\"ctw-cnt\">Shallow</th>");
+        _w.WriteLine("</tr></thead><tbody>");
+
+        int shown = 0;
+        foreach (var node in roots)
+        {
+            if (shown >= topN) break;
+            shown++;
+            RenderDomRow(node, 0);
+        }
+        _w.WriteLine("</tbody></table></div>");
+    }
+
+    private void RenderDomRow(DumpDetective.Core.Models.DomRetainerNode node, int depth)
+    {
+        bool hasChildren = node.Children is { Count: > 0 };
+        string toggleId  = hasChildren ? $"ct{System.Threading.Interlocked.Increment(ref _treeSeq)}" : string.Empty;
+        string indent     = depth > 0 ? $"style=\"padding-left:{8 + depth * 18}px\"" : string.Empty;
+
+        string heatClass  = node.RetainedPct >= 20 ? "ct-hot2"
+                          : node.RetainedPct >= 5  ? "ct-hot1"
+                          : "ct-cool";
+
+        int barPx = (int)Math.Min(node.RetainedPct, 100);
+
+        string trClick = hasChildren
+            ? $" onclick=\"ctToggle('{toggleId}',this.querySelector('.ct-toggle'))\""
+            : string.Empty;
+        string trClass = hasChildren ? $"ctrow {heatClass} ct-clickable" : $"ctrow {heatClass}";
+        _w.Write($"<tr class=\"{trClass}\"{trClick}>");
+
+        _w.Write("<td class=\"ctw-name\" " + indent + ">");
+        if (hasChildren)
+            _w.Write($"<span class=\"ct-toggle\">▶</span> ");
+        else
+            _w.Write("<span class=\"ct-leaf\">·</span> ");
+        string typeName = TruncateName(node.TypeName, 55);
+        _w.Write($"<span class=\"ct-method\" title=\"{H(node.TypeName)}\">{H(typeName)}</span>");
+        if (node.InstanceCount > 1)
+            _w.Write($" <span class=\"ct-mod\">×{node.InstanceCount:N0}</span>");
+        _w.WriteLine("</td>");
+
+        _w.WriteLine($"<td class=\"ctw-bar\"><div class=\"ct-bar-bg\"><div class=\"ct-bar\" style=\"width:{barPx}%\"></div></div></td>");
+        _w.WriteLine($"<td class=\"ctw-pct\">{node.RetainedPct:F1}%</td>");
+        _w.WriteLine($"<td class=\"ctw-cnt\">{DumpDetective.Core.Utilities.DumpHelpers.FormatSize(node.RetainedBytes)}</td>");
+        _w.WriteLine($"<td class=\"ctw-cnt\">{DumpDetective.Core.Utilities.DumpHelpers.FormatSize(node.ShallowBytes)}</td>");
+        _w.WriteLine("</tr>");
+
+        if (hasChildren)
+        {
+            _w.WriteLine($"<tr id=\"{toggleId}\" class=\"ct-children\" style=\"display:none\"><td colspan=\"5\" style=\"padding:0\">");
+            _w.WriteLine("<table class=\"ctree-table ctree-nested\"><tbody>");
+            foreach (var child in node.Children)
+                RenderDomRow(child, depth + 1);
+            _w.WriteLine("</tbody></table></td></tr>");
+        }
     }
 
     private void RenderTreeRow(CallTreeNode node, int depth)

@@ -18,15 +18,16 @@ namespace DumpDetective.Commands.Memory;
 /// runs complete as fast as possible.
 ///
 /// Caches built (in order):
-///   1. Heap walk (HeapWalker)     → stringGroups.bin, typeStats (in-memory)
-///   2. Heap fragmentation scan    → fragmentation.bin
-///   3. BFS index build (3 passes) → .ddcache\&lt;name&gt;\&lt;name&gt;.bfs.idx
-///   4. Parent map (from BFS)      → .ddcache\&lt;name&gt;\&lt;name&gt;.parent.map
-///   5. HotAddrTypes (from BFS)    → hot-addr-types.bin
-///   6. GC roots enumeration       → gc-roots.bin
-///   7. Static field scan          → static-roots.bin
-///   8. Finalizer queue scan       → finalizer-queue.bin
-///   9. Event analysis scan        → event-analysis.bin
+///   1.  Heap walk (HeapWalker)     → stringGroups.bin, typeStats (in-memory)
+///   2.  Heap fragmentation scan    → fragmentation.bin
+///   3.  BFS index build (3 passes) → .ddcache\&lt;name&gt;\&lt;name&gt;.bfs.idx
+///   4.  Parent map (from BFS)      → .ddcache\&lt;name&gt;\&lt;name&gt;.parent.map
+///   5.  HotAddrTypes (from BFS)    → hot-addr-types.bin
+///   6. Dominator index (LT)       → .idom.idx   ← while BFS is still in memory
+///   7.  GC roots enumeration       → gc-roots.bin
+///   8.  Static field scan          → static-roots.bin
+///   9.  Finalizer queue scan       → finalizer-queue.bin
+///   10.  Event analysis scan        → event-analysis.bin
 ///
 /// Already-valid caches are skipped.  Use --force to rebuild all.
 /// </summary>
@@ -192,6 +193,7 @@ public sealed class LoadCommand : ICommand
         string gcRootCachePath  = GcRootsCache.CachePath(dumpPath);
         string staticCachePath  = StaticRootsCache.CachePath(dumpPath);
         string eventCachePath   = EventAnalysisCache.CachePath(dumpPath);
+        string idomPath         = DomTreeCache.CachePath(dumpPath);
 
         log.InfoM($"Cache dir: {cacheDir}", indent: true);
 
@@ -204,12 +206,13 @@ public sealed class LoadCommand : ICommand
         string finQueuePath = FinalizerQueueCache.CachePath(dumpPath);
         bool finQueueOk   = !force && FinalizerQueueCache.IsValid(finQueuePath, dumpPath);
         bool eventOk      = !force && EventAnalysisCache.IsValid(eventCachePath, dumpPath);
+        bool idomOk       = !force && DomTreeCache.IsValid(idomPath, dumpPath);
         // CollectFull (heap walk) is needed when: parent map or hot types will be rebuilt,
         // or stringGroups.bin doesn't exist yet.
         bool needsReferrerMaps = !parentMapOk || !hotTypesOk;
         bool needsCollect      = needsReferrerMaps || !File.Exists(stringGroupsBin);
 
-        if (!needsCollect && fragOk && bfsOk && gcRootsOk && staticOk && finQueueOk && eventOk)
+        if (!needsCollect && fragOk && bfsOk && gcRootsOk && staticOk && finQueueOk && eventOk && idomOk)
         {
             log.CheckM("All caches are already up to date.");
             log.InfoM($"Run 'DumpDetective analyze {Markup.Escape(Path.GetFileName(dumpPath))} --full' to analyze.", indent: true);
@@ -323,7 +326,7 @@ public sealed class LoadCommand : ICommand
                     update => bfsReady = BfsIndexBuilder.BuildPass3(ctx.Heap, p2, update));
                 CommandBase.RunStatus("  Saving BFS index...",
                     update => bfsReady!.Save(bfsCachePath, dumpPath, update));
-                log.Check($"  [3/9] BFS index built  ({bfsSw.Elapsed.TotalSeconds:F1}s  |  {bfsReady!.NodeCount:N0} nodes, {bfsReady.EdgeCount:N0} edges)");
+                log.Check($"  [3/10] BFS index built  ({bfsSw.Elapsed.TotalSeconds:F1}s  |  {bfsReady!.NodeCount:N0} nodes, {bfsReady.EdgeCount:N0} edges)");
 
                 // SortedIdxMap is reused by BfsIndexCache (no re-sort needed).
                 // Null p1/p2 and collect dead BFS temporaries (writeCursor ~440 MB).
@@ -339,8 +342,8 @@ public sealed class LoadCommand : ICommand
             // ── Step 4+5: Parent map + HotAddrTypes (both from BFS, no heap walk) ─
             if (parentMapOk && hotTypesOk)
             {
-                log.CheckM("  [[4/9]] parent map  [dim]already cached[/]");
-                log.CheckM("  [[5/9]] hot-addr-types  [dim]already cached[/]");
+                log.CheckM("  [[4/10]] parent map  [dim]already cached[/]");
+                log.CheckM("  [[5/10]] hot-addr-types  [dim]already cached[/]");
             }
             else
             {
@@ -351,17 +354,25 @@ public sealed class LoadCommand : ICommand
                 var mapSw = Stopwatch.StartNew();
                 CommandBase.RunStatus("  Building parent map + hot-addr-types from BFS...",
                     update => LoadHelper.BuildReferrerCache(ctx, update));
-                log.Check($"  [4/9] Parent map built  ({mapSw.Elapsed.TotalSeconds:F1}s)");
-                log.Check($"  [5/9] Hot-addr-types built");
+                log.Check($"  [4/10] Parent map built  ({mapSw.Elapsed.TotalSeconds:F1}s)");
+                log.Check($"  [5/10] Hot-addr-types built");
             }
 
-            // BFS index is not needed for steps 6–8. Release it now so ~3.8 GB
+            // BFS index is not needed for steps 6–9. Release it now so ~3.8 GB
             // (IndexToAddr + Sizes + Offsets + Children + _sortedIdxMap) is GC-eligible
             // before the long GC-roots enumeration (step 6, typically 150–200s).
-            // This is the ONE place where LOH compaction is cheap: only ~200 MB of live
-            // data exists here (ctx/DumpContext small objects), so the GC moves ~200 MB
-            // and returns the entire 3.8 GB BfsIndexCache to the OS in a few seconds.
-            // Step 6 then runs with near-zero committed managed heap.
+            // Build dominator index first (BFS already in memory — no reload needed).
+            if (idomOk)
+                log.CheckM("  [[5b/10]] dominator-index  [dim]already cached[/]");
+            else
+            {
+                var sw5b = Stopwatch.StartNew();
+                CommandBase.RunStatus("  [5b/10] Building dominator index (Lengauer-Tarjan)...",
+                    update => DomTreeBuilder.LoadOrBuild(ctx, bfsReady!, true, update));
+                log.Check($"  [5b/10] Dominator index built  ({sw5b.Elapsed.TotalSeconds:F1}s)");
+            }
+
+            // Release BFS now — LOH compaction before the long GC-roots scan (step 6).
             bfsReady = null;
             ctx.ReplaceAnalysis(new BfsCacheBox(null));
             GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
@@ -369,7 +380,7 @@ public sealed class LoadCommand : ICommand
 
             // ── Step 6: GC roots ─────────────────────────────────────────────────
             if (gcRootsOk)
-                log.CheckM("  [[6/9]] gc-roots  [dim]already cached[/]");
+                log.CheckM("  [[6/10]] gc-roots  [dim]already cached[/]");
             else
             {
                 // Use RunStatus with a live-update callback so the spinner text reflects
@@ -399,25 +410,25 @@ public sealed class LoadCommand : ICommand
                     }
                     GcRootsCache.Save(gcRootCachePath, dumpPath, rootMap);
                     // Emit final count as [SCAN] token so PrintDone appends it to the ✓ line.
-                    update($"[SCAN]GC roots|{rootMap.Count}|0"); // step 6/9
+                    update($"[SCAN]GC roots|{rootMap.Count}|0"); // step 6/10
                 });
             }
 
             // ── Step 7: Static roots ─────────────────────────────────────────────
             if (staticOk)
-                log.CheckM("  [[7/9]] static-roots  [dim]already cached[/]");
+                log.CheckM("  [[7/10]] static-roots  [dim]already cached[/]");
             else
             {
                 (int addrCount, int skippedMods) staticResult = default;
                 var sw7 = Stopwatch.StartNew();
                 CommandBase.RunStatus("  Scanning static fields...",
                     () => staticResult = LoadHelper.BuildStaticRootsCache(ctx));
-                log.Check($"  [7/9] Static roots scanned  ({sw7.Elapsed.TotalSeconds:F1}s  |  {staticResult.addrCount:N0} addresses, {staticResult.skippedMods} modules skipped)");
+                log.Check($"  [7/10] Static roots scanned  ({sw7.Elapsed.TotalSeconds:F1}s  |  {staticResult.addrCount:N0} addresses, {staticResult.skippedMods} modules skipped)");
             }
 
             // ── Step 8: Finalizer queue ──────────────────────────────────────────
             if (finQueueOk)
-                log.CheckM("  [[8/9]] finalizer-queue  [dim]already cached[/]");
+                log.CheckM("  [[8/10]] finalizer-queue  [dim]already cached[/]");
             else if (finQConsumer is not null && finQConsumer.Stats is not null)
             {
                 // Consumer ran during step 1 — only resurrection check + thread info remain.
@@ -449,7 +460,7 @@ public sealed class LoadCommand : ICommand
                     finThread?.ManagedThreadId ?? 0, finThread?.OSThreadId ?? 0);
 
                 try { FinalizerQueueCache.Save(finQueuePath, dumpPath, finQData); } catch { }
-                log.Check($"  [8/9] Finalizer queue cached  ({sw8.Elapsed.TotalSeconds:F1}s  |  {finQData.Total:N0} objects, {finQData.Stats.Count} types)");
+                log.Check($"  [8/10] Finalizer queue cached  ({sw8.Elapsed.TotalSeconds:F1}s  |  {finQData.Total:N0} objects, {finQData.Stats.Count} types)");
             }
             else
                 // Fallback: heap walk was skipped (all other caches were valid) — run dedicated pass.
@@ -464,12 +475,12 @@ public sealed class LoadCommand : ICommand
             // Depends on static-roots.bin (step 7) being built first so that
             // StaticRootAddresses.Build fast-paths from disk instead of scanning static fields again.
             if (eventOk)
-                log.CheckM("  [[9/9]] event-analysis  [dim]already cached[/]");
+                log.CheckM("  [[9/10]] event-analysis  [dim]already cached[/]");
             else
             {
                 var sw9 = Stopwatch.StartNew();
                 new EventAnalysisAnalyzer().Analyze(ctx);
-                log.Check($"  [9/9] Event analysis cached  ({sw9.Elapsed.TotalSeconds:F1}s)");
+                log.Check($"  [9/10] Event analysis cached  ({sw9.Elapsed.TotalSeconds:F1}s)");
             }
 
             log.Blank();

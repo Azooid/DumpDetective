@@ -9,7 +9,7 @@
     <!-- ── NuGet package ────────────────────────────────────────────── -->
     <IsPackable>true</IsPackable>
     <PackageId>DumpDetective.Core</PackageId>
-    <Version>3.3.1</Version>
+    <Version>3.4.0</Version>
     <Authors>Azooid</Authors>
     <Description>
       Core interfaces, models, and utilities for building DumpDetective plugins.

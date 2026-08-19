@@ -10,8 +10,40 @@
       .replace(/^Per-Dump\s+/i, '');
   }
 
+  function escHtml(s) {
+    return (s || '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  // Counts issues inside a DOM subtree so the sidebar can show a caller
+  // where to look without opening every one of the (often dozens of)
+  // sub-report cards first.
+  function sevCounts(el) {
+    if (!el) return { crit: 0, warn: 0 };
+    return {
+      crit: el.querySelectorAll('.alert-crit, td.sev-crit').length,
+      warn: el.querySelectorAll('.alert-warn, td.sev-warn').length,
+    };
+  }
+  function addCounts(a, b) { return { crit: a.crit + b.crit, warn: a.warn + b.warn }; }
+  function badgeHtml(c) {
+    if (c.crit > 0) return '<span class="nav-badge nav-badge-crit" title="' + c.crit + ' critical">' + c.crit + '</span>';
+    if (c.warn > 0) return '<span class="nav-badge nav-badge-warn" title="' + c.warn + ' warning">' + c.warn + '</span>';
+    return '';
+  }
+  function renderLink(a, label) {
+    a.innerHTML = '<span class="nav-label">' + escHtml(label) + '</span>';
+  }
+  function renderLinkWithBadge(a, label, counts) {
+    a.innerHTML = '<span class="nav-label">' + escHtml(label) + '</span>' + badgeHtml(counts);
+  }
+
   let curL1Div = null;
   let curL2Items = null;
+
+  // Running totals so a chapter/group link's badge reflects everything
+  // nested under it, not just its own (often empty) chapter body.
+  let curL1TitleA = null, curL1Label = '', l1Totals = { crit: 0, warn: 0 };
+  let curGroupTitleA = null, curGroupLabel = '', groupTotals = { crit: 0, warn: 0 };
 
   root.querySelectorAll('.hero').forEach(function (h) {
     const id = h.id;
@@ -29,8 +61,11 @@
       const titleA = document.createElement('a');
       titleA.href = '#' + id;
       titleA.className = 'nav-title';
-      titleA.textContent = shortTitle(raw);
       titleA.title = raw;
+      curL1TitleA = titleA;
+      curL1Label = shortTitle(raw);
+      l1Totals = { crit: 0, warn: 0 };
+      renderLink(titleA, curL1Label);
       curL1Div.appendChild(titleA);
 
       if (num) {
@@ -43,21 +78,26 @@
               ca.href = '#' + c.id;
               ca.className = 'nav-card';
 
+              let label;
               const hdr = c.querySelector('.card-title');
               if (hdr) {
                 const cl = hdr.cloneNode(true);
                 cl.querySelectorAll('.tip-wrap').forEach(e => e.remove());
-                ca.textContent = cl.textContent.replace('▾', '').trim();
+                label = cl.textContent.replace('▾', '').trim();
               } else {
-                ca.textContent = c.id;
+                label = c.id;
               }
 
-              ca.title = ca.textContent;
+              ca.title = label;
+              const counts = sevCounts(c);
+              l1Totals = addCounts(l1Totals, counts);
+              renderLinkWithBadge(ca, label, counts);
               curL1Div.appendChild(ca);
             });
         }
       }
 
+      renderLinkWithBadge(titleA, curL1Label, l1Totals);
       nav.appendChild(curL1Div);
 
     } else if (level === 2) {
@@ -70,8 +110,11 @@
         const a = document.createElement('a');
         a.href = '#' + id;
         a.className = 'nav-sub-title';
-        a.textContent = shortTitle(raw);
         a.title = raw;
+        curGroupTitleA = a;
+        curGroupLabel = shortTitle(raw);
+        groupTotals = { crit: 0, warn: 0 };
+        renderLink(a, curGroupLabel);
 
         a.addEventListener('click', function (e) {
           e.preventDefault();
@@ -101,17 +144,29 @@
         if (!curL2Items) return;
         const a = document.createElement('a');
         a.href = '#' + id;
-        a.textContent = shortTitle(raw);
         a.title = raw;
+        const label = shortTitle(raw);
+        const counts = sevCounts(num ? document.getElementById('chb' + num) : null);
+        groupTotals = addCounts(groupTotals, counts);
+        l1Totals = addCounts(l1Totals, counts);
+        renderLinkWithBadge(a, label, counts);
         curL2Items.appendChild(a);
+        if (curGroupTitleA) renderLinkWithBadge(curGroupTitleA, curGroupLabel, groupTotals);
+        if (curL1TitleA) renderLinkWithBadge(curL1TitleA, curL1Label, l1Totals);
       }
     } else if (level >= 3) {
       if (!curL2Items) return;
       const a = document.createElement('a');
       a.href = '#' + id;
-      a.textContent = shortTitle(raw);
       a.title = raw;
+      const label = shortTitle(raw);
+      const counts = sevCounts(num ? document.getElementById('chb' + num) : null);
+      groupTotals = addCounts(groupTotals, counts);
+      l1Totals = addCounts(l1Totals, counts);
+      renderLinkWithBadge(a, label, counts);
       curL2Items.appendChild(a);
+      if (curGroupTitleA) renderLinkWithBadge(curGroupTitleA, curGroupLabel, groupTotals);
+      if (curL1TitleA) renderLinkWithBadge(curL1TitleA, curL1Label, l1Totals);
     }
   });
 
@@ -124,6 +179,99 @@
     }
   });
 })();
+
+/* ── Auto-collapse clean sections ─────────────────────────────────────── *
+ * #chb1 is always the first chapter body written to the document — for a
+ * single-command report it's the only content; for `analyze --full` it's
+ * the hand-curated Findings/Memory/... landing summary. Never auto-collapse
+ * that. Every other card collapses unless it contains a critical/warning
+ * signal, so opening the report shows only what needs attention instead of
+ * dozens of fully expanded "nothing found here" sections.                 */
+(function () {
+  const root = document.getElementById('report-root');
+  if (!root) return;
+
+  root.querySelectorAll('.card').forEach(function (card) {
+    if (card.closest('#chb1')) return;
+    const hasIssue = card.querySelector('.alert-crit, .alert-warn, td.sev-crit, td.sev-warn');
+    if (!hasIssue) card.classList.add('collapsed');
+  });
+})();
+
+/* ── Triage banner ─────────────────────────────────────────────────────── *
+ * A plain-language "start here" summary above all report content: how many
+ * issues, how many sections were flagged, and one-click jumps — so a reader
+ * doesn't have to scroll a wall of sections to find out what matters.      */
+(function () {
+  const root = document.getElementById('report-root');
+  if (!root || document.getElementById('triage-banner')) return;
+
+  const crit = root.querySelectorAll('.alert-crit, td.sev-crit').length;
+  const warn = root.querySelectorAll('.alert-warn, td.sev-warn').length;
+  const info = root.querySelectorAll('.alert-info, td.sev-info').length;
+
+  const totalSections = root.querySelectorAll('.card').length;
+  const cleanSections = root.querySelectorAll('.card.collapsed').length;
+  const flaggedSections = totalSections - cleanSections;
+  if (totalSections === 0) return;
+
+  const banner = document.createElement('div');
+  banner.id = 'triage-banner';
+
+  const actions =
+    (crit > 0 ? '<button class="tri-btn tri-btn-crit" onclick="jumpCrit()">Jump to critical ✗</button>' : '') +
+    (warn > 0 ? '<button class="tri-btn tri-btn-warn" onclick="jumpWarn()">Jump to warning ⚠</button>' : '') +
+    '<button class="exp-btn" onclick="expandAll()">⊞ Expand all</button>';
+
+  if (crit > 0 || warn > 0) {
+    const parts = [];
+    if (crit > 0) parts.push(crit + ' critical');
+    if (warn > 0) parts.push(warn + ' warning');
+    banner.className = 'triage-banner triage-banner-issues';
+    banner.innerHTML =
+      '<div class="triage-icon">✗</div>' +
+      '<div class="triage-text">' +
+        '<div class="triage-headline">' + parts.join(', ') + ' issue' + ((crit + warn) > 1 ? 's' : '') + ' found — start here</div>' +
+        '<div class="triage-sub">' + flaggedSections + ' of ' + totalSections + ' sections below are flagged and left expanded. ' +
+        'The rest are collapsed because nothing stood out — click a title to expand it, or jump straight to what matters.</div>' +
+      '</div>' +
+      '<div class="triage-actions">' + actions + '</div>';
+  } else {
+    banner.className = 'triage-banner triage-banner-clean';
+    banner.innerHTML =
+      '<div class="triage-icon">✓</div>' +
+      '<div class="triage-text">' +
+        '<div class="triage-headline">No critical or warning signals found</div>' +
+        '<div class="triage-sub">' + (info > 0 ? info + ' informational note(s) below for reference. ' : '') +
+        'All ' + totalSections + ' sections analyzed came back clean.</div>' +
+      '</div>' +
+      '<div class="triage-actions">' + actions + '</div>';
+  }
+
+  root.insertBefore(banner, root.firstChild);
+})();
+
+/* ── Jump-to-evidence (by CLI command name) ──────────────────────────────
+ * Correlation Signals / Action Queue cards reference the underlying
+ * sub-report by its stable CLI command name (e.g. "heap-stats") rather than
+ * a DOM id that depends on render order. Header() stamps that name onto the
+ * chapter's hero via data-command; this resolves it at click time, expands
+ * any collapsed ancestor card, and scrolls it into view.                  */
+window.scrollToCommand = function (name) {
+  if (!name) return;
+  // A trend report with --full embeds one sub-report per dump, so the same
+  // command name (e.g. "heap-stats") can appear once per dump. Dumps render in
+  // chronological order, so the LAST match is always the most recent dump's
+  // copy — exactly what Correlation Signals / Action Queue need, since both are
+  // built from the latest snapshot. For a single-dump analyze report there's
+  // only ever one match, so this is a no-op change there.
+  const matches = document.querySelectorAll('.hero[data-command="' + name + '"]');
+  const target = matches.length > 0 ? matches[matches.length - 1] : null;
+  if (!target) return;
+  const collapsed = target.closest('.card.collapsed');
+  if (collapsed) collapsed.classList.remove('collapsed');
+  target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+};
 
 /* ── Nav filter ───────────────────────────────────────────────────────── */
 function filterNav(q) {

@@ -95,6 +95,12 @@ public static class ReportDocReplay
                             n.Children.Select(ToNode).ToArray());
                     sink.CallTree([.. ct.Roots.Select(ToNode)], ct.Caption, ct.TopN);
                     break;
+                case ReportDomTree dt:
+                    static DomRetainerNode ToDomNode(ReportDomRetainerNode n) =>
+                        new(n.TypeName, n.InstanceCount, n.ShallowBytes, n.RetainedBytes,
+                            n.RetainedPct, n.Children.Select(ToDomNode).ToArray());
+                    sink.DomTree([.. dt.Roots.Select(ToDomNode)], dt.TotalHeapBytes, dt.Caption, dt.TopN);
+                    break;
                 case ReportReference rf:
                     sink.Reference(rf.Label, rf.Url);
                     break;
