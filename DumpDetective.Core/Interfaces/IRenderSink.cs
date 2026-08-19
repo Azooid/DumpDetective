@@ -37,6 +37,14 @@ public interface IRenderSink : IDisposable
                   string? caption = null, int topN = 20);
 
     /// <summary>
+    /// Renders a Lengauer-Tarjan dominator tree with retention-specific columns
+    /// (Type, Count, Retained, % of Heap, Shallow).
+    /// <c>HtmlSink</c> renders an interactive collapsible tree; other sinks fall back to indented text.
+    /// </summary>
+    void DomTree(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> roots,
+                 long totalHeapBytes, string? caption = null, int topN = 20);
+
+    /// <summary>
     /// Renders labeled metrics as CSS progress-bar gauges.
     /// Each item has a label, a value, and an optional bar fill percentage (0–100).
     /// If <paramref name="barMax"/> is &gt; 0 the bar is filled to <c>value/barMax×100</c>;

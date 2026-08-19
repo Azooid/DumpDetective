@@ -90,6 +90,27 @@ public sealed class TextSink : IRenderSink
         }
     }
 
+    public void DomTree(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> roots,
+                        long totalHeapBytes, string? caption = null, int topN = 20)
+    {
+        if (caption is not null) _w.WriteLine($"  {caption}");
+        int shown = 0;
+        RenderDomNodes(roots, 0, topN, ref shown);
+    }
+
+    void RenderDomNodes(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string(' ', 4 + depth * 2);
+            _w.WriteLine($"{indent}{n.RetainedPct,5:F1}%  {DumpDetective.Core.Utilities.DumpHelpers.FormatSize(n.RetainedBytes)}  ×{n.InstanceCount:N0}  {n.TypeName}");
+            if (n.Children is { Count: > 0 })
+                RenderDomNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
+
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)
     {

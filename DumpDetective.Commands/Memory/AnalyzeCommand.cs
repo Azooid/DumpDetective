@@ -176,6 +176,46 @@ public sealed class AnalyzeCommand : ICommand
                 }
                 dumpCtx.PreloadAnalysis(new BfsCacheBox(bfsReady));
 
+                // Pre-load dominator index; build it now if missing (BFS already in memory).
+                var idomPath = DomTreeCache.CachePath(dumpPath);
+                DomTreeCache? domReady = null;
+                if (DomTreeCache.IsValid(idomPath, dumpPath))
+                {
+                    log.Info("Loading dominator index cache...", indent: true);
+                    CommandBase.RunStatus("Loading dominator index...", update =>
+                        domReady = DomTreeCache.TryLoad(dumpPath, update));
+                }
+                else
+                {
+                    log.Info("Building dominator index (Lengauer-Tarjan, 3 passes)...", indent: true);
+                    DomTreeBuilder.Pass1State p1 = null!;
+                    DomTreeBuilder.Pass2State p2 = null!;
+                    CommandBase.RunStatus(
+                        $"Dominator pass 1/3 — roots + graph ({bfsReady!.NodeCount:N0} nodes, {bfsReady.EdgeCount:N0} edges)...",
+                        update =>
+                        {
+                            string label = $"Dominator pass 1/3 — roots + graph ({bfsReady.NodeCount:N0} nodes)";
+                            using var ticker = new System.Threading.Timer(_ => update(label), null, 200, 200);
+                            p1 = DomTreeBuilder.BuildGraph(dumpCtx, bfsReady, update);
+                        });
+                    CommandBase.RunStatus(
+                        $"Dominator pass 2/3 — Lengauer-Tarjan ({p1.NodeCount:N0} nodes, {p1.GcRootCount:N0} roots)...",
+                        update =>
+                        {
+                            // Timer fires every 200 ms to keep the elapsed-time display live
+                            // (LT is a tight CPU loop that never yields to call update itself).
+                            string label = $"Dominator pass 2/3 — Lengauer-Tarjan ({p1.NodeCount:N0} nodes)";
+                            using var ticker = new System.Threading.Timer(_ => update(label), null, 200, 200);
+                            p2 = DomTreeBuilder.RunLT(p1, update);
+                            p1 = null!;
+                        });
+                    CommandBase.RunStatus(
+                        "Dominator pass 3/3 — retained sizes + save...",
+                        update => { domReady = DomTreeBuilder.FinalizeAndSave(p2, bfsReady, idomPath, dumpPath, update); p2 = null!; });
+                }
+                if (domReady is not null)
+                    dumpCtx.PreloadAnalysis(new DomTreeCacheBox(domReady));
+
                 var (subWs, subMgd) = ToolMemoryDiagnostic.SampleForStep();
                 AnalyzeReport.RenderEmbeddedReports(dumpCtx, sink, effectiveCmds, log, _pluginCmdNames);
                 ToolMemoryDiagnostic.RecordPipelineStep("Sub-reports (all)", subWs, subMgd);

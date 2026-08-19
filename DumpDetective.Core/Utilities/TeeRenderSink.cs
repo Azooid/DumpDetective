@@ -49,6 +49,9 @@ public sealed class TeeRenderSink : IRenderSink
     public void CallTree(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> roots,
                          string? caption = null, int topN = 20)
     { foreach (var s in _sinks) s.CallTree(roots, caption, topN); }
+    public void DomTree(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> roots,
+                        long totalHeapBytes, string? caption = null, int topN = 20)
+    { foreach (var s in _sinks) s.DomTree(roots, totalHeapBytes, caption, topN); }
 
     public void Explain(string? what, string? why = null, string[]? bullets = null,
                         string? impact = null, string? action = null)

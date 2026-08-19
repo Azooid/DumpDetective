@@ -65,6 +65,14 @@ public interface ICommand
     void Render(DumpContext ctx, IRenderSink sink);
 
     /// <summary>
+    /// Per-dump gate for full-analyze inclusion.  Called at analyze-time (after the dump
+    /// is known) to allow commands that depend on a pre-built cache (e.g. <c>.idom.idx</c>)
+    /// to skip silently when that cache does not yet exist.
+    /// Default: returns <see cref="IncludeInFullAnalyze"/>.
+    /// </summary>
+    bool CanIncludeInFullAnalyze(string dumpPath) => IncludeInFullAnalyze;
+
+    /// <summary>
     /// Builds a serialisable <see cref="ReportDoc"/> document tree from the dump data.
     /// This is the canonical output path — <see cref="Render"/> replays it through any sink.
     /// Default implementation captures <see cref="Render"/> via a <c>CaptureSink</c>

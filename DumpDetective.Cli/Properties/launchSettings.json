@@ -2,7 +2,7 @@
   "profiles": {
     "DumpDetective.Cli": {
       "commandName": "Project",
-      "commandLineArgs": "analyze \"D:\\Dump\\prod\\w3wp.exe_260421_175618.dmp\" --full --debug --persist  --output w3wp.exe_260421_175618_1.html --with-plugins"
+      "commandLineArgs": "trend-analysis --help"
     },
     "WSL": {
       "commandName": "WSL2",
@@ -10,7 +10,7 @@
     },
     "Load": {
       "commandName": "Project",
-      "commandLineArgs": "load \"D:\\Dump\\core\\Main\" --full --debug --force"
+      "commandLineArgs": " analyze  \"D:\\Dump\\prod\\w3wp.exe_260421_175618\\w3wp.exe_260421_175618.dmp\" --full --debug --force"
     },
     "CPU": {
       "commandName": "Project",
@@ -19,6 +19,10 @@
     "Profile 1": {
       "commandName": "Project",
       "commandLineArgs": "--help"
+    },
+    "render": {
+      "commandName": "Project",
+      "commandLineArgs": "render \"D:\\Dump\\core\\Main\\Highload03_old.bin\" --output \"D:\\Dump\\core\\Main\\Highload03.html\""
     }
   }
 }

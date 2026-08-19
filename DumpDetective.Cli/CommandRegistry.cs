@@ -161,6 +161,10 @@ public static class CommandRegistry
                 new MemoryPressureReport()),
 
             // ── not included in full-analyze ──────────────────────────────────
+            new DominatorTreeCommand(
+                new DomTreeAnalyzer(),
+                new DominatorTreeReport()),
+
             new GcRootsCommand(
                 new GcRootsAnalyzer(),
                 new GcRootsReport()),

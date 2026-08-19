@@ -72,11 +72,11 @@ public sealed class MarkdownSink : IRenderSink
         _w.WriteLine("| Method | Module | Incl% | Excl% | Incl |");
         _w.WriteLine("|--------|--------|------:|------:|-----:|");
         int shown = 0;
-        WriteNodes(roots, 0, topN, ref shown);
+        WriteCtNodes(roots, 0, topN, ref shown);
         _w.WriteLine();
     }
 
-    void WriteNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
+    void WriteCtNodes(IReadOnlyList<DumpDetective.Core.Models.CallTreeNode> nodes, int depth, int topN, ref int shown)
     {
         foreach (var n in nodes)
         {
@@ -85,7 +85,31 @@ public sealed class MarkdownSink : IRenderSink
             string indent = new string('·', depth * 2);
             _w.WriteLine($"| {indent}{E(n.Method)} | {E(n.Module)} | {n.InclusivePct:F1}% | {n.ExclusivePct:F1}% | {n.InclusiveSamples:N0} |");
             if (n.Children is { Count: > 0 })
-                WriteNodes(n.Children, depth + 1, topN, ref shown);
+                WriteCtNodes(n.Children, depth + 1, topN, ref shown);
+        }
+    }
+
+    public void DomTree(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> roots,
+                        long totalHeapBytes, string? caption = null, int topN = 20)
+    {
+        if (caption is not null) _w.WriteLine($"**{caption}**\n");
+        _w.WriteLine("| Type | Instances | Retained | % Heap | Shallow |");
+        _w.WriteLine("|------|----------:|---------:|-------:|--------:|");
+        int shown = 0;
+        WriteDomNodes(roots, 0, topN, ref shown);
+        _w.WriteLine();
+    }
+
+    void WriteDomNodes(IReadOnlyList<DumpDetective.Core.Models.DomRetainerNode> nodes, int depth, int topN, ref int shown)
+    {
+        foreach (var n in nodes)
+        {
+            if (shown >= topN) return;
+            shown++;
+            string indent = new string('·', depth * 2);
+            _w.WriteLine($"| {indent}{E(n.TypeName)} | {n.InstanceCount:N0} | {DumpDetective.Core.Utilities.DumpHelpers.FormatSize(n.RetainedBytes)} | {n.RetainedPct:F1}% | {DumpDetective.Core.Utilities.DumpHelpers.FormatSize(n.ShallowBytes)} |");
+            if (n.Children is { Count: > 0 })
+                WriteDomNodes(n.Children, depth + 1, topN, ref shown);
         }
     }
 

@@ -60,6 +60,7 @@ public sealed class ReportSection
 [JsonDerivedType(typeof(ReportMultiSparkline),  "multiSparkline")]
 [JsonDerivedType(typeof(ReportCompareBar),      "compareBar")]
 [JsonDerivedType(typeof(ReportCallTree),        "callTree")]
+[JsonDerivedType(typeof(ReportDomTree),         "domTree")]
 [JsonDerivedType(typeof(ReportReference),       "reference")]
 public abstract class ReportElement { }
 
@@ -230,6 +231,26 @@ public sealed class ReportCallTree : ReportElement
     public List<ReportCallTreeNode> Roots   { get; set; } = [];
     public string?                  Caption { get; set; }
     public int                      TopN    { get; set; } = 20;
+}
+
+// ── Dominator Tree element ────────────────────────────────────────────────────
+
+public sealed class ReportDomRetainerNode
+{
+    public string                      TypeName      { get; set; } = string.Empty;
+    public int                         InstanceCount { get; set; }
+    public long                        ShallowBytes  { get; set; }
+    public long                        RetainedBytes { get; set; }
+    public double                      RetainedPct   { get; set; }
+    public List<ReportDomRetainerNode> Children      { get; set; } = [];
+}
+
+public sealed class ReportDomTree : ReportElement
+{
+    public List<ReportDomRetainerNode> Roots          { get; set; } = [];
+    public long                        TotalHeapBytes { get; set; }
+    public string?                     Caption        { get; set; }
+    public int                         TopN           { get; set; } = 20;
 }
 
 public sealed class ReportReference : ReportElement
