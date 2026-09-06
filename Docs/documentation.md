@@ -1,6 +1,6 @@
 # DumpDetective Documentation
 
-DumpDetective is a .NET AOT CLI tool for analyzing Windows memory dumps (`.dmp` / `.mdmp`) and performance traces (`.nettrace` / `.etl`). It runs commands for heap statistics, memory leak detection, deadlock diagnosis, GC analysis, CPU profiling, allocation hotspots, and more — producing output as HTML, Markdown, JSON, or plain text.
+DumpDetective is a .NET AOT CLI tool for analyzing Windows memory dumps (`.dmp` / `.mdmp`), .NET performance traces (`.nettrace` / `.etl`), and Chrome DevTools performance traces (`.json` / `.json.gz`). It runs commands for heap statistics, memory leak detection, deadlock diagnosis, GC analysis, CPU profiling, allocation hotspots, browser JS/DOM leak and jank detection, and more — producing output as HTML, Markdown, JSON, or plain text.
 
 ---
 
@@ -18,6 +18,9 @@ DumpDetective trace-analyze app.nettrace --output trace.html
 
 # Re-render a saved report in a different format
 DumpDetective render report.bin --output report.md
+
+# Chrome DevTools performance trace (browser JS/DOM/CPU/network) analysis
+DumpDetective web-analyze trace.json.gz --output report.html
 ```
 
 ---
@@ -32,7 +35,8 @@ DumpDetective render report.bin --output report.md
 | [Cache Inventory](cache.md) | Built-in system caches, storage locations, lifecycle, and cleanup |
 | [Plugin System](Plugins.md) | How to write and install external plugin commands |
 | [Memory Commands](#memory-commands) | All 38 dump-analysis commands with links to detailed docs |
-| [Trace Commands](#trace-commands) | All 31 trace commands with links to detailed docs |
+| [Trace Commands](#trace-commands) | All 31 .NET trace commands with links to detailed docs |
+| [Web Performance Commands](#web-performance-commands) | All 8 Chrome DevTools trace commands |
 
 ---
 
@@ -230,6 +234,32 @@ Commands that operate on `.nettrace` or `.etl` trace files.
 |---|---|
 | [anomaly-trace](trace/Intelligence/anomaly-trace.md) | Z-score analysis over CPU, GC, allocation, contention, and exception rate timelines |
 | [root-cause-trace](trace/Intelligence/root-cause-trace.md) | Runs all trace analyzers and derives ranked causal chains with actionable remediation advice |
+
+---
+
+## Web Performance Commands
+
+Commands that operate on Chrome DevTools performance traces (`.json` / `.json.gz` —
+the "Enhanced Trace" export from the DevTools Performance panel). Unrelated to
+`.nettrace`/`.etl`: these analyze browser/JS performance (JS heap, DOM, V8 CPU
+profiler, compositor frames, network), not the .NET runtime. See
+[Docs/WebTrace-Plan.md](WebTrace-Plan.md) for the full design (streaming parser, cache
+layout, source-map de-minification, plugin extension point).
+
+| Command | Description |
+|---|---|
+| `web-analyze` | Runs every command below in one pass — 0–100 health score, ranked Action Queue (Now/Next/Watch), "Look Here First" pointer, auto-play filmstrip (HTML), `--with-plugins`, `--fail-on critical\|warning` for CI gating |
+| `web-memory-leak` | JS heap / DOM node / event-listener trend; flags listener-leak (listener:node ratio) and sustained growth |
+| `web-cpu-hotspots` | Main-thread CPU self-time ranked by (file, function, line) — de-minified via the trace's embedded source maps when available |
+| `web-long-tasks` | Main-thread tasks ≥50ms (Long Tasks API threshold), ranked by duration |
+| `web-gc-pressure` | V8 major/minor GC cycle counts and pause durations |
+| `web-network` | Completed network requests (correlated Send/Receive/Finish), ranked by duration; flags slow/failed requests |
+| `web-jank` | Compositor frame-drop rate (BeginFrame vs. DroppedFrame) |
+| `web-input-latency` | Interaction-to-response latency (INP-style), from the trace's async `InputLatency::*` events |
+
+Collecting a trace: Chrome DevTools → Performance panel → check "Memory" if you want
+heap/listener trend data → Record → stop → Export (the exported `.json` can be gzip'd
+or passed as-is).
 
 ---
 

@@ -62,6 +62,7 @@ public sealed class ReportSection
 [JsonDerivedType(typeof(ReportCallTree),        "callTree")]
 [JsonDerivedType(typeof(ReportDomTree),         "domTree")]
 [JsonDerivedType(typeof(ReportReference),       "reference")]
+[JsonDerivedType(typeof(ReportFilmstrip),       "filmstrip")]
 public abstract class ReportElement { }
 
 public sealed class ReportKeyValues : ReportElement
@@ -231,6 +232,27 @@ public sealed class ReportCallTree : ReportElement
     public List<ReportCallTreeNode> Roots   { get; set; } = [];
     public string?                  Caption { get; set; }
     public int                      TopN    { get; set; } = 20;
+}
+
+// ── Filmstrip element ──────────────────────────────────────────────────────────
+
+/// <summary>One screenshot frame — a base64 JPEG plus its trace-relative timestamp.</summary>
+public sealed class ReportFilmstripFrame
+{
+    public long   TimestampMs { get; set; }
+    public string Base64Jpeg  { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// An ordered sequence of screenshots rendered as an auto-playing flipbook — a fast
+/// "replay" of what was on screen while a trace was recorded. <c>HtmlSink</c> renders an
+/// interactive, playable filmstrip; other sinks fall back to a plain-text frame count
+/// (see <see cref="IRenderSink.Filmstrip"/>'s default body).
+/// </summary>
+public sealed class ReportFilmstrip : ReportElement
+{
+    public List<ReportFilmstripFrame> Frames  { get; set; } = [];
+    public string?                    Caption { get; set; }
 }
 
 // ── Dominator Tree element ────────────────────────────────────────────────────

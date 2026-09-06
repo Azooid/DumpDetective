@@ -163,5 +163,8 @@ public sealed class MarkdownSink : IRenderSink
 
     public void Dispose() => _w.Dispose();
 
-    private static string E(string s) => s.Replace("|", "\\|").Replace("`", "'");
+    // GFM table rows must stay on one physical line — a raw embedded newline (e.g. a
+    // multi-line call-stack cell) would otherwise split the row and break the table.
+    // <br> is valid inside a GFM table cell and renders as a real line break.
+    private static string E(string s) => s.Replace("|", "\\|").Replace("`", "'").Replace("\r\n", "<br>").Replace("\n", "<br>");
 }

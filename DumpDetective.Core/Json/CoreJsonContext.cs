@@ -24,6 +24,8 @@ namespace DumpDetective.Core.Json;
 [JsonSerializable(typeof(ReportChartSeg))]
 [JsonSerializable(typeof(ReportCallTree))]
 [JsonSerializable(typeof(ReportCallTreeNode))]
+[JsonSerializable(typeof(ReportFilmstrip))]
+[JsonSerializable(typeof(ReportFilmstripFrame))]
 [JsonSerializable(typeof(ReportDomTree))]
 [JsonSerializable(typeof(ReportDomRetainerNode))]
 [JsonSerializable(typeof(ReportReference))]

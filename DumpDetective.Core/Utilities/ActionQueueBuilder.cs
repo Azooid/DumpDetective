@@ -77,6 +77,15 @@ public static class ActionQueueBuilder
             "Exceptions"                               => "exception-analysis",
             "WCF"                                      => "wcf-channels",
             "Connections"                              => "connection-pool",
+            "Web Listeners"                            => "web-memory-leak",
+            "Web Memory"                               => "web-memory-leak",
+            "Web Performance" when h.Contains("task")        => "web-long-tasks",
+            "Web Performance" when h.Contains("interaction") => "web-input-latency",
+            "Web Performance" when h.Contains("request")     => "web-network",
+            "Web Performance"                          => "web-cpu-hotspots",
+            "Web Rendering" when h.Contains("frame")   => "web-jank",
+            "Web Rendering"                            => "web-cpu-hotspots",
+            "Web GC"                                   => "web-gc-pressure",
             _                                           => null,
         };
     }

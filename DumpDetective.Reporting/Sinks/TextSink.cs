@@ -42,15 +42,28 @@ public sealed class TextSink : IRenderSink
     {
         if (rows.Count == 0) { _w.WriteLine("  (no data)"); return; }
         if (caption is not null) _w.WriteLine($"  {caption}");
-        var widths = headers.Select((h, i) =>
-            Math.Max(h.Length, rows.Max(r => i < r.Length ? r[i].Length : 0))).ToArray();
+
+        // A cell may embed newlines (e.g. a multi-line call-stack) — measure width by its
+        // longest sub-line, and render each sub-line as its own aligned physical row so the
+        // ASCII table stays lined up instead of one column bleeding into the next.
+        string[][] CellLines(string[] row) => Enumerable.Range(0, headers.Length)
+            .Select(i => (i < row.Length ? row[i] : "").Split('\n')).ToArray();
+
+        var widths = headers.Select((h, i) => Math.Max(h.Length,
+            rows.Max(r => i < r.Length ? r[i].Split('\n').Max(l => l.Length) : 0))).ToArray();
+
         _w.WriteLine("  " + string.Join("   ", headers.Select((h, i) => h.PadRight(widths[i]))));
         _w.WriteLine("  " + string.Join("   ", widths.Select(w => new string('-', w))));
         foreach (var row in rows)
         {
-            var cells = Enumerable.Range(0, headers.Length)
-                .Select(i => (i < row.Length ? row[i] : "").PadRight(widths[i]));
-            _w.WriteLine("  " + string.Join("   ", cells));
+            var cellLines = CellLines(row);
+            int maxLines  = cellLines.Max(c => c.Length);
+            for (int ln = 0; ln < maxLines; ln++)
+            {
+                var cells = Enumerable.Range(0, headers.Length)
+                    .Select(i => (ln < cellLines[i].Length ? cellLines[i][ln] : "").PadRight(widths[i]));
+                _w.WriteLine("  " + string.Join("   ", cells));
+            }
         }
         _w.WriteLine();
     }

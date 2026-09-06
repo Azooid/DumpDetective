@@ -591,6 +591,7 @@ public sealed class HtmlSink : IRenderSink
                 else if (cell is "Critical")      { cellCls = " class=\"sev-crit\""; cellContent = "<span class=\"sev-badge sev-badge-crit\">✗ Critical</span>"; }
                 else if (cell is "Warning")       { cellCls = " class=\"sev-warn\""; cellContent = "<span class=\"sev-badge sev-badge-warn\">⚠ Warning</span>"; }
                 else if (cell is "Info")          { cellCls = " class=\"sev-info\""; cellContent = "<span class=\"sev-badge sev-badge-info\">ℹ Info</span>"; }
+                else if (cell.Contains('\n'))      cellCls = " class=\"stack-cell\"";
                 else if (IsMethodCell(cell))      cellCls = " class=\"method-text\"";
                 else if (cell.Length > 55)        cellCls = " class=\"long-text\"";
                 _w.Write($"<td{cellCls}>{cellContent}</td>");
@@ -669,6 +670,44 @@ public sealed class HtmlSink : IRenderSink
             _w.WriteLine("</div>");
         }
         _w.WriteLine("</div></details>");
+    }
+
+    public void Filmstrip(IReadOnlyList<(long TimestampMs, string Base64Jpeg)> frames, string? caption = null)
+    {
+        if (frames.Count == 0) return;
+
+        int id = ++_chartSeq;
+        if (caption is not null) _w.WriteLine($"<p class=\"caption\">{H(caption)}</p>");
+
+        _w.WriteLine("<div class=\"filmstrip-card\">");
+        _w.WriteLine("<div class=\"filmstrip-controls\">");
+        _w.WriteLine($"<button type=\"button\" onclick=\"fsToggle{id}()\" id=\"fsBtn{id}\">&#10074;&#10074; Pause</button>");
+        _w.WriteLine($"<span class=\"filmstrip-counter\" id=\"fsCounter{id}\">1 / {frames.Count}</span>");
+        _w.WriteLine($"<input type=\"range\" min=\"0\" max=\"{frames.Count - 1}\" value=\"0\" id=\"fsSlider{id}\" oninput=\"fsSeek{id}(this.value)\" style=\"flex:1\">");
+        _w.WriteLine("</div>");
+        _w.WriteLine($"<img class=\"filmstrip-img\" id=\"fsImg{id}\" src=\"data:image/jpeg;base64,{frames[0].Base64Jpeg}\" alt=\"filmstrip frame\" />");
+        _w.WriteLine("</div>");
+
+        // Frames are emitted once as a plain JS array; a small closure per filmstrip
+        // instance drives the auto-advance/pause/seek so multiple filmstrips on one
+        // page (e.g. a future multi-trace report) never clash.
+        _w.Write($"<script>var __fsFrames{id}=[");
+        for (int i = 0; i < frames.Count; i++)
+        {
+            if (i > 0) _w.Write(',');
+            _w.Write('"');
+            _w.Write(frames[i].Base64Jpeg);
+            _w.Write('"');
+        }
+        _w.WriteLine("];");
+        _w.WriteLine("(function(){");
+        _w.WriteLine($"var frames=__fsFrames{id},idx=0,playing=true;");
+        _w.WriteLine($"var img=document.getElementById('fsImg{id}'),counter=document.getElementById('fsCounter{id}'),slider=document.getElementById('fsSlider{id}'),btn=document.getElementById('fsBtn{id}');");
+        _w.WriteLine("function render(){img.src='data:image/jpeg;base64,'+frames[idx];counter.textContent=(idx+1)+' / '+frames.length;slider.value=idx;}");
+        _w.WriteLine("setInterval(function(){if(playing){idx=(idx+1)%frames.length;render();}},80);");
+        _w.WriteLine($"window.fsToggle{id}=function(){{playing=!playing;btn.innerHTML=playing?'&#10074;&#10074; Pause':'&#9654; Play';}};");
+        _w.WriteLine($"window.fsSeek{id}=function(v){{playing=false;btn.innerHTML='&#9654; Play';idx=parseInt(v,10);render();}};");
+        _w.WriteLine("})();</script>");
     }
 
     public void CallTree(IReadOnlyList<CallTreeNode> roots, string? caption = null, int topN = 20)

@@ -11,6 +11,8 @@ public enum CommandKind
     Memory,
     /// <summary>Operates on an ETW trace file (.nettrace / .etl).</summary>
     Trace,
+    /// <summary>Operates on a Chrome DevTools performance trace (.json / .json.gz).</summary>
+    Web,
 }
 
 /// <summary>
