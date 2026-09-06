@@ -25,10 +25,25 @@ namespace DumpDetective.Analysis.WebTrace.Parsing;
 /// doesn't carry it):
 ///   - <see cref="WebTraceData.CpuHotspots"/> — every thread's stack samples, keyed the same way
 ///     Chrome's V8 profiler samples are (url|function|line), so both recorders feed the exact
-///     same hotspot report. There is no reliable "this sample was idle" signal to exclude here —
-///     see the note on <see cref="ProcessSamples"/> — so, exactly like Chrome's profiler samples,
-///     every leaf frame is counted; a thread genuinely idle in an OS wait syscall just shows up
-///     as self-time on that syscall's frame, the same way it would in any native profiler.
+///     same hotspot report. <c>frameTable.category</c> turned out not to be a usable "this sample
+///     was idle" signal — it defaults to 0 ("Idle" in the category list, purely by coincidence of
+///     ordering) for the vast majority of arbitrary native leaf frames, not just genuinely idle
+///     ones — so instead a sample is excluded from self-time when its leaf frame is a known
+///     blocking OS wait syscall (<see cref="IdleLeafFunctionNames"/>). This matters more here than
+///     it would for a single-process Chrome trace: Firefox profiles every OS process running at
+///     capture time by default (parent, GPU, socket, one per background tab, ...), and all of
+///     those besides the tab actually under test spend nearly 100% of their samples in one of
+///     these syscalls, so without this filter they'd swamp the one thread doing real work. Two
+///     more corrections needed to get a usable self-time number out of Firefox's raw arrays:
+///     a sample's own leaf function is never mistaken for the user's application code just
+///     because it happens to have a non-empty location (see <see cref="FuncTables"/>) — Firefox
+///     gives every frame *some* location string, including native engine internals and Firefox's
+///     own browser-chrome JS, unlike a V8 CPU profile where a non-page frame simply has an empty
+///     url; and each thread's first sample is excluded from self-time entirely, because
+///     <c>timeDeltas[0]</c> isn't a duration spent in whatever it captured — it's the clock
+///     offset from recording-start to that thread's first sample, which is substantial for any
+///     thread that didn't exist yet when the recording began (every background tab's content
+///     process, for one).
 ///   - <see cref="WebTraceData.LongTasks"/> — Firefox has no direct equivalent of Chrome's
 ///     <c>RunTask</c> span. Instead this uses the signal Firefox's own sampler computes for
 ///     exactly this purpose: <c>samples.eventDelay</c>, "how long the oldest queued input event
@@ -125,6 +140,32 @@ public static class FirefoxProfileParser
     /// until whatever was running finished, at which point the backlog drains and delay resets.
     /// This is Firefox's closest equivalent to Chrome's explicit <c>RunTask</c> span duration.
     /// </summary>
+    /// <summary>
+    /// Leaf function names for the blocking OS wait syscalls a thread's stack bottoms out in
+    /// whenever it's simply parked waiting for the next task/message/event with nothing to do —
+    /// this is the actual "was this sample idle" signal, found empirically after
+    /// <c>frameTable.category</c> turned out to be unusable (see the type-level doc comment).
+    /// It matters for two reasons at once: a single busy thread's own idle stretches between
+    /// bursts of work would otherwise swamp its real hotspots (one recording measured 90%+ of
+    /// total self-time as one of these two Windows syscalls), and — because Firefox profiles
+    /// every OS process it's running by default, not just the tab under test — background
+    /// tabs/GPU/socket/utility processes are themselves close to 100% one of these names for
+    /// their entire recording, so excluding them from self-time is what keeps a dozen idle
+    /// processes from drowning out the one tab actually doing the work being diagnosed.
+    /// </summary>
+    private static readonly HashSet<string> IdleLeafFunctionNames = new(StringComparer.Ordinal)
+    {
+        // Windows
+        "ZwWaitForAlertByThreadId", "ZwUserMsgWaitForMultipleObjectsEx", "NtUserMsgWaitForMultipleObjectsEx",
+        "NtWaitForSingleObject", "NtWaitForMultipleObjects", "NtWaitForWorkViaWorkerFactory",
+        "NtDelayExecution", "NtRemoveIoCompletion", "NtRemoveIoCompletionEx",
+        "RtlWaitOnAddress", "RtlpWaitOnAddressWithTimeout", "WaitForSingleObjectEx", "WaitForMultipleObjectsEx",
+        // macOS
+        "mach_msg_trap", "mach_msg2_trap", "__psynch_cvwait", "__semwait_signal", "kevent", "kevent64",
+        // Linux
+        "poll", "ppoll", "epoll_wait", "epoll_pwait", "__futex_abstimed_wait_common64", "futex_wait",
+    };
+
     private sealed class DelayRun
     {
         public double PeakDelayMs;
@@ -176,8 +217,14 @@ public static class FirefoxProfileParser
             if (sampleEndUs < minTsUs) minTsUs = sampleEndUs;
             if (sampleEndUs > maxTsUs) maxTsUs = sampleEndUs;
 
+            // Sample 1's own "delta" isn't a duration spent in whatever stack it captured — it's
+            // the clock offset from the start of the recording to this thread's first sample
+            // (threads created partway through, e.g. every background tab's content process,
+            // start hundreds of ms to several seconds into the recording). Attributing it as
+            // self-time would pin however-many-seconds-until-this-thread-existed onto one
+            // arbitrary frame. Every later delta is a real inter-sample gap and is safe to use.
             string? key = null;
-            if (stackIter.Current.ValueKind == JsonValueKind.Number)
+            if (scanned > 1 && stackIter.Current.ValueKind == JsonValueKind.Number)
             {
                 int stackIdx = stackIter.Current.GetInt32();
                 if (stackIdx >= 0 && stackIdx < frames.StackFrame.Length)
@@ -186,12 +233,21 @@ public static class FirefoxProfileParser
                     if (frameIdx >= 0 && frameIdx < frames.FrameFunc.Length)
                     {
                         int funcIdx = frames.FrameFunc[frameIdx];
-                        if (funcIdx >= 0 && funcIdx < funcs.Name.Length)
+                        if (funcIdx >= 0 && funcIdx < funcs.Name.Length && !IdleLeafFunctionNames.Contains(funcs.Name[funcIdx]))
                         {
                             int line = frames.FrameLine[frameIdx] ?? funcs.LineNumber[funcIdx] ?? -1;
-                            key = $"{funcs.Url[funcIdx]}|{funcs.Name[funcIdx]}|{line}";
+                            string displayUrl = funcs.Url[funcIdx];
+                            key = $"{displayUrl}|{funcs.Name[funcIdx]}|{line}";
                             if (!hotspots.TryGetValue(key, out var h))
-                                hotspots[key] = h = new WebCpuHotspot { Url = funcs.Url[funcIdx], FunctionName = funcs.Name[funcIdx], Line = line };
+                                hotspots[key] = h = new WebCpuHotspot
+                                {
+                                    Url          = funcs.AppUrl[funcIdx],
+                                    FunctionName = funcs.Name[funcIdx],
+                                    Line         = line,
+                                    ResolvedFile = displayUrl.Length > 0 ? displayUrl : null,
+                                    ResolvedLine = displayUrl.Length > 0 ? line : -1,
+                                    CallChain    = BuildCallChain(stackIdx, frames, funcs),
+                                };
                             h.SelfTimeUs  += deltaUs;
                             h.SampleCount += 1;
                         }
@@ -250,6 +306,48 @@ public static class FirefoxProfileParser
             longTasks.Add(task);
         }
         run.Reset();
+    }
+
+    private const int MaxCallChainDepth = 10;
+
+    /// <summary>
+    /// Walks <c>stackTable.prefixOffset</c> up from <paramref name="stackIdx"/>'s parent,
+    /// collecting callers — nearest first — until <see cref="MaxCallChainDepth"/> or the root
+    /// stack node (func name "(root)") is reached. Mirrors <c>ChromeTraceParser.BuildCallChain</c>
+    /// exactly, including its "FunctionLocationUrl" entry encoding (fields joined by U+0001,
+    /// entries joined by " ← ") — <see cref="Reporting.Reports.WebCallChainHelper"/> parses that
+    /// format to render the Call Stack column/tree regardless of which recorder produced it.
+    /// Firefox's own reason this needs prefixOffset instead of a direct parent index: see the
+    /// field comment on <see cref="FrameTables.StackPrefixOffset"/>.
+    /// </summary>
+    private static string? BuildCallChain(int stackIdx, FrameTables frames, FuncTables funcs)
+    {
+        int prefixOffset = frames.StackPrefixOffset[stackIdx];
+        if (prefixOffset == 0) return null; // leaf is itself a root — no callers
+
+        var entries = new List<string>(MaxCallChainDepth);
+        int cur = stackIdx - prefixOffset;
+        for (int i = 0; i < MaxCallChainDepth && cur >= 0 && cur < frames.StackFrame.Length; i++)
+        {
+            int frameIdx = frames.StackFrame[cur];
+            if (frameIdx < 0 || frameIdx >= frames.FrameFunc.Length) break;
+            int funcIdx = frames.FrameFunc[frameIdx];
+            if (funcIdx < 0 || funcIdx >= funcs.Name.Length) break;
+
+            string fn = funcs.Name[funcIdx];
+            if (fn == "(root)") break;
+
+            int line = frames.FrameLine[frameIdx] ?? funcs.LineNumber[funcIdx] ?? -1;
+            string displayUrl = funcs.Url[funcIdx];
+            string location = displayUrl.Length > 0 ? $"{displayUrl}:{line}" : "";
+            entries.Add($"{fn}{location}{funcs.AppUrl[funcIdx]}");
+
+            int parentOffset = frames.StackPrefixOffset[cur];
+            if (parentOffset == 0) break; // reached a root without a "(root)"-named frame
+            cur -= parentOffset;
+        }
+
+        return entries.Count > 0 ? string.Join(" ← ", entries) : null;
     }
 
     // ── markers (GC pauses, input latency) ──────────────────────────────────
@@ -321,8 +419,26 @@ public static class FirefoxProfileParser
 
     // ── shared table indexing ───────────────────────────────────────────────
 
-    private readonly record struct FuncTables(string[] Name, string[] Url, int?[] LineNumber);
-    private readonly record struct FrameTables(int[] StackFrame, int[] FrameFunc, int?[] FrameLine);
+    /// <summary>
+    /// <see cref="Url"/> is a rich display location for *any* frame — a real page-script URL,
+    /// but just as often a native symbol's source repo path (<c>git:github.com/...</c>) or a
+    /// bare OS module name (<c>ntdll.dll</c>) for a native/OS frame, or a browser-chrome JS file
+    /// (<c>chrome://...</c>) for Firefox's own UI code. None of those last three are "your code"
+    /// in any useful sense, but they're still worth showing in a Call Stack line. <see cref="AppUrl"/>
+    /// is the subset of that used for first-party classification (<c>WebCpuHotspotRow.IsApplicationCode</c>,
+    /// the ★ marker): empty unless <see cref="Url"/> is an actual web-page script URL, so browser
+    /// internals and native engine code — which Chrome's parser never has an equivalent of, since a V8
+    /// CPU profile only ever contains page JS or an empty (native/builtin) url — don't get
+    /// mislabeled as the user's own code just because they happen to have a non-empty location.
+    /// </summary>
+    private readonly record struct FuncTables(string[] Name, string[] Url, string[] AppUrl, int?[] LineNumber);
+
+    private static bool IsPageScriptUrl(string url) =>
+        url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+        url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+        url.StartsWith("file://", StringComparison.OrdinalIgnoreCase) ||
+        url.StartsWith("blob:", StringComparison.OrdinalIgnoreCase);
+    private readonly record struct FrameTables(int[] StackFrame, int[] FrameFunc, int?[] FrameLine, int[] StackPrefixOffset);
 
     private static FuncTables BuildFuncTables(JsonElement shared, string[] strings)
     {
@@ -373,7 +489,11 @@ public static class FirefoxProfileParser
             }
         }
 
-        return new FuncTables(name, url, lineNumber);
+        var appUrl = new string[n];
+        for (int i = 0; i < n; i++)
+            appUrl[i] = IsPageScriptUrl(url[i]) ? url[i] : "";
+
+        return new FuncTables(name, url, appUrl, lineNumber);
     }
 
     private static FrameTables BuildFrameTables(JsonElement shared)
@@ -384,8 +504,11 @@ public static class FirefoxProfileParser
 
         var stackTable = shared.GetProperty("stackTable");
         var stackFrame = ReadInts(stackTable.GetProperty("frame"));
+        // Delta-encoded, not an absolute index: the parent of stack node i is
+        // (i - prefixOffset[i]), and 0 marks a root (no parent) — see BuildCallChain.
+        var stackPrefixOffset = ReadInts(stackTable.GetProperty("prefixOffset"));
 
-        return new FrameTables(stackFrame, frameFunc, frameLine);
+        return new FrameTables(stackFrame, frameFunc, frameLine, stackPrefixOffset);
     }
 
     private static int ParseProcessOrThreadId(JsonElement thread, string propertyName)
