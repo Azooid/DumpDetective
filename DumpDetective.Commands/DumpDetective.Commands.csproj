@@ -4,6 +4,7 @@
     <ProjectReference Include="..\DumpDetective.Core\DumpDetective.Core.csproj" />
     <ProjectReference Include="..\DumpDetective.Analysis.Memory\DumpDetective.Analysis.Memory.csproj" />
     <ProjectReference Include="..\DumpDetective.Analysis.Trace\DumpDetective.Analysis.Trace.csproj" />
+    <ProjectReference Include="..\DumpDetective.Analysis.WebTrace\DumpDetective.Analysis.WebTrace.csproj" />
     <ProjectReference Include="..\DumpDetective.Reporting\DumpDetective.Reporting.csproj" />
   </ItemGroup>
 
@@ -24,6 +25,9 @@
     <Using Include="DumpDetective.Analysis.Memory.Analyzers" />
     <Using Include="DumpDetective.Analysis.Trace" />
     <Using Include="DumpDetective.Analysis.Trace.Analyzers" />
+    <Using Include="DumpDetective.Analysis.WebTrace" />
+    <Using Include="DumpDetective.Analysis.WebTrace.Analysis" />
+    <Using Include="DumpDetective.Analysis.WebTrace.Model" />
     <Using Include="DumpDetective.Core.Models.CommandData" />
     <Using Include="DumpDetective.Reporting" />
     <Using Include="DumpDetective.Reporting.Reports" />

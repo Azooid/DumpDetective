@@ -219,6 +219,13 @@ public sealed class CaptureSink : IRenderSink
             ValueMode = valueMode,
         });
 
+    public void Filmstrip(IReadOnlyList<(long TimestampMs, string Base64Jpeg)> frames, string? caption = null)
+        => CurrentElements().Add(new ReportFilmstrip
+        {
+            Frames  = [.. frames.Select(f => new ReportFilmstripFrame { TimestampMs = f.TimestampMs, Base64Jpeg = f.Base64Jpeg })],
+            Caption = caption,
+        });
+
     public void CompareBar(
         IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
         string? labelA = null, string? labelB = null,

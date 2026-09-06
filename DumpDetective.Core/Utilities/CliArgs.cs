@@ -254,17 +254,24 @@ public sealed class CliArgs
 
     /// <summary>
     /// Returns true for file extensions recognised as a primary input file:
-    /// memory dumps (.dmp, .mdmp) and trace files (.nettrace, .etl).
+    /// memory dumps (.dmp, .mdmp), .NET trace files (.nettrace, .etl), and
+    /// Chrome DevTools performance traces (.json, .json.gz).
     /// </summary>
     public static bool IsKnownInputFile(string path) =>
         path.EndsWith(".dmp",      StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".mdmp",     StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
-        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
+        path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase) ||
+        IsWebTraceFile(path);
 
     public static bool IsTraceFile(string path) =>
         path.EndsWith(".nettrace", StringComparison.OrdinalIgnoreCase) ||
         path.EndsWith(".etl",      StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Returns true for a Chrome DevTools performance trace (.json / .json.gz).</summary>
+    public static bool IsWebTraceFile(string path) =>
+        path.EndsWith(".json",     StringComparison.OrdinalIgnoreCase) ||
+        path.EndsWith(".json.gz",  StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Returns <see langword="true"/> when the positional looks like a directory —

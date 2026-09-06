@@ -6,6 +6,9 @@
   <Project Path="DumpDetective.Analysis.Trace/DumpDetective.Analysis.Trace.csproj">
     <Build Solution="Debug|*" Project="false" />
   </Project>
+  <Project Path="DumpDetective.Analysis.WebTrace/DumpDetective.Analysis.WebTrace.csproj">
+    <Build Solution="Debug|*" Project="false" />
+  </Project>
   <Project Path="DumpDetective.Cli/DumpDetective.Cli.csproj" />
   <Project Path="DumpDetective.Commands/DumpDetective.Commands.csproj" />
   <Project Path="DumpDetective.Core/DumpDetective.Core.csproj" />

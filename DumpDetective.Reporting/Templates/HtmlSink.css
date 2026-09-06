@@ -146,6 +146,12 @@ h3{font-size:.85rem;font-weight:600;color:#374151;margin:.65rem 0 .35rem;padding
 .spark-stats b{color:#111827;font-weight:600}
 /* ── MultiSparkline ── */
 .mspark-card{display:block;width:100%;padding:.4rem .9rem .5rem;margin:.4rem 0 .6rem;background:var(--bg-card,#fff);border:1px solid var(--border,#e5e7eb);border-radius:10px}
+.filmstrip-card{display:block;width:100%;max-width:640px;padding:.6rem .9rem .8rem;margin:.4rem 0 .6rem;background:var(--bg-card,#fff);border:1px solid var(--border,#e5e7eb);border-radius:10px}
+.filmstrip-controls{display:flex;align-items:center;gap:.6rem;margin-bottom:.5rem}
+.filmstrip-controls button{cursor:pointer;border:1px solid var(--border,#e5e7eb);background:#f9fafb;border-radius:6px;padding:.25rem .7rem;font-size:.85rem}
+.filmstrip-controls button:hover{background:#f0f1f5}
+.filmstrip-counter{font-size:.8rem;color:#6b7280;white-space:nowrap;min-width:70px;text-align:center}
+.filmstrip-img{display:block;width:100%;border-radius:6px;border:1px solid var(--border,#e5e7eb);background:#111}
 .mspark-series{display:grid;grid-template-columns:148px 1fr;align-items:center;gap:.5rem;padding:.25rem 0;border-bottom:1px solid #f0f1f5}
 .spark-xhair{stroke:#6366f1;stroke-width:1px;stroke-dasharray:3 2;opacity:.65;pointer-events:none}
 .spark-dot{stroke:var(--bg-card,#fff);stroke-width:2px;pointer-events:none}
@@ -208,6 +214,7 @@ tr:nth-child(even) td{background:#fafbff}
 tr:hover td{background:#f5f3ff}
 td.long-text{white-space:normal;overflow-wrap:anywhere;word-break:break-word;max-width:560px;line-height:1.5}
 td.method-text{white-space:normal;overflow-wrap:anywhere;word-break:normal;max-width:560px;line-height:1.5;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
+td.stack-cell{white-space:pre-wrap;overflow-wrap:anywhere;word-break:normal;max-width:640px;line-height:1.6;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px}
 p.caption{font-size:11px;color:#9ca3af;margin:.12rem 0 .3rem;font-style:italic}
 td.trend-up2{color:#dc2626;font-weight:700}
 td.trend-up {color:#ea580c;font-weight:600}

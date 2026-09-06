@@ -61,6 +61,8 @@ public sealed class BinSink : IRenderSink
         IReadOnlyList<(string Label, IReadOnlyList<double> Values, string? Unit)> series,
         string? caption = null, string? valueMode = null)
         => _capture.MultiSparkline(series, caption, valueMode);
+    public void Filmstrip(IReadOnlyList<(long TimestampMs, string Base64Jpeg)> frames, string? caption = null)
+        => _capture.Filmstrip(frames, caption);
     public void CompareBar(
         IReadOnlyList<(string Label, double ValueA, double ValueB)> items,
         string? labelA = null, string? labelB = null,

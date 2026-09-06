@@ -2,6 +2,7 @@ using DumpDetective.Analysis.Memory.Analyzers;
 using DumpDetective.Commands;
 using DumpDetective.Commands.Memory;
 using DumpDetective.Commands.Trace;
+using DumpDetective.Commands.Web;
 using DumpDetective.Core.Interfaces;
 using DumpDetective.Reporting.Reports;
 
@@ -171,6 +172,9 @@ public static class CommandRegistry
 
             ..TraceCommandRegistry.StandaloneCommands,
 
+            // ── web performance (Chrome DevTools traces) ───────────────────────
+            ..WebCommandRegistry.StandaloneCommands,
+
             // ── targeted / interactive ─────────────────────────────────────────
             new TypeInstancesCommand(
                 new TypeInstancesAnalyzer(),
@@ -198,18 +202,20 @@ public static class CommandRegistry
         // whose name clashes with a built-in (including orchestrators) is silently dropped.
         var reservedNames = new HashSet<string>(analysisCommands.Select(c => c.Name), StringComparer.OrdinalIgnoreCase);
         foreach (var n in new[] { "analyze", "trend-analysis", "render", "diff",
-                                   "trace-analyze", "trace-dump-analyze" })
+                                   "trace-analyze", "trace-dump-analyze", "web-analyze" })
             reservedNames.Add(n);
 
         var pluginCommands          = new List<ICommand>();
         var pluginTraceSubAnalyzers  = new List<ITraceSubAnalyzer>();
         var pluginTracePlugins       = new List<ITracePlugin>();
+        var pluginWebSubAnalyzers    = new List<IWebSubAnalyzer>();
         var pluginCmdNames          = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         _plugins = PluginLoader.LoadAll();
         foreach (var plugin in _plugins)
         {
             pluginTraceSubAnalyzers.AddRange(plugin.TraceSubAnalyzers);
             pluginTracePlugins.AddRange(plugin.TracePlugins);
+            pluginWebSubAnalyzers.AddRange(plugin.WebSubAnalyzers);
             foreach (var cmd in plugin.Commands)
             {
                 if (!reservedNames.Add(cmd.Name))
@@ -256,6 +262,9 @@ public static class CommandRegistry
         IReadOnlyList<ITraceDumpCorrelationRule> pluginCorrelationRules = pluginCommands.Count > 0
             ? pluginCommands.OfType<ITraceDumpCorrelationRule>().ToArray()
             : [];
+        IReadOnlyList<IWebSubAnalyzer> pluginWebSubs = pluginWebSubAnalyzers.Count > 0
+            ? pluginWebSubAnalyzers
+            : [];
 
         _commands =
         [
@@ -263,6 +272,7 @@ public static class CommandRegistry
             ..allDispatchable,
             new TrendAnalysisCommand(builtInFullAnalyze, pluginFullAnalyze, _pluginCommandNames),
             ..TraceCommandRegistry.BuildOrchestratorCommands(pluginTraceSubs, pluginTracePl, pluginCorrelationRules, pluginTraceNamesRO),
+            WebCommandRegistry.BuildOrchestrator(pluginWebSubs),
             new RenderCommand(),
             new DiffCommand(),
         ];

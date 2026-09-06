@@ -104,6 +104,11 @@ public static class ReportDocReplay
                 case ReportReference rf:
                     sink.Reference(rf.Label, rf.Url);
                     break;
+                case ReportFilmstrip fs:
+                    sink.Filmstrip(
+                        fs.Frames.Select(f => (f.TimestampMs, f.Base64Jpeg)).ToArray(),
+                        fs.Caption);
+                    break;
             }
         }
     }

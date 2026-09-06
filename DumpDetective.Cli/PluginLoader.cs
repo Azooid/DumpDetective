@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Runtime.Loader;
 using DumpDetective.Commands.Trace;
+using DumpDetective.Commands.Web;
 using DumpDetective.Core.Interfaces;
 using Spectre.Console;
 
@@ -133,7 +134,13 @@ internal static class PluginLoader
                 .OfType<ITracePlugin>()
                 .ToList();
 
-            return new LoadedPlugin(instance.PluginName, instance.Version, commands, traceSubAnalyzers, tracePlugins);
+            // Any plugin command that also implements IWebSubAnalyzer participates in
+            // web-analyze when --with-plugins is passed — same opt-in shape as trace.
+            var webSubAnalyzers = commands
+                .OfType<IWebSubAnalyzer>()
+                .ToList();
+
+            return new LoadedPlugin(instance.PluginName, instance.Version, commands, traceSubAnalyzers, tracePlugins, webSubAnalyzers);
         }
         catch (Exception ex)
         {
@@ -149,13 +156,15 @@ internal sealed class LoadedPlugin(
     string? version,
     IReadOnlyList<ICommand> commands,
     IReadOnlyList<ITraceSubAnalyzer>? traceSubAnalyzers = null,
-    IReadOnlyList<ITracePlugin>? tracePlugins = null)
+    IReadOnlyList<ITracePlugin>? tracePlugins = null,
+    IReadOnlyList<IWebSubAnalyzer>? webSubAnalyzers = null)
 {
     public string                            Name               { get; } = name;
     public string?                           Version            { get; } = version;
     public IReadOnlyList<ICommand>           Commands           { get; } = commands;
     public IReadOnlyList<ITraceSubAnalyzer>  TraceSubAnalyzers  { get; } = traceSubAnalyzers ?? [];
     public IReadOnlyList<ITracePlugin>       TracePlugins       { get; } = tracePlugins ?? [];
+    public IReadOnlyList<IWebSubAnalyzer>    WebSubAnalyzers    { get; } = webSubAnalyzers ?? [];
 }
 
 /// <summary>

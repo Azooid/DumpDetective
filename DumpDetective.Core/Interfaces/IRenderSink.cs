@@ -139,6 +139,17 @@ public interface IRenderSink : IDisposable
     }
 
     /// <summary>
+    /// Renders an ordered sequence of screenshots as an auto-playing flipbook — a fast
+    /// "replay" of what was on screen during the recording. <c>HtmlSink</c> renders an
+    /// interactive, playable filmstrip; other sinks fall back to a plain-text frame count.
+    /// </summary>
+    void Filmstrip(IReadOnlyList<(long TimestampMs, string Base64Jpeg)> frames, string? caption = null)
+    {
+        if (frames.Count == 0) return;
+        Text($"{caption ?? "Screenshots"}: {frames.Count} frame(s) captured — see the HTML report for the auto-play filmstrip.");
+    }
+
+    /// <summary>
     /// Emits a structured "explain" block that answers What / Why / Impact / Action.
     /// HTML renders as a styled card; other sinks render as plain text paragraphs.
     /// All parameters are optional — pass only the ones relevant to the section.
