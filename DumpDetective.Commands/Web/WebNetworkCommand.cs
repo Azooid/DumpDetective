@@ -1,6 +1,11 @@
 namespace DumpDetective.Commands.Web;
 
-/// <summary>Ranks completed network requests by duration from a Chrome DevTools performance trace.</summary>
+/// <summary>
+/// Ranks completed network requests by duration from a Chrome DevTools performance
+/// trace. Accepts a Firefox Profiler trace too, but reports "no data" for one — this
+/// parser doesn't currently map Firefox's network markers (see
+/// <see cref="Analysis.WebTrace.Parsing.FirefoxProfileParser"/>).
+/// </summary>
 public sealed class WebNetworkCommand : ICommand, IWebSubAnalyzer
 {
     public string Name                 => "web-network";
@@ -77,5 +82,5 @@ public sealed class WebNetworkCommand : ICommand, IWebSubAnalyzer
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-network requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-network requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 }

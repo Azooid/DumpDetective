@@ -1,14 +1,14 @@
 namespace DumpDetective.Commands.Web;
 
 /// <summary>
-/// Ranks main-thread CPU self-time from a Chrome DevTools performance trace by
+/// Ranks main-thread CPU self-time from a Chrome DevTools or Firefox Profiler trace by
 /// (source file, function, line) — the "which file do I look at" answer for a
 /// slow/janky recording.
 /// </summary>
 public sealed class WebCpuHotspotCommand : ICommand, IWebSubAnalyzer
 {
     public string Name                 => "web-cpu-hotspots";
-    public string Description          => "Ranked CPU self-time by file/function from a Chrome DevTools performance trace (.json / .json.gz).";
+    public string Description          => "Ranked CPU self-time by file/function from a Chrome DevTools or Firefox Profiler performance trace (.json / .json.gz).";
     public bool   IncludeInFullAnalyze => false;
     public string Category             => "Web Performance";
     public CommandKind Kind            => CommandKind.Web;
@@ -31,12 +31,15 @@ public sealed class WebCpuHotspotCommand : ICommand, IWebSubAnalyzer
     private const string Help = """
         Usage: DumpDetective web-cpu-hotspots <trace.json.gz> [options]
 
-        Aggregates V8 CPU profiler samples embedded in a Chrome DevTools Performance
-        recording by (source file, function, line) and ranks them by self-time — the
-        single highest-value place to start reading is always the top row.
+        Aggregates CPU profiler samples embedded in a Chrome DevTools Performance
+        recording (V8) or a Firefox Profiler export (Gecko) by (source file, function,
+        line) and ranks them by self-time — the single highest-value place to start
+        reading is always the top row. Which recorder produced the file is detected
+        automatically.
 
         Collecting a trace:
-          Chrome DevTools → Performance panel → Record → stop → Export
+          Chrome  → DevTools → Performance panel → Record → stop → Export
+          Firefox → profiler.firefox.com or Ctrl+Shift+E → Capture Recording → Save as file
           (gzip the exported .json, or point this command at the plain .json)
 
         Options:
@@ -90,5 +93,5 @@ public sealed class WebCpuHotspotCommand : ICommand, IWebSubAnalyzer
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-cpu-hotspots requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-cpu-hotspots requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 }
