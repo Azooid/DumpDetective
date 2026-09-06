@@ -62,8 +62,8 @@ public static class ChromeTraceParser
         var finishedRequests = new List<WebNetworkRequest>();
         // In-flight InputLatency::* async begin/end pairs, keyed by (id, name); bounded
         // by concurrent unresolved input events, not total input events over the recording.
-        var inputLatencyBegins = new Dictionary<string, long>(StringComparer.Ordinal);
-        var inputLatenciesUs    = new List<long>();
+        var inputLatencyBegins = new Dictionary<string, (long Ts, string Kind)>(StringComparer.Ordinal);
+        var inputLatencyEvents = new List<WebInputLatencyEvent>();
         int beginFrameCount = 0, droppedFrameCount = 0;
         // CPU profiler samples only carry a *delta* from the previous sample, not an
         // absolute timestamp — reconstructed here as a running clock per (pid, profiler id)
@@ -109,7 +109,7 @@ public static class ChromeTraceParser
                     totalEvents++;
                     ParseEvent(cursor, ref reader, longTaskFloorUs,
                         counters, longTasks, gcEvents, screenshots, hotspots, cpuNodes, sourceMaps,
-                        pendingRequests, finishedRequests, inputLatencyBegins, inputLatenciesUs,
+                        pendingRequests, finishedRequests, inputLatencyBegins, inputLatencyEvents,
                         profileClockByProfilerId, bucketSelfTimeUs, applicationSamples,
                         ref beginFrameCount, ref droppedFrameCount, ref minTs, ref maxTs);
 
@@ -126,6 +126,7 @@ public static class ChromeTraceParser
 
         AttributeLongTasks(longTasks, bucketSelfTimeUs, hotspots);
         AttributePossibleTriggers(longTasks, applicationSamples, hotspots);
+        AttributeInputLatencyBlockers(inputLatencyEvents, longTasks);
 
         return new WebTraceData
         {
@@ -138,7 +139,7 @@ public static class ChromeTraceParser
             NetworkRequests    = finishedRequests,
             BeginFrameCount    = beginFrameCount,
             DroppedFrameCount  = droppedFrameCount,
-            InputLatenciesUs   = inputLatenciesUs,
+            InputLatencyEvents = inputLatencyEvents,
             TotalEventsScanned = totalEvents,
             DurationUs         = maxTs > minTs ? maxTs - minTs : 0,
         };
@@ -146,14 +147,14 @@ public static class ChromeTraceParser
 
     private static WebTraceData Empty(string sourcePath) => new()
     {
-        SourcePath       = sourcePath,
-        Counters         = [],
-        CpuHotspots      = [],
-        LongTasks        = [],
-        GcEvents         = [],
-        Screenshots      = [],
-        NetworkRequests  = [],
-        InputLatenciesUs = [],
+        SourcePath         = sourcePath,
+        Counters           = [],
+        CpuHotspots        = [],
+        LongTasks          = [],
+        GcEvents           = [],
+        Screenshots        = [],
+        NetworkRequests    = [],
+        InputLatencyEvents = [],
     };
 
     /// <summary>
@@ -173,7 +174,7 @@ public static class ChromeTraceParser
         Dictionary<long, (string Url, string Function, int Line, int Column, long Parent)> cpuNodes,
         Dictionary<string, DecodedSourceMap> sourceMaps,
         Dictionary<string, WebNetworkRequestBuilder> pendingRequests, List<WebNetworkRequest> finishedRequests,
-        Dictionary<string, long> inputLatencyBegins, List<long> inputLatenciesUs,
+        Dictionary<string, (long Ts, string Kind)> inputLatencyBegins, List<WebInputLatencyEvent> inputLatencyEvents,
         Dictionary<string, long> profileClockByProfilerId, Dictionary<long, Dictionary<string, long>> bucketSelfTimeUs,
         List<(long Ts, string Key)> applicationSamples,
         ref int beginFrameCount, ref int droppedFrameCount,
@@ -184,6 +185,7 @@ public static class ChromeTraceParser
         int pid = 0, tid = 0;
         char ph = '\0';
         string? id = null;
+        string? inputKind = null;
         JsonDocument? argsDoc = null;
 
         try
@@ -195,7 +197,7 @@ public static class ChromeTraceParser
                 if (reader.ValueTextEquals("name"u8))
                 {
                     TryReadNext(cursor, ref reader);
-                    name = MatchEventName(ref reader);
+                    name = MatchEventName(ref reader, out inputKind);
                 }
                 else if (reader.ValueTextEquals("ts"u8))
                 {
@@ -290,7 +292,7 @@ public static class ChromeTraceParser
                     break;
 
                 case WebEventName.InputLatency when id is not null:
-                    ExtractInputLatency(ph, id, ts, inputLatencyBegins, inputLatenciesUs);
+                    ExtractInputLatency(ph, id, ts, inputKind, inputLatencyBegins, inputLatencyEvents);
                     break;
 
                 case WebEventName.ResourceSendRequest when argsDoc is not null:
@@ -313,16 +315,18 @@ public static class ChromeTraceParser
     }
 
     private static void ExtractInputLatency(
-        char ph, string id, long ts, Dictionary<string, long> begins, List<long> completedUs)
+        char ph, string id, long ts, string? inputKind,
+        Dictionary<string, (long Ts, string Kind)> begins, List<WebInputLatencyEvent> completed)
     {
         // Async begin/end pairing (Trace Event Format): 'b' opens, 'e' closes, matched by id.
         if (ph == 'b')
         {
-            begins[id] = ts;
+            begins[id] = (ts, inputKind ?? "Unknown");
         }
-        else if (ph == 'e' && begins.TryGetValue(id, out long beginTs))
+        else if (ph == 'e' && begins.TryGetValue(id, out var begin))
         {
-            if (ts > beginTs) completedUs.Add(ts - beginTs);
+            if (ts > begin.Ts)
+                completed.Add(new WebInputLatencyEvent { TimestampUs = begin.Ts, DurationUs = ts - begin.Ts, Kind = begin.Kind });
             begins.Remove(id);
         }
     }
@@ -596,6 +600,38 @@ public static class ChromeTraceParser
         }
     }
 
+    /// <summary>
+    /// For each completed input-latency span, finds the long task (if any) whose window
+    /// overlaps the interaction's start — i.e. what the main thread was actually busy doing
+    /// while the user waited for a response, the same "what was running at time T" answer
+    /// web-long-tasks already computes. When more than one task overlaps, picks the longest
+    /// (the dominant blocker). Both lists are small (hundreds of entries, not samples-at-scale)
+    /// even in a large recording, so a plain O(events × tasks) scan needs no index.
+    /// </summary>
+    private static void AttributeInputLatencyBlockers(List<WebInputLatencyEvent> events, List<WebLongTask> longTasks)
+    {
+        if (longTasks.Count == 0 || events.Count == 0) return;
+
+        foreach (var e in events)
+        {
+            WebLongTask? blocker = null;
+            foreach (var t in longTasks)
+            {
+                if (t.AttributedFunction is null) continue;
+                if (t.TimestampUs >= e.TimestampUs + e.DurationUs) continue;
+                if (t.TimestampUs + t.DurationUs <= e.TimestampUs) continue;
+                if (blocker is null || t.DurationUs > blocker.DurationUs) blocker = t;
+            }
+            if (blocker is null) continue;
+
+            e.BlockedByFunction     = blocker.AttributedFunction;
+            e.BlockedByUrl          = blocker.AttributedUrl;
+            e.BlockedByLine         = blocker.AttributedLine;
+            e.BlockedByResolvedFile = blocker.AttributedResolvedFile;
+            e.BlockedByResolvedLine = blocker.AttributedResolvedLine;
+        }
+    }
+
     /// <summary>Only look this far back for a candidate trigger — far enough to catch a debounced setTimeout, not so far it's meaningless.</summary>
     private const long MaxTriggerLookbackUs = 5_000_000; // 5s — wide enough to catch a debounced setTimeout/cascading re-render, not so wide it's meaningless
 
@@ -828,8 +864,9 @@ public static class ChromeTraceParser
 
     private static readonly byte[] InputLatencyPrefix = "InputLatency::"u8.ToArray();
 
-    private static WebEventName MatchEventName(ref Utf8JsonReader reader)
+    private static WebEventName MatchEventName(ref Utf8JsonReader reader, out string? inputKind)
     {
+        inputKind = null;
         if (reader.ValueTextEquals("UpdateCounters"u8))          return WebEventName.UpdateCounters;
         if (reader.ValueTextEquals("RunTask"u8))                 return WebEventName.RunTask;
         if (reader.ValueTextEquals("Profile"u8))                 return WebEventName.ProfileStart;
@@ -844,9 +881,14 @@ public static class ChromeTraceParser
         if (reader.ValueTextEquals("ResourceFinish"u8))          return WebEventName.ResourceFinish;
         // All "InputLatency::MouseMove" / "InputLatency::GestureScrollUpdate" / etc variants —
         // matched by prefix on the raw UTF-8 bytes rather than a per-variant whitelist, since
-        // Chrome emits many of these and the specific kind doesn't change how we aggregate them.
+        // Chrome emits many of these and the specific kind doesn't change how we aggregate them —
+        // but the suffix (the actual interaction kind) is still worth keeping around for display,
+        // so a report doesn't reduce every interaction to an anonymous duration.
         if (!reader.HasValueSequence && reader.ValueSpan.StartsWith(InputLatencyPrefix))
+        {
+            inputKind = System.Text.Encoding.UTF8.GetString(reader.ValueSpan[InputLatencyPrefix.Length..]);
             return WebEventName.InputLatency;
+        }
         return WebEventName.Other;
     }
 }

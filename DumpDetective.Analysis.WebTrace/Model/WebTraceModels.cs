@@ -91,6 +91,31 @@ public sealed class WebLongTask
     public string? PossibleTriggerCluster { get; set; }
 }
 
+/// <summary>
+/// One completed <c>InputLatency::*</c> async span (click/scroll/move dispatch-to-response) —
+/// an "Interaction to Next Paint"-style responsiveness sample. <see cref="Kind"/> is the
+/// suffix after "InputLatency::" (e.g. "MouseDown", "GestureScrollUpdate") — without it, a
+/// bare list of durations gives no way to tell which interactions were slow or what a user
+/// was actually doing when one happened.
+/// </summary>
+public sealed class WebInputLatencyEvent
+{
+    public required long   TimestampUs { get; init; }
+    public required long   DurationUs  { get; init; }
+    public required string Kind        { get; init; }
+
+    // ── Blocked by — the long task (if any) whose window overlapped this interaction's
+    // start, i.e. what the main thread was actually busy doing while the user waited.
+    // Filled in after the streaming pass by ChromeTraceParser.AttributeInputLatencyBlockers —
+    // the same "what was running at time T" answer web-long-tasks already computes, joined
+    // here so a slow interaction doesn't require cross-referencing that report by hand.
+    public string? BlockedByFunction     { get; set; }
+    public string? BlockedByUrl          { get; set; }
+    public int     BlockedByLine         { get; set; } = -1;
+    public string? BlockedByResolvedFile { get; set; }
+    public int     BlockedByResolvedLine { get; set; } = -1;
+}
+
 /// <summary>A GC pause span reconstructed from begin/end events in the v8.gc category.</summary>
 public readonly record struct WebGcEvent(
     long   TimestampUs,
@@ -156,8 +181,8 @@ public sealed class WebTraceData
     public int BeginFrameCount   { get; init; }
     /// <summary>Total <c>DroppedFrame</c> events — frames that were scheduled but never presented.</summary>
     public int DroppedFrameCount { get; init; }
-    /// <summary>Completed <c>InputLatency::*</c> durations, in microseconds (async begin→end pairs only).</summary>
-    public required IReadOnlyList<long> InputLatenciesUs { get; init; }
+    /// <summary>Completed <c>InputLatency::*</c> spans (async begin→end pairs only).</summary>
+    public required IReadOnlyList<WebInputLatencyEvent> InputLatencyEvents { get; init; }
 
     /// <summary>Total events seen while streaming (diagnostic only — not retained data).</summary>
     public long TotalEventsScanned { get; init; }

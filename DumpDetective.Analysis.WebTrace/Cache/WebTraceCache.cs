@@ -18,7 +18,7 @@ namespace DumpDetective.Analysis.WebTrace.Cache;
 public static class WebTraceCache
 {
     private const uint   Magic       = 0x44445754; // "DDWT"
-    private const int    Version     = 11; // v11: call-chain entries now carry location/url, not just function name
+    private const int    Version     = 12; // v12: input-latency events now carry kind + long-task blocker attribution, not just a bare duration
 
     public static string CachePathFor(string tracePath)
     {
@@ -182,9 +182,26 @@ public static class WebTraceCache
         bw.Write(data.BeginFrameCount);
         bw.Write(data.DroppedFrameCount);
 
-        bw.Write(data.InputLatenciesUs.Count);
-        foreach (var us in data.InputLatenciesUs)
-            bw.Write(us);
+        bw.Write(data.InputLatencyEvents.Count);
+        foreach (var e in data.InputLatencyEvents)
+        {
+            bw.Write(e.TimestampUs);
+            bw.Write(e.DurationUs);
+            bw.Write(e.Kind);
+            bw.Write(e.BlockedByFunction is not null);
+            if (e.BlockedByFunction is not null)
+            {
+                bw.Write(e.BlockedByFunction);
+                bw.Write(e.BlockedByUrl ?? "");
+                bw.Write(e.BlockedByLine);
+                bw.Write(e.BlockedByResolvedFile is not null);
+                if (e.BlockedByResolvedFile is not null)
+                {
+                    bw.Write(e.BlockedByResolvedFile);
+                    bw.Write(e.BlockedByResolvedLine);
+                }
+            }
+        }
     }
 
     private static WebTraceData ReadBody(BinaryReader br, string tracePath)
@@ -301,9 +318,25 @@ public static class WebTraceCache
         int droppedFrameCount = br.ReadInt32();
 
         int latencyCount = br.ReadInt32();
-        var latencies = new List<long>(latencyCount);
+        var latencyEvents = new List<WebInputLatencyEvent>(latencyCount);
         for (int i = 0; i < latencyCount; i++)
-            latencies.Add(br.ReadInt64());
+        {
+            long ts = br.ReadInt64(), dur = br.ReadInt64();
+            string kind = br.ReadString();
+            var e = new WebInputLatencyEvent { TimestampUs = ts, DurationUs = dur, Kind = kind };
+            if (br.ReadBoolean())
+            {
+                e.BlockedByFunction = br.ReadString();
+                e.BlockedByUrl      = br.ReadString();
+                e.BlockedByLine     = br.ReadInt32();
+                if (br.ReadBoolean())
+                {
+                    e.BlockedByResolvedFile = br.ReadString();
+                    e.BlockedByResolvedLine = br.ReadInt32();
+                }
+            }
+            latencyEvents.Add(e);
+        }
 
         return new WebTraceData
         {
@@ -316,7 +349,7 @@ public static class WebTraceCache
             NetworkRequests    = requests,
             BeginFrameCount    = beginFrameCount,
             DroppedFrameCount  = droppedFrameCount,
-            InputLatenciesUs   = latencies,
+            InputLatencyEvents = latencyEvents,
             TotalEventsScanned = totalEvents,
             DurationUs         = durationUs,
         };

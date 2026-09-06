@@ -5,9 +5,11 @@ using DumpDetective.Core.Models.CommandData;
 namespace DumpDetective.Analysis.WebTrace.Analysis;
 
 /// <summary>
-/// Summarizes completed <c>InputLatency::*</c> durations (click/scroll/move-to-response
+/// Summarizes completed <c>InputLatency::*</c> spans (click/scroll/move-to-response
 /// timing) — an "Interaction to Next Paint"-style signal for how responsive the page
-/// actually felt.
+/// actually felt. Each worst-latency row carries its interaction kind, timestamp, and
+/// (when a long task overlapped it) which function was blocking the main thread —
+/// see <c>ChromeTraceParser.AttributeInputLatencyBlockers</c>.
 /// </summary>
 public static class WebInputLatencyAnalyzer
 {
@@ -16,22 +18,43 @@ public static class WebInputLatencyAnalyzer
 
     public static WebInputLatencyData Analyze(WebTraceData data, string traceFileName)
     {
-        var sorted = data.InputLatenciesUs.OrderBy(x => x).ToList();
+        var sorted = data.InputLatencyEvents.Select(e => e.DurationUs).OrderBy(x => x).ToList();
         int n = sorted.Count;
 
         long median = n > 0 ? sorted[n / 2] : 0;
         long p95    = n > 0 ? sorted[(int)Math.Min(n - 1, Math.Ceiling(n * 0.95) - 1)] : 0;
         long max     = n > 0 ? sorted[^1] : 0;
-        var worst    = data.InputLatenciesUs.OrderByDescending(x => x).Take(20).ToList();
+        var worst    = data.InputLatencyEvents
+            .OrderByDescending(e => e.DurationUs)
+            .Take(20)
+            .Select(e => new WebInputLatencyRow
+            {
+                Kind                  = e.Kind,
+                TimestampUs           = e.TimestampUs,
+                DurationUs            = e.DurationUs,
+                BlockedByFunction     = e.BlockedByFunction,
+                BlockedByUrl          = e.BlockedByUrl,
+                BlockedByLine         = e.BlockedByLine,
+                BlockedByResolvedFile = e.BlockedByResolvedFile,
+                BlockedByResolvedLine = e.BlockedByResolvedLine,
+            })
+            .ToList();
 
         var findings = new List<Finding>();
         if (max >= SlowInteractionUsCritical)
         {
+            var worstEvent = worst.FirstOrDefault();
             findings.Add(new Finding(FindingSeverity.Critical, "Web Performance",
-                $"Slowest interaction took {max / 1_000_000.0:F1}s to respond",
-                Advice: "An interaction this slow means the page was completely unresponsive to the user for that " +
-                        "long — almost always caused by a blocked main thread (check web-long-tasks / web-cpu-hotspots " +
-                        "for what was running at that timestamp), not the interaction itself being expensive.",
+                $"Slowest interaction ('{worstEvent?.Kind}') took {max / 1_000_000.0:F1}s to respond",
+                Detail: worstEvent?.BlockedByFunction is not null
+                    ? $"Blocked by '{worstEvent.BlockedByFunction}' ({worstEvent.BlockedByLocation})"
+                    : null,
+                Advice: worstEvent?.BlockedByFunction is not null
+                    ? $"The main thread was busy running '{worstEvent.BlockedByFunction}' the entire time the user " +
+                      "waited — that's the fix target, not the interaction handler itself."
+                    : "An interaction this slow means the page was completely unresponsive to the user for that " +
+                      "long — almost always caused by a blocked main thread (check web-long-tasks / web-cpu-hotspots " +
+                      "for what was running at that timestamp), not the interaction itself being expensive.",
                 Deduction: 30));
         }
         else if (p95 >= SlowInteractionUsWarn)
@@ -54,7 +77,7 @@ public static class WebInputLatencyAnalyzer
             MedianUs    = median,
             P95Us       = p95,
             MaxUs       = max,
-            WorstUs     = worst,
+            WorstEvents = worst,
             Findings    = findings,
         };
     }
