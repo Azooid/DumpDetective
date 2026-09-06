@@ -6,6 +6,8 @@ DumpDetective turns that dump into an **interactive HTML report in one command**
 
 Works with **.nettrace** and **.etl** trace files too: **29 trace sub-reports** covering CPU hot paths, allocations, GC pauses, contention, HTTP, SQL, ThreadPool starvation, and more.
 
+Also analyzes **Chrome DevTools performance traces** (`.json`/`.json.gz`) — browser JS/DOM memory leaks, CPU hotspots, long tasks, GC pressure, jank, input latency, and network, with a `.NET`-stack-trace-style **Call Stack** on every hotspot so a shared vendor function is always traced back to the application code that called it (or the closest timing-correlated signal when it can't be, e.g. across a promise/deferred boundary).
+
 **No steep learning curve. No manual .windbg commands. No hours debugging. Just answers.**
 
 ---
@@ -55,6 +57,9 @@ DumpDetective trace-analyze app.nettrace
 
 # 5. Both — cross-source correlation links trace signals to heap evidence
 DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
+
+# 6. Chrome DevTools performance trace (browser JS/DOM/CPU/network) instead of a .NET dump
+DumpDetective web-analyze trace.json.gz --output report.html
 ```
 
 The HTML report is self-contained: sticky sidebar navigation, collapsible sections, sortable/filterable tables, embedded charts, and a dark mode toggle. Share it as a single file.
@@ -69,6 +74,7 @@ The HTML report is self-contained: sticky sidebar navigation, collapsible sectio
 | **30 memory sub-reports** | Run in parallel after one heap walk: leaks, dominator tree (exact retained memory via Lengauer-Tarjan), fragmentation, deadlocks, async backlogs, event handler leaks, static roots, and more. |
 | **29 trace sub-reports** | One pass over the trace: CPU, allocations, GC, contention, exceptions, starvation, async tasks, JIT, HTTP, SQL, network I/O, OpenTelemetry, and more. |
 | **Cross-source correlation** | trace-dump-analyze runs trace + dump together and applies 10 built-in correlation rules to surface the highest-confidence root causes. |
+| **Web performance analysis** | 8 web-* commands analyze Chrome DevTools performance traces — JS heap/DOM/listener leaks, CPU hotspots, long tasks, GC pressure, jank, input latency, network. Every hotspot gets a `.NET`-stack-trace-style Call Stack traced back to your code (or a timing correlation when a call-tree edge can't reach it). |
 | **Trend analysis** | trend-analysis compares multiple dumps over time — heap growth, type counts, event leaks, GC metrics. |
 | **Report replay and diff** | Save any report as .bin (Brotli-compressed). Re-render to any format later. Diff two saved reports without reopening dumps. |
 | **Plugin system** | Drop a .NET class library into plugins/ to add custom commands. They appear in --help and can run in analyze --full. |
@@ -111,6 +117,21 @@ All commands work with `.nettrace` and `.etl` trace files. Analyze one trace or 
 | Network / I/O | `socket-trace`, `dns-trace`, `file-io-trace`, `handle-leak-trace` |
 | Observability | `otel-trace`, `process-lifecycle-trace`, `retry-storm-trace` |
 | Intelligence | `anomaly-trace`, `root-cause-trace` |
+
+## 🌐 Web Performance Commands
+
+Analyzes Chrome DevTools performance traces (`.json` / `.json.gz` — the "Enhanced Trace" export from the DevTools Performance panel): browser JS/DOM performance, not the .NET runtime.
+
+| Category | Commands |
+|---|---|
+| Orchestration | `web-analyze` |
+| Memory | `web-memory-leak` |
+| CPU | `web-cpu-hotspots`, `web-long-tasks` |
+| GC / rendering | `web-gc-pressure`, `web-jank` |
+| Responsiveness | `web-input-latency` |
+| Network | `web-network` |
+
+See [Docs/documentation.md → Web Performance Commands](Docs/documentation.md#web-performance-commands) for full details, including how the Call Stack column and long-task blocker attribution work.
 
 ---
 
@@ -255,6 +276,7 @@ Place `dd-thresholds.json` in your working directory to customize health score r
 | **Event handlers not unsubscribing** | `event-analysis` | Enumerate registered event handlers with retained sizes |
 | **Correlate trace to dump** | `trace-dump-analyze` | Link CPU spikes / allocations to heap evidence |
 | **Custom analysis** | Build a plugin | Inherit `ICommand`, run in `analyze --full` |
+| **Browser page feels slow/janky** | `web-analyze` on a DevTools trace | JS heap, CPU hotspots, long tasks, GC, jank, input latency, network — all with a Call Stack traced back to your code |
 
 ### Common workflows
 
@@ -301,6 +323,9 @@ A: Dumps are processed locally only. No data is sent anywhere. Analyze offline d
 
 **Q: Why is the HTML report so large?**  
 A: It's fully self-contained (all CSS, JS, data embedded). One file = one complete, shareable report.
+
+**Q: How do I record a Chrome DevTools trace for `web-analyze`?**  
+A: DevTools → Performance panel → check "Memory" if you want heap/listener trend data → Record → interact with the page → stop → Export. Pass the exported `.json` directly, or gzip it first (`.json.gz` works too).
 
 ---
 
