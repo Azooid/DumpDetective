@@ -14,7 +14,7 @@
     <InvariantGlobalization>true</InvariantGlobalization>
     <!-- Major.Minor are set here; Patch auto-increments on each build (days since 2000-01-01). -->
     <!-- Disable deterministic builds so the * wildcard is evaluated at build time.            -->
-    <AssemblyVersion>4.0.0.*</AssemblyVersion>
+    <AssemblyVersion>4.0.1.*</AssemblyVersion>
     <Deterministic>false</Deterministic>
     <NoWarn>$(NoWarn);7035</NoWarn>
 	<PackAsTool>true</PackAsTool>
@@ -22,8 +22,8 @@
     <PackageOutputPath>./nupkg</PackageOutputPath>
   <IncludeSymbols>true</IncludeSymbols>
   <SymbolPackageFormat>snupkg</SymbolPackageFormat>
-    <PackageVersion>4.0.0</PackageVersion>
-    <Version>4.0.0</Version>
+    <PackageVersion>4.0.1</PackageVersion>
+    <Version>4.0.1</Version>
     <PackageId>DumpDetective.Cli</PackageId>
     <Description>CLI tool for analysing .NET memory dumps (.dmp / .mdmp), .nettrace/.etl files, and Chrome DevTools performance traces. Heap stats, trend analysis, deadlock detection, browser CPU/memory/jank analysis, and more.</Description>
     <Authors>RohitM-IN</Authors>
