@@ -1,10 +1,10 @@
 namespace DumpDetective.Commands.Web;
 
-/// <summary>Summarizes V8 GC pause activity (major/minor cycles + pause durations) from a Chrome DevTools performance trace.</summary>
+/// <summary>Summarizes V8 GC pause activity (major/minor cycles + pause durations) from a Chrome DevTools or Firefox Profiler performance trace.</summary>
 public sealed class WebGcPressureCommand : ICommand, IWebSubAnalyzer
 {
     public string Name                 => "web-gc-pressure";
-    public string Description          => "V8 GC pause summary from a Chrome DevTools performance trace (.json / .json.gz).";
+    public string Description          => "V8 GC pause summary from a Chrome DevTools or Firefox Profiler performance trace (.json / .json.gz).";
     public bool   IncludeInFullAnalyze => false;
     public string Category             => "Web Performance";
     public CommandKind Kind            => CommandKind.Web;
@@ -75,5 +75,5 @@ public sealed class WebGcPressureCommand : ICommand, IWebSubAnalyzer
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-gc-pressure requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-gc-pressure requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 }

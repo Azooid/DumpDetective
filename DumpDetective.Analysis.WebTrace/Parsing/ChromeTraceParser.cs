@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.IO.Compression;
 using DumpDetective.Analysis.WebTrace.Model;
 
 namespace DumpDetective.Analysis.WebTrace.Parsing;
@@ -24,18 +23,8 @@ public static class ChromeTraceParser
     public static WebTraceData Parse(string path, long longTaskFloorUs = DefaultLongTaskFloorUs, Action<string>? progress = null)
     {
         using var fileStream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, bufferSize: 1 << 16);
-        using Stream jsonStream = OpenMaybeGzip(fileStream);
+        using Stream jsonStream = WebTraceFileOpener.OpenMaybeGzip(fileStream);
         return Parse(jsonStream, path, longTaskFloorUs, progress);
-    }
-
-    /// <summary>Wraps <paramref name="raw"/> in a <see cref="GZipStream"/> if it starts with the gzip magic bytes.</summary>
-    private static Stream OpenMaybeGzip(Stream raw)
-    {
-        Span<byte> magic = stackalloc byte[2];
-        int n = raw.Read(magic);
-        raw.Position = 0;
-        bool isGzip = n == 2 && magic[0] == 0x1F && magic[1] == 0x8B;
-        return isGzip ? new GZipStream(raw, CompressionMode.Decompress) : raw;
     }
 
     public static WebTraceData Parse(Stream jsonStream, string sourcePath, long longTaskFloorUs, Action<string>? progress)

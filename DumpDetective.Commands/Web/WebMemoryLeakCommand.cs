@@ -3,7 +3,10 @@ namespace DumpDetective.Commands.Web;
 /// <summary>
 /// Analyzes a Chrome DevTools performance trace (.json / .json.gz) for JS heap growth,
 /// DOM node accumulation, and event-listener leaks — the browser-side counterpart to
-/// <c>memory-leak</c> for .NET dumps.
+/// <c>memory-leak</c> for .NET dumps. Accepts a Firefox Profiler trace too, but Firefox
+/// doesn't capture the DOM node / JS heap / listener counters this report is built on
+/// (see <see cref="Analysis.WebTrace.Parsing.FirefoxProfileParser"/>), so it reports "no
+/// data" rather than a leak trend for one.
 /// </summary>
 public sealed class WebMemoryLeakCommand : ICommand, IWebSubAnalyzer
 {
@@ -35,6 +38,10 @@ public sealed class WebMemoryLeakCommand : ICommand, IWebSubAnalyzer
           • JS heap / DOM node / event-listener trend over the recording
           • Listener : node ratio — the strongest single signal of a listener leak
           • Net growth from the first tenth of the recording to the last tenth
+
+        A Firefox Profiler trace is accepted too but reports "no data" here — Firefox
+        doesn't capture these counters; use web-cpu-hotspots / web-long-tasks / web-gc-pressure
+        for a Firefox trace instead.
 
         Collecting a trace:
           Chrome DevTools → Performance panel → check "Memory" → Record → stop → Export
@@ -89,7 +96,7 @@ public sealed class WebMemoryLeakCommand : ICommand, IWebSubAnalyzer
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-memory-leak requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-memory-leak requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 
     internal static bool ValidateWebTrace(ref string? tracePath, string help)
     {

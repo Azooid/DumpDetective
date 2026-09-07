@@ -1,7 +1,7 @@
 namespace DumpDetective.Commands.Web;
 
 /// <summary>
-/// Runs every registered web sub-analyzer against one Chrome DevTools trace and produces
+/// Runs every registered web sub-analyzer against one Chrome DevTools or Firefox Profiler trace and produces
 /// a single report: health score, ranked Action Queue (Now/Next/Watch), a "Look here
 /// first" pointer, then each sub-analyzer's full section — the web-trace counterpart to
 /// <c>analyze --full</c> / <c>trace-analyze</c>.
@@ -147,5 +147,5 @@ public sealed class WebAnalyzeCommand : ICommand
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-analyze requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-analyze requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 }

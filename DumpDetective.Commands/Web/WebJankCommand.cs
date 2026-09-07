@@ -1,6 +1,10 @@
 namespace DumpDetective.Commands.Web;
 
-/// <summary>Compositor frame-drop rate (jank) from a Chrome DevTools performance trace.</summary>
+/// <summary>
+/// Compositor frame-drop rate (jank) from a Chrome DevTools performance trace. Accepts a
+/// Firefox Profiler trace too, but reports "no data" for one — Firefox's export doesn't
+/// carry BeginFrame/DroppedFrame compositor events.
+/// </summary>
 public sealed class WebJankCommand : ICommand, IWebSubAnalyzer
 {
     public string Name                 => "web-jank";
@@ -75,5 +79,5 @@ public sealed class WebJankCommand : ICommand, IWebSubAnalyzer
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-jank requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-jank requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 }

@@ -1,10 +1,10 @@
 namespace DumpDetective.Commands.Web;
 
-/// <summary>Interaction-to-response latency (INP-style) from a Chrome DevTools performance trace.</summary>
+/// <summary>Interaction-to-response latency (INP-style) from a Chrome DevTools or Firefox Profiler performance trace.</summary>
 public sealed class WebInputLatencyCommand : ICommand, IWebSubAnalyzer
 {
     public string Name                 => "web-input-latency";
-    public string Description          => "Interaction responsiveness (INP-style) from a Chrome DevTools performance trace (.json / .json.gz).";
+    public string Description          => "Interaction responsiveness (INP-style) from a Chrome DevTools or Firefox Profiler performance trace (.json / .json.gz).";
     public bool   IncludeInFullAnalyze => false;
     public string Category             => "Web Performance";
     public CommandKind Kind            => CommandKind.Web;
@@ -75,5 +75,5 @@ public sealed class WebInputLatencyCommand : ICommand, IWebSubAnalyzer
 
     public void Render(DumpContext ctx, IRenderSink sink) =>
         sink.Alert(AlertLevel.Warning,
-            "web-input-latency requires a Chrome DevTools trace (.json / .json.gz) — it cannot analyze a memory dump.");
+            "web-input-latency requires a browser performance trace (Chrome DevTools or Firefox Profiler; .json / .json.gz) — it cannot analyze a memory dump.");
 }

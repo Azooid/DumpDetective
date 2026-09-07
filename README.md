@@ -1,14 +1,16 @@
 # 🔍 DumpDetective
 
-**Your production service just fell over. You have a .dmp file and no idea where to start.**
+**Your production service just fell over. Or your web app just feels slow and janky. Either way, you have a file full of clues and no idea where to start.**
 
-DumpDetective turns that dump into an **interactive HTML report in one command** — health score, prioritized findings, and **30 targeted sub-reports** covering memory leaks, thread deadlocks, async backlogs, GC pressure, event handler leaks, and more. All run in parallel from a single heap walk.
+DumpDetective turns that file into an **interactive HTML report in one command** — no matter which side of the stack it came from:
 
-Works with **.nettrace** and **.etl** trace files too: **29 trace sub-reports** covering CPU hot paths, allocations, GC pauses, contention, HTTP, SQL, ThreadPool starvation, and more.
+- 🩺 **.NET crashed or leaking?** Feed it a `.dmp`/`.mdmp` heap dump and get a health score, prioritized findings, and **30 targeted sub-reports** covering memory leaks, thread deadlocks, async backlogs, GC pressure, event handler leaks, and more — all run in parallel from a single heap walk.
+- ⏱️ **.NET running slow?** Feed it a `.nettrace`/`.etl` trace and get **29 trace sub-reports** covering CPU hot paths, allocations, GC pauses, contention, HTTP, SQL, ThreadPool starvation, and more.
+- 🌐 **Web page slow or janky?** Feed it a Chrome DevTools or Firefox Profiler performance trace (`.json`/`.json.gz`) and get browser JS/DOM memory leaks, CPU hotspots, long tasks, GC pressure, jank, input latency, and network reports — the same one-command experience, just pointed at the browser instead of the CLR.
 
-Also analyzes **Chrome DevTools performance traces** (`.json`/`.json.gz`) — browser JS/DOM memory leaks, CPU hotspots, long tasks, GC pressure, jank, input latency, and network, with a `.NET`-stack-trace-style **Call Stack** on every hotspot so a shared vendor function is always traced back to the application code that called it (or the closest timing-correlated signal when it can't be, e.g. across a promise/deferred boundary).
+One tool, one command, two worlds: **backend .NET diagnostics and frontend browser performance**, both turned into the same kind of readable, shareable report.
 
-**No steep learning curve. No manual .windbg commands. No hours debugging. Just answers.**
+**No steep learning curve. No manual .windbg commands. No hours squinting at a Performance panel. Just answers.**
 
 ---
 
@@ -20,13 +22,21 @@ dotnet tool install --global DumpDetective.Cli
 ```
 
 **Step 2: Analyze (5–30 seconds)**
+
+Have a .NET memory dump?
 ```bash
 DumpDetective analyze app.dmp --full
 # Creates app.html with health score, findings, and 30 sub-reports
 ```
 
+Have a Chrome DevTools or Firefox Profiler performance trace instead?
+```bash
+DumpDetective web-analyze trace.json.gz
+# Creates trace.html with JS/DOM leaks, CPU hotspots, jank, and more
+```
+
 **Step 3: Investigate**
-- Open `app.html` in your browser
+- Open the generated `.html` file in your browser
 - Review the health score (0–100) and findings
 - Explore interactive charts, sortable tables, and detailed call stacks
 - Dark mode toggle available
@@ -58,7 +68,7 @@ DumpDetective trace-analyze app.nettrace
 # 5. Both — cross-source correlation links trace signals to heap evidence
 DumpDetective trace-dump-analyze app.nettrace app.dmp --output incident.html
 
-# 6. Chrome DevTools performance trace (browser JS/DOM/CPU/network) instead of a .NET dump
+# 6. Chrome DevTools or Firefox Profiler trace (browser JS/DOM/CPU/network) instead of a .NET dump
 DumpDetective web-analyze trace.json.gz --output report.html
 ```
 
@@ -74,7 +84,7 @@ The HTML report is self-contained: sticky sidebar navigation, collapsible sectio
 | **30 memory sub-reports** | Run in parallel after one heap walk: leaks, dominator tree (exact retained memory via Lengauer-Tarjan), fragmentation, deadlocks, async backlogs, event handler leaks, static roots, and more. |
 | **29 trace sub-reports** | One pass over the trace: CPU, allocations, GC, contention, exceptions, starvation, async tasks, JIT, HTTP, SQL, network I/O, OpenTelemetry, and more. |
 | **Cross-source correlation** | trace-dump-analyze runs trace + dump together and applies 10 built-in correlation rules to surface the highest-confidence root causes. |
-| **Web performance analysis** | 8 web-* commands analyze Chrome DevTools performance traces — JS heap/DOM/listener leaks, CPU hotspots, long tasks, GC pressure, jank, input latency, network. Every hotspot gets a `.NET`-stack-trace-style Call Stack traced back to your code (or a timing correlation when a call-tree edge can't reach it). |
+| **Web performance analysis** | 8 web-* commands analyze Chrome DevTools or Firefox Profiler performance traces — JS heap/DOM/listener leaks, CPU hotspots, long tasks, GC pressure, jank, input latency, network. |
 | **Trend analysis** | trend-analysis compares multiple dumps over time — heap growth, type counts, event leaks, GC metrics. |
 | **Report replay and diff** | Save any report as .bin (Brotli-compressed). Re-render to any format later. Diff two saved reports without reopening dumps. |
 | **Plugin system** | Drop a .NET class library into plugins/ to add custom commands. They appear in --help and can run in analyze --full. |
@@ -120,7 +130,7 @@ All commands work with `.nettrace` and `.etl` trace files. Analyze one trace or 
 
 ## 🌐 Web Performance Commands
 
-Analyzes Chrome DevTools performance traces (`.json` / `.json.gz` — the "Enhanced Trace" export from the DevTools Performance panel): browser JS/DOM performance, not the .NET runtime.
+Analyzes browser performance traces (`.json` / `.json.gz`) from either recorder — Chrome DevTools' "Enhanced Trace" export from the Performance panel, or a Firefox Profiler export — the format is detected automatically, no flag needed: browser JS/DOM performance, not the .NET runtime.
 
 | Category | Commands |
 |---|---|
@@ -131,7 +141,7 @@ Analyzes Chrome DevTools performance traces (`.json` / `.json.gz` — the "Enhan
 | Responsiveness | `web-input-latency` |
 | Network | `web-network` |
 
-See [Docs/documentation.md → Web Performance Commands](Docs/documentation.md#web-performance-commands) for full details, including how the Call Stack column and long-task blocker attribution work.
+See [Docs/documentation.md → Web Performance Commands](Docs/documentation.md#web-performance-commands) for full details, including how long-task blocker attribution works.
 
 ---
 
@@ -276,7 +286,7 @@ Place `dd-thresholds.json` in your working directory to customize health score r
 | **Event handlers not unsubscribing** | `event-analysis` | Enumerate registered event handlers with retained sizes |
 | **Correlate trace to dump** | `trace-dump-analyze` | Link CPU spikes / allocations to heap evidence |
 | **Custom analysis** | Build a plugin | Inherit `ICommand`, run in `analyze --full` |
-| **Browser page feels slow/janky** | `web-analyze` on a DevTools trace | JS heap, CPU hotspots, long tasks, GC, jank, input latency, network — all with a Call Stack traced back to your code |
+| **Browser page feels slow/janky** | `web-analyze` on a DevTools trace | JS heap, CPU hotspots, long tasks, GC, jank, input latency, network |
 
 ### Common workflows
 
@@ -324,8 +334,8 @@ A: Dumps are processed locally only. No data is sent anywhere. Analyze offline d
 **Q: Why is the HTML report so large?**  
 A: It's fully self-contained (all CSS, JS, data embedded). One file = one complete, shareable report.
 
-**Q: How do I record a Chrome DevTools trace for `web-analyze`?**  
-A: DevTools → Performance panel → check "Memory" if you want heap/listener trend data → Record → interact with the page → stop → Export. Pass the exported `.json` directly, or gzip it first (`.json.gz` works too).
+**Q: How do I record a trace for `web-analyze`?**  
+A: Chrome — DevTools → Performance panel → check "Memory" if you want heap/listener trend data → Record → interact with the page → stop → Export. Firefox — [profiler.firefox.com](https://profiler.firefox.com) or the built-in profiler (Ctrl+Shift+E) → Capture Recording → Save/Export → "Save as file". Either way, pass the exported `.json` directly, or gzip it first (`.json.gz` works too) — the format is auto-detected.
 
 ---
 
